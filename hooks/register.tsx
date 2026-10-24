@@ -34,6 +34,12 @@ type Turn = { reads: string[]; edits: Map<string, { add: number; del: number; cr
 const newTurn = (): Turn => ({ reads: [], edits: new Map(), greps: [], bash: [], web: [] })
 let turn = newTurn()
 let grandRun: { return?: () => unknown } | null = null
+// la sentinelle : les tâches en arrière-plan (commandes, scripts, agents lancés dans un terminal)
+// ne passent pas par les outils de Claude, alors on guette les fichiers qu'elles touchent
+let watchDirs: string[] = []
+const mtimes = new Map<string, number>()
+const ownWrites = new Map<string, number>()
+let watching = false
 
 const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
 function rel(p: unknown): string | undefined {
@@ -153,6 +159,51 @@ async function pushLive($: EngineInterface, toolName: string, ev: Ev, e: any) {
   await writeLive($)
 }
 
+async function scan($: EngineInterface, first: boolean): Promise<{ path: string; created: boolean }[]> {
+  const changed: { path: string; created: boolean }[] = []
+  for (let i = 0; i < watchDirs.length; i++) {
+    const d = watchDirs[i] ?? ''
+    const entries = await $.fs.list(d ? `${cwd}/${d}` : cwd).catch(() => null)
+    if (!entries) continue
+    for (const en of entries) {
+      if (en.name.startsWith('.')) continue
+      const p = d ? `${d}/${en.name}` : en.name
+      if (en.kind === 'dir') { if (!IGNORE.has(en.name) && !watchDirs.includes(p) && watchDirs.length < 160 && p.split('/').length <= 5) watchDirs.push(p); continue }
+      if (en.kind !== 'file' || /\.(pyc|tmp|swp|lock)$|~$/.test(en.name)) continue
+      const old = mtimes.get(p)
+      mtimes.set(p, en.mtimeMs)
+      if (!first && (old === undefined || en.mtimeMs > old + 1)) changed.push({ path: p, created: old === undefined })
+    }
+  }
+  return changed
+}
+async function startWatch($: EngineInterface) {
+  if (watching) return
+  watching = true
+  watchDirs = ['']
+  await scan($, true)
+  let busy = false
+  const tick = async () => {
+    if (busy) return
+    busy = true
+    try {
+      const now = Date.now()
+      for (const [p, t] of ownWrites) if (now - t > 8000) ownWrites.delete(p)
+      const changed = (await scan($, false)).filter(c => !ownWrites.has(c.path)).slice(-3)
+      if (changed.length) await showOnce($).catch(() => undefined)
+      for (const c of changed) {
+        let lines = [c.created ? '+ nouveau fichier' : '~ modifié en arrière-plan']
+        if (c.created) { const txt = await $.fs.read(`${cwd}/${c.path}`).catch(() => '') as string; if (typeof txt === 'string' && txt.length < 200000) lines = firstLines(txt, 3).map(l => '+ ' + l.slice(0, 60)) }
+        const ev: Ev = { tool: c.created ? 'Write' : 'Edit', toolName: 'Arrière-plan', path: c.path, label: 'Arrière-plan · ' + (c.path.split('/').pop() || c.path), lines }
+        await pushLive($, c.created ? 'Write' : 'Edit', ev, {}).catch(() => undefined)
+        enqueue($, ev)
+      }
+    } catch { /* on réessaie au prochain passage */ }
+    busy = false
+  }
+  $.clock.every(2500, () => { void tick() })
+}
+
 function enqueue($: EngineInterface, ev: Ev) {
   queue.push(ev)
   // Claude va plus vite que l'araignée : on garde les actions les plus récentes
@@ -262,6 +313,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'araignee', description: "Ouvre le panneau de l'araignée qui suit le travail de Claude" })
     await $.command.register({ name: 'araignee-plein-ecran', description: "Ouvre la toile de l'araignée en grand, dans le navigateur (version haute qualité)" })
+    // la sentinelle démarre avec la discussion : même si Claude attend, les tâches de fond se voient
+    $.clock.after(4000, () => { void ensureWorld($).then(() => startWatch($)).catch(() => undefined) })
     await $.command.register({ name: 'araignee-grand', description: "Agrandit l'araignée sur toute la zone de la discussion (Échap pour revenir)" })
     await $.command.register({ name: 'araignee-marges', description: "Règle le calage de la grande toile : /araignee-marges <gauche> <haut> (en pixels, 300 44 par défaut)" })
     return next(e)
@@ -317,12 +370,17 @@ export const register: Register = on => {
     const clip = await read($, clipAtom)
     if (placed || !clip.svg) return next(e)
     const st = await read($, statusAtom)
-    const { Box, Text, Svg } = els
+    const grand = await read($, grandAtom)
+    const { Box, Text, Svg, Button } = els
     return (
       <Box flexDirection="column">
         <Box flexDirection="row" gap={1}>
           <Text color={(TOOL_COLOR as any)[st.tool] || '#c89bff'} bold>{st.tool}</Text>
           <Text dimColor>{st.path}</Text>
+          {Button && <Button key="panneau" onPress={() => { void $.ui.open({ id: PANE, title: 'Araignée' }) }}>Panneau à droite</Button>}
+          {Button && (grand
+            ? <Button key="reduire" onPress={() => { void closeGrand($) }}>Réduire</Button>
+            : <Button key="agrandir" variant="primary" onPress={() => { void openGrand($).then(t => $.ui.toast(t)) }}>Agrandir</Button>)}
         </Box>
         <Svg source={clip.svg} alt={`L'araignée : ${st.tool} ${st.path}`} width={480} height={304} isInteractive />
       </Box>
@@ -333,13 +391,23 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     const toolName = String(e.tool)
     if (!TOOLS[toolName]) return next(e)
+    const agent = (e as any).agentId ? 'Agent · ' : ''
+    const play = async (ran: any) => {
+      try {
+        await ensureWorld($)
+        await showOnce($).catch(() => undefined)
+        void startWatch($).catch(() => undefined)
+        const ev = eventFor(toolName, e, ran)
+        if (!ev) return
+        if (agent) { ev.toolName = 'Agent ' + ev.toolName; ev.label = agent + ev.label }
+        if (ev.path && (ev.tool === 'Edit' || ev.tool === 'Write')) ownWrites.set(ev.path, Date.now())
+        track(toolName, e, ev); await pushLive($, toolName, ev, e).catch(() => undefined); enqueue($, ev)
+      } catch { /* l'araignée ne doit jamais gêner Claude */ }
+    }
+    // une commande peut durer longtemps : l'araignée part au terminal dès qu'elle commence
+    if (TOOLS[toolName] === 'Bash') { await play(null); return next(e) }
     const ran = await next(e)
-    try {
-      await ensureWorld($)
-      await showOnce($).catch(() => undefined)
-      const ev = eventFor(toolName, e, ran)
-      if (ev) { track(toolName, e, ev); await pushLive($, toolName, ev, e).catch(() => undefined); enqueue($, ev) }
-    } catch { /* l'araignée ne doit jamais gêner Claude */ }
+    await play(ran)
     return ran
   }).catch(($, e, next) => next(e))
 

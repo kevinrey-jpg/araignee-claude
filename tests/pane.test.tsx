@@ -26,6 +26,7 @@ test("une lecture de Claude fait jouer un clip SVG de l'araignée", async ($, on
   on('session.cwd', () => ({ value: '/proj' }))
   on('fs.read', () => ({ value: JSON.stringify(GRAPH) }))
   on('store.get', () => ({ value: undefined }))
+  on('fs.list', () => ({ value: [] }))
   on('clock.after', () => ({ value: undefined }))
   on('tool.call', () => ({ result: {}, text: '     1\texport const a = 1\n     2\texport const b = 2' }))
 
@@ -52,6 +53,7 @@ test('à la fin du tour, le panneau affiche le bilan de ce que Claude a fait', a
   on('session.cwd', () => ({ value: '/proj' }))
   on('fs.read', () => ({ value: JSON.stringify(GRAPH) }))
   on('store.get', () => ({ value: undefined }))
+  on('fs.list', () => ({ value: [] }))
   on('clock.after', () => ({ value: undefined }))
   on('tool.call', () => ({ result: {}, text: 'ok' }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }) as any)
@@ -71,5 +73,30 @@ test('à la fin du tour, le panneau affiche le bilan de ce que Claude a fait', a
   expect((await ui.find({ type: 'Text', text: /b\.ts \+3 −2/ }))).toBeDefined()
   expect((await ui.find({ type: 'Text', text: /Commandes · 1/ }))).toBeDefined()
   expect((await ui.find({ type: 'Button', text: /Agrandir/ }))).toBeDefined()
+  await ui.unmount()
+})
+
+test("une tâche en arrière-plan qui modifie un fichier fait bouger l'araignée", async ($, on) => {
+  let mtime = 1000
+  on('command.register', () => ({ value: { command: 'araignee' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [] }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/proj' }))
+  on('fs.read', () => ({ value: JSON.stringify(GRAPH) }))
+  on('fs.list', (_, e: any) => ({ value: e.path === '/proj' ? [{ name: 'src', kind: 'dir', size: 0, mtimeMs: 1, isLink: false }] : [{ name: 'b.ts', kind: 'file', size: 10, mtimeMs: mtime, isLink: false }] }) as any)
+  on('store.get', () => ({ value: undefined }))
+  on('clock.after', () => ({ value: undefined }))
+  // chaque période de la sentinelle : le fichier a changé entre-temps
+  let periods = 0
+  on('clock.every', () => { periods += 1; if (periods > 3) return { deny: 'fin du test' } as any; mtime += 1000; return { value: undefined } })
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.tool.call({ tool: 'Read', file_path: '/proj/src/a.ts' })
+  for (let i = 0; i < 200; i++) await Promise.resolve()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /Arrière-plan · b\.ts/ }))).toBeDefined()
   await ui.unmount()
 })

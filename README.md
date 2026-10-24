@@ -38,6 +38,10 @@ Le bouton **Agrandir** du panneau (ou `/araignee-grand`) ouvre la toile par-dess
 
 Si le calage n'est pas parfait, règle les marges en pixels : `/araignee-marges 300 44` (gauche, haut).
 
+### Les tâches en arrière-plan
+
+L'araignée ne suit pas que Claude : les actions des sous-agents s'affichent aussi (« Agent · … »), et une sentinelle guette le projet toutes les 2,5 secondes. Quand une commande, un script ou un agent lancé en arrière-plan crée ou modifie un fichier, l'araignée va dessus (« Arrière-plan · … »), même si Claude est en train d'attendre.
+
 ### Le bilan de fin de tour
 
 Quand Claude a fini de répondre, l'araignée affiche un bilan : fichiers modifiés (lignes ajoutées et retirées), fichiers lus, recherches, commandes, durée, et la première phrase de la réponse de Claude.
