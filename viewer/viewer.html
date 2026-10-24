@@ -118,6 +118,22 @@ button[aria-pressed="true"] { border-color: var(--violet); background: rgba(180,
 .older summary { cursor: pointer; color: var(--muted); font-size: 14px; padding: 6px 0; }
 .older .grid { margin-top: 12px; }
 .note { color: var(--muted); font-size: 13px; margin: 0; max-width: 72ch; line-height: 1.5; }
+
+/* mode « grand » : la toile seule, calée sur la zone de discussion de Claude */
+html.grand body { padding: 0; overflow: hidden; }
+html.grand .page > header, html.grand .gallery, html.grand .legend, html.grand .side, html.grand .controls, html.grand #b-min { display: none; }
+html.grand .window.max { inset: 0; border: 0; border-radius: 0; box-shadow: none; }
+/* le bilan de fin de tour */
+.recap { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -46%); width: min(560px, calc(100% - 32px)); max-height: calc(100% - 32px); overflow: auto; background: rgba(9,6,18,.9); border: 1px solid rgba(255,255,255,.22); border-radius: 14px; padding: 18px 20px; display: grid; gap: 12px; box-shadow: 0 0 40px rgba(180,108,255,.25), 0 0 0 1px rgba(255,255,255,.04); opacity: 0; pointer-events: none; transition: opacity .5s, transform .5s; backdrop-filter: blur(6px); }
+.recap.on { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%); }
+.recap h2 { font-size: 18px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; text-shadow: 0 0 14px rgba(255,255,255,.35); }
+.recap h2 small { font-family: var(--mono); font-size: 12px; color: var(--muted); font-weight: 400; }
+.recap .said { margin: 0; font-size: 15px; line-height: 1.5; color: var(--fg); }
+.recap .rows { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; font-family: var(--mono); font-size: 12px; }
+.recap .rows li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: baseline; }
+.recap .rows .v { color: var(--fg); overflow-wrap: anywhere; line-height: 1.5; }
+.recap .rows .add { color: #9dff8a; } .recap .rows .del { color: #ff6b8a; }
+.recap .hint { margin: 0; font-size: 11px; color: var(--muted); font-family: var(--mono); }
 </style>
 
 <div class="page">
@@ -137,7 +153,7 @@ button[aria-pressed="true"] { border-color: var(--violet); background: rgba(180,
           <button id="b-max" title="Agrandir le panneau" aria-pressed="false">Agrandir</button>
         </span>
       </div>
-      <div class="viewport" id="vp"><canvas id="stage" aria-label="Toile des fichiers du projet avec l'araignée"></canvas></div>
+      <div class="viewport" id="vp"><canvas id="stage" aria-label="Toile des fichiers du projet avec l'araignée"></canvas><section class="recap" id="recap" aria-live="polite"></section></div>
       <div class="controls">
         <button id="b-play" aria-pressed="false">Pause</button>
         <button id="b-cam" aria-pressed="true" title="La caméra suit l'araignée de près">Caméra : suivre</button>
@@ -1522,7 +1538,7 @@ document.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click',
 const bMin = document.getElementById('b-min'), bMax = document.getElementById('b-max');
 bMin.addEventListener('click', () => { const on = !win.classList.contains('min'); win.classList.toggle('min', on); win.classList.remove('max'); bMin.setAttribute('aria-pressed', String(on)); bMax.setAttribute('aria-pressed', 'false'); bMin.textContent = on ? 'Ouvrir' : 'Réduire'; bMax.textContent = 'Agrandir'; });
 bMax.addEventListener('click', () => { const on = !win.classList.contains('max'); win.classList.toggle('max', on); win.classList.remove('min'); bMax.setAttribute('aria-pressed', String(on)); bMin.setAttribute('aria-pressed', 'false'); bMax.textContent = on ? 'Rétablir' : 'Agrandir'; bMin.textContent = 'Réduire'; });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && win.classList.contains('max')) bMax.click(); });
+document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (/[?&]grand\b/.test(location.search)) window.close(); else if (win.classList.contains('max')) bMax.click(); });
 let drag = null;
 cv.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, ux: cam.ux, uy: cam.uy, moved: false }; try { cv.setPointerCapture(e.pointerId); } catch (err) {} cv.style.cursor = 'grabbing'; });
 cv.addEventListener('pointermove', e => { if (!drag) return; if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 4) drag.moved = true; const s = vs * cam.z; cam.ux = drag.ux - (e.clientX - drag.x) / s; cam.uy = drag.uy - (e.clientY - drag.y) / s; cam.user = 4; });
@@ -1598,6 +1614,33 @@ function miniLoop(now) {
 }
 
 
+
+/* ---------- le bilan de fin de tour ---------- */
+const GRAND = /[?&]grand\b/.test(location.search);
+const recapEl = document.getElementById('recap');
+function hideRecap() { recapEl.classList.remove('on'); }
+function showRecap(r) {
+  recapEl.textContent = '';
+  const h = el('h2', '', r.title || 'Bilan'); h.append(el('small', '', r.duration || '')); recapEl.append(h);
+  if (r.said) recapEl.append(el('p', 'said', r.said));
+  const ul = el('ul', 'rows');
+  (r.rows || []).forEach(row => {
+    const li = el('li'), ch = el('span', 'chip', row.label); ch.style.color = TOOL_COLOR[row.tool] || '#ffffff';
+    const v = el('span', 'v');
+    (row.items || []).forEach((it, k) => {
+      if (k) v.append(document.createTextNode(' · '));
+      v.append(document.createTextNode(it.name));
+      if (it.add) v.append(el('span', 'add', ' +' + it.add));
+      if (it.del) v.append(el('span', 'del', ' −' + it.del));
+    });
+    if (row.more) v.append(document.createTextNode(' … et ' + row.more + ' autres'));
+    li.append(ch, v); ul.append(li);
+  });
+  recapEl.append(ul, el('p', 'hint', GRAND ? 'Clique pour fermer le bilan · Échap pour revenir à la discussion' : 'Clique pour fermer le bilan'));
+  recapEl.classList.add('on');
+}
+recapEl.addEventListener('click', hideRecap);
+
 /* ---------- en direct : le plugin écrit live-<session>.js, la page le relit ---------- */
 const SID = window.ARAIGNEE_SID || '';
 let liveSeq = -1, lastBeat = 0;
@@ -1614,8 +1657,18 @@ function addLiveNode(d) {
 }
 window.__araigneeLive = data => {
   lastBeat = Date.now();
-  if (liveSeq < 0) { liveSeq = data.seq; return; }   // à l'ouverture, on ne rejoue pas l'historique
-  (data.events || []).forEach(ev => { if (ev.seq > liveSeq) { liveSeq = ev.seq; (ev.nodes || []).forEach(addLiveNode); sel.queue.push(ev); } });
+  if (liveSeq < 0) {   // à l'ouverture, on ne rejoue pas l'historique, sauf un bilan encore frais
+    liveSeq = data.seq; const last = (data.events || []).slice(-1)[0];
+    if (last && last.summary && Date.now() - (last.summary.at || 0) < 10 * 60e3) showRecap(last.summary);
+    return;
+  }
+  (data.events || []).forEach(ev => {
+    if (ev.seq <= liveSeq) return;
+    liveSeq = ev.seq;
+    if (ev.close) { if (GRAND) window.close(); return; }
+    if (ev.summary) { showRecap(ev.summary); return; }
+    hideRecap(); (ev.nodes || []).forEach(addLiveNode); sel.queue.push(ev);
+  });
   while (sel.queue.length > 5) sel.queue.shift();
 };
 function poll() { if (!SID) return; const sc = document.createElement('script'); sc.src = 'live-' + SID + '.js?t=' + Date.now(); sc.onload = sc.onerror = () => sc.remove(); document.head.append(sc); }
@@ -1623,6 +1676,11 @@ setInterval(poll, 700); poll();
 
 new ResizeObserver(fit).observe(vp);
 win.classList.add('max'); bMax.setAttribute('aria-pressed', 'true'); bMax.textContent = 'Rétablir'; fit(); select(AGENTS[0]); document.getElementById('proj-name').textContent = GD.name; document.title = 'Araignée · ' + GD.name;
+if (GRAND) {
+  document.documentElement.classList.add('grand'); document.title += ' · grand-' + SID;
+  bMax.textContent = 'Réduire'; bMax.title = 'Revenir à la discussion (Échap)';
+  bMax.addEventListener('click', e => { e.stopImmediatePropagation(); window.close(); }, { capture: true });
+}
 if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) setPaused(true);
 AGENTS.forEach((ag, k) => after(.5 + k * .9, () => nextEvent(ag)));
 requestAnimationFrame(frame);

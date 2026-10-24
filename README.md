@@ -32,4 +32,14 @@ Dans l'application de bureau, où `/plugin` ne s'exécute pas : clique sur **+**
 
 Rien à faire : à la première action de Claude dans une discussion, l'araignée s'affiche. Dans le panneau de Claude quand l'application en propose un, sinon dans une page de ton navigateur (fichiers dans `~/.claude/araignee/`). La commande `/araignee` la rouvre à tout moment, et `/araignee-plein-ecran` ouvre la toile en grand dans le navigateur, dans sa version haute qualité (F11 pour le plein écran).
 
+### En grand sur la discussion (Windows)
+
+Le bouton **Agrandir** du panneau (ou `/araignee-grand`) ouvre la toile par-dessus toute la zone de discussion de Claude, à droite de la barre des discussions. Elle suit la fenêtre de Claude quand tu la déplaces, et disparaît quand tu passes à une autre application. **Échap** ou le bouton **Réduire** ramènent la discussion.
+
+Si le calage n'est pas parfait, règle les marges en pixels : `/araignee-marges 300 44` (gauche, haut).
+
+### Le bilan de fin de tour
+
+Quand Claude a fini de répondre, l'araignée affiche un bilan : fichiers modifiés (lignes ajoutées et retirées), fichiers lus, recherches, commandes, durée, et la première phrase de la réponse de Claude.
+
 La discussion doit tourner sur ton ordinateur : dans une session Claude Code en cloud, le plugin tourne sur le serveur et la page ne peut pas s'ouvrir chez toi.

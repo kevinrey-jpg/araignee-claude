@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface } from 'claude-code'
 
-import type { Clip, Status } from '../types'
+import type { Clip, Status, Recap } from '../types'
 import { createWorld, graphFromGraphify, graphFromTree, idleClip, makeClip, nodeForPath, setSkin, SKINS, TOOL_COLOR } from './engine'
 
 const PANE = 'araignee'
@@ -9,6 +9,8 @@ const PANE = 'araignee'
 const clipAtom = atom({ plugin: 'araignee', key: 'clip' } as const, { svg: '', seq: 0 }, { shape: 'clip-1' })
 const statusAtom = atom({ plugin: 'araignee', key: 'status' } as const, { tool: 'prête', path: '', source: '' }, { shape: 'status-1' })
 const skinAtom = atom({ plugin: 'araignee', key: 'skin' } as const, 'fusion')
+const recapAtom = atom({ plugin: 'araignee', key: 'recap' } as const, { title: '', duration: '', said: '', rows: [], at: 0 } as Recap, { shape: 'recap-1' })
+const grandAtom = atom({ plugin: 'araignee', key: 'grand' } as const, false)
 
 const TOOLS: Record<string, string> = { Read: 'Read', Edit: 'Edit', MultiEdit: 'Edit', NotebookEdit: 'Edit', Write: 'Write', Grep: 'Grep', Glob: 'Grep', Bash: 'Bash', WebSearch: 'Web', WebFetch: 'Web' }
 const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', '.venv', 'venv', '__pycache__', '.cache', 'coverage', 'target', '.idea', '.vscode', 'graphify-out'])
@@ -27,6 +29,11 @@ let sid = ''
 let liveSeq = 0
 let liveEvents: any[] = []
 let shown = false
+// ce que Claude a fait pendant le tour en cours, pour le bilan de fin
+type Turn = { reads: string[]; edits: Map<string, { add: number; del: number; created: boolean }>; greps: string[]; bash: string[]; web: string[] }
+const newTurn = (): Turn => ({ reads: [], edits: new Map(), greps: [], bash: [], web: [] })
+let turn = newTurn()
+let grandRun: { return?: () => unknown } | null = null
 
 const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
 function rel(p: unknown): string | undefined {
@@ -179,16 +186,118 @@ function eventFor(toolName: string, e: any, ran: any): Ev | null {
   return null
 }
 
+const countLines = (v: unknown) => { const t = String(v ?? ''); return t ? t.split('\n').length : 0 }
+function track(toolName: string, e: any, ev: Ev) {
+  const kind = TOOLS[toolName]
+  if (kind === 'Read' && ev.path && !turn.reads.includes(ev.path)) turn.reads.push(ev.path)
+  if ((kind === 'Edit' || kind === 'Write') && ev.path) {
+    const cur = turn.edits.get(ev.path) || { add: 0, del: 0, created: false }
+    if (kind === 'Write') { cur.add += countLines(e.content); cur.created = cur.created || !turn.reads.includes(ev.path) }
+    else for (const ed of Array.isArray(e.edits) ? e.edits : [e]) { cur.del += countLines(ed?.old_string); cur.add += countLines(ed?.new_string ?? ed?.new_source) }
+    turn.edits.set(ev.path, cur)
+  }
+  if (kind === 'Grep') turn.greps.push(String(e.pattern ?? '').slice(0, 40))
+  if (kind === 'Bash') turn.bash.push((String(e.command ?? '').split('\n')[0] ?? '').slice(0, 50))
+  if (kind === 'Web') turn.web.push(String(e.query ?? e.url ?? '').slice(0, 50))
+}
+const fmtDuration = (ms: number) => { const s = Math.round(ms / 1000); return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s` }
+// la première ou les deux premières phrases de la réponse de Claude, sans la mise en forme
+function gist(answer: string): string {
+  const flat = answer.replace(/```[\s\S]*?```/g, ' ').split('\n').map(l => l.replace(/^\s*(#+|[-*>]|\d+\.)\s+/, '').replace(/[*_`]/g, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').trim()).filter(Boolean).join(' ')
+  const parts = flat.match(/[^.!?]+[.!?]+/g) || [flat]
+  let out = ''
+  for (const p of parts) { if ((out + p).length > 260 && out) break; out += p; if (out.length > 120) break }
+  return out.trim().slice(0, 280)
+}
+function recapOf(answer: string, ms: number, aborted: boolean): Recap | null {
+  const t = turn
+  if (!t.reads.length && !t.edits.size && !t.greps.length && !t.bash.length && !t.web.length) return null
+  const base = (p: string) => p.split('/').pop() || p
+  const rows: Recap['rows'] = []
+  const list = (arr: { name: string; add?: number; del?: number }[], max: number) => ({ items: arr.slice(0, max), more: Math.max(0, arr.length - max) })
+  if (t.edits.size) rows.push({ tool: 'Edit', label: `Modifié · ${t.edits.size}`, ...list([...t.edits].map(([p, v]) => ({ name: base(p) + (v.created ? ' (nouveau)' : ''), add: v.add, del: v.del })), 6) })
+  if (t.reads.length) rows.push({ tool: 'Read', label: `Lu · ${t.reads.length}`, ...list(t.reads.map(p => ({ name: base(p) })), 8) })
+  if (t.greps.length) rows.push({ tool: 'Grep', label: `Cherché · ${t.greps.length}`, ...list(t.greps.map(g => ({ name: `« ${g} »` })), 4) })
+  if (t.bash.length) rows.push({ tool: 'Bash', label: `Commandes · ${t.bash.length}`, ...list(t.bash.map(c => ({ name: c })), 4) })
+  if (t.web.length) rows.push({ tool: 'WebSearch', label: `Web · ${t.web.length}`, ...list(t.web.map(q => ({ name: q })), 3) })
+  return { title: aborted ? 'Bilan · interrompu' : 'Bilan du tour', duration: fmtDuration(ms), said: gist(answer), rows, at: Date.now() }
+}
+async function pushRaw($: EngineInterface, data: any) {
+  if (!viewerDir) return
+  liveSeq += 1
+  liveEvents.push({ seq: liveSeq, ...data })
+  if (liveEvents.length > 30) liveEvents = liveEvents.slice(-30)
+  await writeLive($)
+}
+
+// la toile en grand, calée sur la zone de discussion de Claude (Windows : Edge en mode application)
+async function openGrand($: EngineInterface): Promise<string> {
+  await viewerSetup($)
+  if ((await $.env.get('OS')) !== 'Windows_NT') { await openViewer($); return 'La grande toile se cale sur Claude seulement sous Windows : elle s\'ouvre dans ton navigateur.' }
+  const m = await $.store.get('marges')
+  const [left, top] = Array.isArray(m) ? m : [300, 44]
+  const file = `${viewerDir}/araignee-${sid}.html`.replace(/\//g, '\\')
+  const url = 'file:///' + file.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/^([A-Za-z])%3A/, '$1:') + '?grand=1'
+  const script = `${$.plugin.root}/scripts/grand.ps1`.replace(/\//g, '\\')
+  const argv = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script, '-Url', url, '-Title', 'grand-' + sid, '-Left', String(left), '-Top', String(top)]
+  stopGrand()
+  const run = $.process.spawn({ argv })
+  grandRun = run as any
+  await update($, grandAtom, () => true)
+  void (async () => {
+    try { for await (const piece of run) if (/introuvable/.test(piece.text)) $.ui.toast(`Araignée : ${piece.text.trim()}`) } catch (err) { $.ui.log(`araignee grand : ${String(err)}`) }
+    if (grandRun === (run as any)) grandRun = null
+    await update($, grandAtom, () => false)
+  })()
+  return 'La toile s\'ouvre en grand sur la discussion. Échap ou « Réduire » pour revenir.'
+}
+function stopGrand() { const r = grandRun; grandRun = null; try { void r?.return?.() } catch { /* déjà terminé */ } }
+async function closeGrand($: EngineInterface) {
+  await pushRaw($, { close: true })
+  $.clock.after(1500, () => stopGrand())
+  await update($, grandAtom, () => false)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'araignee', description: "Ouvre le panneau de l'araignée qui suit le travail de Claude" })
     await $.command.register({ name: 'araignee-plein-ecran', description: "Ouvre la toile de l'araignée en grand, dans le navigateur (version haute qualité)" })
+    await $.command.register({ name: 'araignee-grand', description: "Agrandit l'araignée sur toute la zone de la discussion (Échap pour revenir)" })
+    await $.command.register({ name: 'araignee-marges', description: "Règle le calage de la grande toile : /araignee-marges <gauche> <haut> (en pixels, 300 44 par défaut)" })
     return next(e)
   })
 
   on('command.run', { command: 'araignee-plein-ecran' }, async $ => {
     const file = await openViewer($)
     return { text: `La toile en plein écran s'ouvre dans ton navigateur (touche F11 pour le vrai plein écran) : ${file}` }
+  })
+
+  on('command.run', { command: 'araignee-grand' }, async $ => ({ text: await openGrand($) }))
+
+  on('command.run', { command: 'araignee-marges' }, async ($, e) => {
+    const n = String(e.args || '').match(/-?\d+/g)?.map(Number) || []
+    if (n.length < 2) { const m = await $.store.get('marges'); return { text: `Marges actuelles : ${Array.isArray(m) ? m.join(' ') : '300 44'} (gauche haut, en pixels). Exemple : /araignee-marges 320 50` } }
+    await $.store.set('marges', [n[0], n[1]])
+    return { text: `C'est noté : ${n[0]} px à gauche, ${n[1]} px en haut. Rouvre la grande toile pour voir le résultat.` }
+  })
+
+  // le tour commence : nouveau bilan à zéro
+  on('turn.start', async ($, e, next) => {
+    if (!(e as any).agentId) { turn = newTurn(); await update($, recapAtom, old => ({ ...old, at: 0 })).catch(() => undefined) }
+    return next(e)
+  })
+
+  // le tour se termine : l'araignée affiche le bilan de ce que Claude a fait
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    if (!e.agentId) {
+      try {
+        const r = recapOf(e.answer || '', e.durationMs || 0, !!e.isAborted)
+        turn = newTurn()
+        if (r) { await update($, recapAtom, () => r); await pushRaw($, { summary: r }) }
+      } catch { /* le bilan ne doit jamais gêner Claude */ }
+    }
+    return done
   })
 
   on('command.run', { command: 'araignee' }, async $ => {
@@ -229,7 +338,7 @@ export const register: Register = on => {
       await ensureWorld($)
       await showOnce($).catch(() => undefined)
       const ev = eventFor(toolName, e, ran)
-      if (ev) { await pushLive($, toolName, ev, e).catch(() => undefined); enqueue($, ev) }
+      if (ev) { track(toolName, e, ev); await pushLive($, toolName, ev, e).catch(() => undefined); enqueue($, ev) }
     } catch { /* l'araignée ne doit jamais gêner Claude */ }
     return ran
   }).catch(($, e, next) => next(e))
@@ -240,6 +349,8 @@ export const register: Register = on => {
     const clip = await read($, clipAtom)
     const st = await read($, statusAtom)
     const skin = await read($, skinAtom)
+    const recap = await read($, recapAtom)
+    const grand = await read($, grandAtom)
     const props: any = e.props
     if (e.surface === 'terminal' || !els.Svg) return (
       <Box flexDirection="column">
@@ -248,23 +359,40 @@ export const register: Register = on => {
       </Box>
     )
     // la toile remplit tout le panneau : on prend sa forme (une cellule fait ~2 fois plus haut que large)
-    const cols = Math.max(20, props.bodyColumns || 60), rows = Math.max(8, (props.scroll?.bodyRows || e.viewport?.rows || 30) - 4)
+    const showRecap = recap.at > 0
+    const recapRows = showRecap ? 3 + recap.rows.length * 2 : 0
+    const cols = Math.max(20, props.bodyColumns || 60), rows = Math.max(8, (props.scroll?.bodyRows || e.viewport?.rows || 30) - 5 - recapRows)
     const asp = Math.min(3, Math.max(.3, rows * 2.1 / cols))
     if (world && Math.abs((world.aspect || .63) - asp) / asp > .12) {
       world.aspect = asp
       if (!playing) $.clock.after(0, () => { if (!playing && world) void showClip($, idleClip(world)) })
     }
     const svg = clip.svg.replace(/width="1000" height="\d+"/, `width="1000" height="${Math.round(1000 * asp)}"`)
-    const { Svg, Select } = els
+    const { Svg, Select, Button } = els
     return (
       <Box flexDirection="column">
         <Box flexDirection="row" gap={1}>
           <Text color={(TOOL_COLOR as any)[st.tool] || '#c89bff'} bold>{st.tool}</Text>
           <Text dimColor>{st.path || 'en attente du travail de Claude'}</Text>
+          {Button && (grand
+            ? <Button key="reduire" onPress={() => { void closeGrand($) }}>Réduire</Button>
+            : <Button key="agrandir" variant="primary" onPress={() => { void openGrand($).then(t => $.ui.toast(t)) }}>Agrandir</Button>)}
         </Box>
         {clip.svg
           ? <Svg source={svg} alt={`L'araignée : ${st.tool} ${st.path}`} isInteractive />
           : <Text dimColor>La toile se prépare au premier geste de Claude.</Text>}
+        {showRecap && (
+          <Box flexDirection="column" borderStyle="round" paddingX={1}>
+            <Text bold>{recap.title} <Text dimColor>· {recap.duration}</Text></Text>
+            {recap.said ? <Text>{recap.said}</Text> : null}
+            {recap.rows.map(row => (
+              <Text key={row.label}>
+                <Text color={(TOOL_COLOR as any)[row.tool] || '#ffffff'} bold>{row.label}</Text>
+                <Text dimColor>  {row.items.map(it => it.name + (it.add ? ` +${it.add}` : '') + (it.del ? ` −${it.del}` : '')).join(' · ')}{row.more ? ` … et ${row.more} autres` : ''}</Text>
+              </Text>
+            ))}
+          </Box>
+        )}
         {Select && (
           <Select
             key="skin"
