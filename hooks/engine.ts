@@ -17,7 +17,28 @@ const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(
 function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 } }
 function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) } return h >>> 0 }
 
-export const TOOL_COLOR = { Read: '#7df9ff', Edit: '#ff6be6', Write: '#ff6be6', MultiEdit: '#ff6be6', NotebookEdit: '#ff6be6', Grep: '#ffd36b', Glob: '#ffd36b', Bash: '#9dff8a', WebSearch: '#a8b4ff', WebFetch: '#a8b4ff' }
+/* ---------------- les fichiers : langage, taille, mémoire ---------------- */
+const LANG = [[/\.(py|pyw|ipynb)$/i, '#5ec8ff'], [/\.(ts|tsx)$/i, '#4d9dff'], [/\.(js|jsx|mjs|cjs)$/i, '#ffe066'], [/\.(json|jsonc)$/i, '#ffa94d'], [/\.(md|mdx|txt|rst)$/i, '#eae6ff'], [/\.(html?|vue|svelte)$/i, '#ff7a59'], [/\.(css|scss|sass|less)$/i, '#c77dff'], [/\.lua$/i, '#8c9bff'], [/\.(sh|bash|ps1|bat|cmd)$/i, '#9dff8a'], [/\.(ya?ml|toml|ini|cfg|env)$/i, '#ff8ac8'], [/\.(png|jpe?g|gif|svg|webp|ico|mp3|wav|mp4|ttf|otf)$/i, '#ff6be6'], [/\.rs$/i, '#ff8a5c'], [/\.go$/i, '#5ef0c8'], [/\.(java|kt|cs)$/i, '#ffb347'], [/\.(c|cc|cpp|h|hpp)$/i, '#a8b4ff'], [/\.(sql|db|csv|tsv)$/i, '#7dffe0']]
+export function langColor(p) { for (const [re, c] of LANG) if (re.test(p || '')) return c; return '#c9c2e6' }
+const DAY = 864e5
+// chaleur d'un fichier : combien Claude l'a touché, et depuis quand
+export function heatOf(m, now) { if (!m) return 0; const score = (m.e || 0) + (m.r || 0) * .25; if (score <= 0) return 0; const rec = Math.exp(-Math.max(0, now - (m.t || now)) / (5 * DAY)); return (1 - Math.exp(-score / 3)) * (.35 + .65 * rec) }
+export function applyMemory(W, mem, sizes, now = Date.now()) {
+  const g = W.g
+  g.nodes.forEach(n => {
+    if (n.kind !== 'file') return
+    const m = n.path ? mem[n.path] : null, sz = n.path && sizes ? sizes[n.path] : undefined
+    n.edits = m?.e || 0; n.reads = m?.r || 0; n.touched = m?.t || 0
+    if (m?.l) n.lines = m.l; else if (sz !== undefined) n.lines = Math.max(1, Math.round(sz / 38))
+    n.heat = heatOf(m, now); n.lang = langColor(n.path || n.label)
+  })
+  g.nodes.forEach(n => { if (n.kind === 'file') return; let h = 0; for (const v of g.adj[n.id]) { const o = g.byId[v]; if (o.kind === 'file' && (o.heat || 0) > h) h = o.heat } n.heat = h * .7 })
+  g.edges.forEach(e => { e.h = Math.max(g.byId[e.a].heat || 0, g.byId[e.b].heat || 0) })
+}
+// la taille du cocon suit le nombre de lignes du fichier
+export const cocoonScale = n => clamp(.75 + Math.log10(1 + (n.lines || 20)) * .32, .75, 1.85)
+
+export const TOOL_COLOR = { Read: '#7df9ff', Edit: '#ff6be6', Write: '#ff6be6', MultiEdit: '#ff6be6', NotebookEdit: '#ff6be6', Grep: '#ffd36b', Glob: '#ffd36b', Bash: '#9dff8a', WebSearch: '#a8b4ff', WebFetch: '#a8b4ff', Web: '#a8b4ff', Mood: '#9dff8a', Delete: '#ff6b8a', Repair: '#ffffff', Leave: '#c89bff' }
 const PALETTE = ['#ff6b8a', '#ffb347', '#c77dff', '#7df9ff', '#9dff8a', '#ff6be6', '#ffd36b', '#a8b4ff', '#e8e4ff', '#5ef0c8', '#ff8a5c', '#8fb3ff']
 
 /* ---------------- la toile ---------------- */
@@ -69,6 +90,7 @@ function finishGraph(nodes, edges, comms) {
   layout(g)
   edges.forEach((e, i) => { g.edgeIdx[e.a + '|' + e.b] = i; g.edgeIdx[e.b + '|' + e.a] = i })
   buildGeometry(g)
+  buildOrbs(g)
   return g
 }
 function connectIslands(g) {
@@ -108,6 +130,25 @@ function buildGeometry(g) {
     for (let i = 1; i < e.pts.length; i++) addSeg(g, e.pts[i - 1], e.pts[i], e.kind === 'tree' ? .75 : .85)
   })
 }
+// chaque dossier (ou communauté) devient une petite toile circulaire : ses rayons vont vers
+// ses fichiers, et des spirales les relient comme les fils d'une vraie toile orbiculaire
+function buildOrbs(g) {
+  g.orbs = []
+  const make = (cx, cy, kids) => {
+    if (kids.length < 3) return
+    const ds = kids.map(k => ({ k, a: Math.atan2(k.y - cy, k.x - cx), d: Math.hypot(k.x - cx, k.y - cy) })).filter(o => o.d > 8).sort((p, q) => p.a - q.a)
+    if (ds.length < 3) return
+    const R = ds.reduce((s, o) => s + o.d, 0) / ds.length; if (R < 18 || R > 300) return
+    // rayon de la toile dans chaque direction : interpolé entre les fichiers voisins
+    const radAt = a => { let i = ds.findIndex(o => o.a > a); if (i < 0) i = 0; const p = ds[(i - 1 + ds.length) % ds.length], q = ds[i]; let span = q.a - p.a; if (span <= 0) span += Math.PI * 2; let u = a - p.a; if (u < 0) u += Math.PI * 2; const t = clamp(u / span, 0, 1); return Math.min(lerp(p.d, q.d, t), R * 1.2) * (1 - .12 * Math.sin(t * Math.PI)) }
+    const N = Math.max(14, ds.length * 2), spirals = []
+    for (const f of [.3, .52, .74, .94]) { const pts = []; for (let k = 0; k <= N; k++) { const a = -Math.PI + k / N * Math.PI * 2, r = radAt(a) * f; pts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r }) } spirals.push(pts) }
+    spirals.forEach(pts => { for (let i = 1; i < pts.length; i++) addSeg(g, pts[i - 1], pts[i], .95) })
+    g.orbs.push({ x: cx, y: cy, r: R, spirals })
+  }
+  g.nodes.forEach(n => { if (n.kind === 'dir') make(n.x, n.y, g.adj[n.id].map(id => g.byId[id]).filter(k => k.kind === 'file' || k.kind === 'dir')) })
+  if (!g.nodes.some(n => n.kind === 'dir')) g.comms.forEach((c, i) => make(c.cx, c.cy, g.nodes.filter(n => n.comm === i && n.kind === 'file')))
+}
 function addSeg(g, a, b, w) { const s = [a.x, a.y, b.x, b.y, w]; for (let cx = Math.floor(Math.min(a.x, b.x) / SEGC); cx <= Math.floor(Math.max(a.x, b.x) / SEGC); cx++) for (let cy = Math.floor(Math.min(a.y, b.y) / SEGC); cy <= Math.floor(Math.max(a.y, b.y) / SEGC); cy++) { const k = cx + ',' + cy; let arr = g.grid.get(k); if (!arr) g.grid.set(k, arr = []); arr.push(s) } }
 function snapOn(g, p, r) {
   let best = null, bs = r
@@ -120,7 +161,18 @@ function snapOn(g, p, r) {
 function bfs(g, from, to) {
   if (from === to) return [from]
   const prev = { [from]: null }, q = [from]
-  while (q.length) { const u = q.shift(); for (const v of g.adj[u]) if (!(v in prev)) { prev[v] = u; if (v === to) { const p = [v]; let w = u; while (w !== null) { p.unshift(w); w = prev[w] } return p } q.push(v) } }
+  while (q.length) {
+    const u = q.shift()
+    for (const v of g.adj[u]) {
+      if (v in prev) continue
+      const e = g.edges[g.edgeIdx[u + '|' + v]]
+      if (e && (e.broken || e.hidden)) continue
+      if (g.byId[v].gone && v !== to) continue
+      prev[v] = u
+      if (v === to) { const p = [v]; let w = u; while (w !== null) { p.unshift(w); w = prev[w] } return p }
+      q.push(v)
+    }
+  }
   return [from]
 }
 function route(g, path) {
@@ -136,12 +188,15 @@ export function nodeForPath(g, rel) {
   rel = rel.replace(/\\/g, '/').replace(/^\.\//, '')
   const base = rel.split('/').pop()
   let n = g.nodes.find(x => x.path === rel) || g.nodes.find(x => x.path && (x.path.endsWith('/' + rel) || rel.endsWith('/' + x.path))) || g.nodes.find(x => x.kind === 'file' && x.label === base)
-  if (n) return n
+  if (n) {
+    if (n.gone) { n.gone = false; n.isNew = true; g.adj[n.id].forEach(v => { const e = g.edges[g.edgeIdx[n.id + '|' + v]]; if (e) { e.broken = null; e.hidden = false } }) }
+    return n
+  }
   // fichier inconnu : un nouveau cocon, accroché au nœud le plus proche par le nom de dossier
   const dir = rel.split('/').slice(0, -1).join('/')
   const anchor = g.nodes.find(x => x.path && dir && x.path.startsWith(dir + '/')) || g.nodes.filter(x => x.kind === 'file')[hash(rel) % Math.max(1, g.nodes.filter(x => x.kind === 'file').length)] || g.nodes[0]
   const a = hash(rel) % 360 * DEG
-  n = { id: rel, label: base, kind: 'file', comm: anchor.comm, path: rel, x: anchor.x + Math.cos(a) * 55, y: anchor.y + Math.sin(a) * 55, ang: a, visited: false, mod: false, wrap: 0 }
+  n = { id: rel, label: base, kind: 'file', comm: anchor.comm, path: rel, x: anchor.x + Math.cos(a) * 55, y: anchor.y + Math.sin(a) * 55, ang: a, visited: false, mod: false, wrap: 0, lang: langColor(rel), heat: 0, edits: 0 }
   g.nodes.push(n); g.byId[n.id] = n; g.adj[n.id] = []
   const e = { a: anchor.id, b: n.id, kind: 'tree' }; g.edges.push(e); const i = g.edges.length - 1; g.edgeIdx[e.a + '|' + e.b] = i; g.edgeIdx[e.b + '|' + e.a] = i; g.adj[anchor.id].push(n.id); g.adj[n.id].push(anchor.id)
   const dx = n.x - anchor.x, dy = n.y - anchor.y; e.c = { x: (anchor.x + n.x) / 2 - dy * .05, y: (anchor.y + n.y) / 2 + dx * .05 }; e.pts = []
@@ -217,6 +272,7 @@ class Spider {
     const legs = this.legs.map(L => {
       const hl = this.hipL(L), hw = this.local(hl.x, hl.y), H = { x: hw.x, y: hw.y, z: bz }
       let F = { x: L.foot.x, y: L.foot.y, z: L.foot.z + dep(L.foot.x, L.foot.y) }
+      if (o.tuck > .001) { const fold = this.local(hl.x + (L.i < 2 ? m.cl * .45 : -m.cl * .2), hl.y + L.s * m.legs[L.i] * .2); F = lerp3(F, { x: fold.x, y: fold.y, z: bz - m.bodyZ * .25 + m.legs[L.i] * .12 }, o.tuck) }
       for (const ov of (o.over || [])) if (ov.w > .001 && ov.i === L.i && (!ov.s || ov.s === L.s)) F = lerp3(F, ov.p(L.s), ov.w)
       const len = m.legs[L.i], { K, A } = ik3(H, F, len * m.seg[0], len * m.seg[1], len * m.seg[2])
       return { H, K, A, F, s: L.s, i: L.i, stepping: L.p >= 0 }
@@ -301,129 +357,237 @@ function carapaceSVG(S, cl, cw) {
 }
 
 /* ---------------- le monde : état qui survit d'un clip à l'autre ---------------- */
+// les bébés araignées (sous-agents, tâches de fond) : même apparence, en petit
+function babyMorph(m) { const k = .55, o = { ...m }; ['cl', 'cw', 'al', 'aw', 'bodyZ', 'legW', 'palp', 'R'].forEach(key => o[key] = m[key] * k); o.legs = m.legs.map(v => v * k); o.stepDur = m.stepDur * .8; o.baby = true; return o }
+function hubNode(g) { return g.nodes.filter(n => (n.kind === 'file' || n.kind === 'dir') && !n.gone).sort((a, b) => g.adj[b.id].length - g.adj[a.id].length)[0] || g.nodes[0] }
 export function createWorld(graph, skinId) {
-  const W = { g: graph, skin: SKINS[skinId] ? skinId : 'fusion', t: 0, loads: [], vib: [], waves: [] }
-  const env = { snap: (p, r) => snapOn(graph, p, r), depth: (x, y) => depthFrom(W.loads, x, y, W.t), onPlant: (f, m) => W.vib.push({ x: f.x, y: f.y, t0: W.t, w: 1.3, f: 2 * Math.PI * 8, tau: .22, s2: 50 }) }
+  const W = { g: graph, skin: SKINS[skinId] ? skinId : 'fusion', t: 0, loads: [], vib: [], waves: [], actors: {}, sleeping: false }
+  const env = { snap: (p, r) => snapOn(graph, p, r), depth: (x, y) => depthFrom(W.loads, x, y, W.t), onPlant: (f, m) => W.vib.push({ x: f.x, y: f.y, t0: W.t, w: m.baby ? .5 : 1.3, f: 2 * Math.PI * 8, tau: .22, s2: 50 }) }
   W.env = env
-  const start = graph.nodes.filter(n => n.kind === 'file' || n.kind === 'dir').sort((a, b) => graph.adj[b.id].length - graph.adj[a.id].length)[0] || graph.nodes[0]
-  W.cur = start.id
-  W.sp = new Spider(SKINS[W.skin].m, start.x, start.y, -Math.PI / 2, env)
+  const start = hubNode(graph)
+  W.actors.main = { id: 'main', baby: false, sp: new Spider(SKINS[W.skin].m, start.x, start.y, -Math.PI / 2, env), cur: start.id, hang: 0 }
+  W.sp = W.actors.main.sp
   W.cam = { x: start.x, y: start.y }
   return W
 }
-export function setSkin(W, id) { if (!SKINS[id]) return; W.skin = id; W.sp.setMorph(SKINS[id].m) }
+export function setSkin(W, id) { if (!SKINS[id]) return; W.skin = id; Object.values(W.actors).forEach(a => a.sp.setMorph(a.baby ? babyMorph(SKINS[id].m) : SKINS[id].m)) }
+export const hasActor = (W, id) => !!W.actors[id]
+function actorFor(W, ev) {
+  const id = ev.actor || 'main'
+  if (W.actors[id]) return W.actors[id]
+  // un bébé araignée descend sur son fil, juste au-dessus de l'endroit où il va travailler
+  const g = W.g, near = (ev.path && nodeForPath(g, ev.path)) || (ev.tool === 'Bash' ? g.byId['::terminal'] : null) || g.byId[W.actors.main.cur] || hubNode(g)
+  const a = { id, baby: true, sp: new Spider(babyMorph(SKINS[W.skin].m), near.x, near.y, Object.keys(W.actors).length * 2.4, W.env), cur: near.id, hang: 70 }
+  W.actors[id] = a
+  return a
+}
 
-function stepPhysics(W, dt, opts) {
-  const sp = W.sp
+function stepPhysics(W, dt) {
   W.t += dt
   W.vib = W.vib.filter(v => W.t - v.t0 < 1.2); W.waves = W.waves.filter(v => W.t - v.t0 < 2.5)
-  const L = [{ x: sp.x, y: sp.y, w: 4.2, s2: 420 }]
-  sp.legs.forEach(l => { if (l.p < 0) L.push({ x: l.foot.x, y: l.foot.y, w: 1.15, s2: 30 }) })
+  const L = []
+  for (const a of Object.values(W.actors)) {
+    if (a.hang > 4) continue
+    const sp = a.sp, k = a.baby ? .4 : 1
+    L.push({ x: sp.x, y: sp.y, w: 4.2 * k, s2: 420 * k })
+    sp.legs.forEach(l => { if (l.p < 0) L.push({ x: l.foot.x, y: l.foot.y, w: 1.15 * k, s2: 30 }) })
+  }
   W.loads = L.concat(W.vib, W.waves)
-  sp.update(dt)
+  for (const a of Object.values(W.actors)) a.sp.update(dt)
+}
+function optsFor(a, act, t, dep) {
+  const o = act ? actionOpts(act, t, a.sp, dep) : { over: [] }
+  if (a.hang > .5) { o.lift = (o.lift || 0) + a.hang; o.tuck = Math.max(o.tuck || 0, clamp(a.hang / 10, 0, .85)) }
+  return o
 }
 function actionOpts(act, t, sp, dep) {
   const o = { over: [] }; if (!act) return o
   const m = sp.m, fwd = { x: Math.cos(sp.h), y: Math.sin(sp.h) }, side = { x: -fwd.y, y: fwd.x }
   const n = act.n
-  if (act.tool === 'Read') {
+  if (act.tool === 'Read' && n) {
     const w = sm(0, .35, t) * (1 - sm(act.dur - .4, act.dur, t)), c = { x: n.x, y: n.y, z: dep(n.x, n.y) + w * 3.5 }
     o.over.push({ i: 0, w, p: s => ({ x: c.x + side.x * s * 3.3 - fwd.x, y: c.y + side.y * s * 3.3 - fwd.y, z: c.z + 1 + Math.sin(t * 9 + s * 1.7) * .8 }) })
     o.over.push({ i: 1, w: w * .35, p: s => ({ x: c.x + side.x * s * 7 - fwd.x * 4, y: c.y + side.y * s * 7 - fwd.y * 4, z: dep(c.x, c.y) + 1.5 }) })
     o.palp = { x: c.x, y: c.y, z: c.z + .8, w }; o.held = { ...c, w }
-  } else if (act.tool === 'Edit' || act.tool === 'Write') {
-    const w = sm(.9, 1.3, t) * (1 - sm(act.dur - .4, act.dur, t)), cz = dep(n.x, n.y) + 1.5, s0 = sp.local(-(m.cl * .48 + m.al * .7), 0)
-    o.over.push({ i: 3, w, p: s => { const k = Math.max(0, Math.sin(t * 9 + (s > 0 ? Math.PI : 0))); return { x: lerp(n.x, s0.x, .3) + side.x * s * 3, y: lerp(n.y, s0.y, .3) + side.y * s * 3, z: cz + k * 4.5 } } })
+  } else if ((act.tool === 'Edit' || act.tool === 'Write' || act.tool === 'Repair') && (n || act.at)) {
+    const q = act.at || n, w = sm(.9, 1.3, t) * (1 - sm(act.dur - .4, act.dur, t)), cz = dep(q.x, q.y) + 1.5, s0 = sp.local(-(m.cl * .48 + m.al * .7), 0)
+    o.over.push({ i: 3, w, p: s => { const k = Math.max(0, Math.sin(t * 9 + (s > 0 ? Math.PI : 0))); return { x: lerp(q.x, s0.x, .3) + side.x * s * 3, y: lerp(q.y, s0.y, .3) + side.y * s * 3, z: cz + k * 4.5 } } })
     o.lift = -w * m.bodyZ * .15
   } else if (act.tool === 'Grep') {
     const w = sm(0, .2, t) * (1 - sm(1.55, 1.8, t)), ph = (((t - .05) % .5) + .5) % .5 / .5, up = t < 1.55 ? (ph < .78 ? Math.sin(ph / .78 * Math.PI / 2) : 1 - (ph - .78) / .22) : 0, tip = pluckTip(sp)
     o.over.push({ i: 0, s: 1, w, p: () => ({ x: tip.x, y: tip.y, z: dep(tip.x, tip.y) + up * m.legs[0] * .38 }) })
-  } else if (act.tool === 'Bash') {
+  } else if (act.tool === 'Bash' && n) {
     const w = sm(0, .3, t) * (1 - sm(act.dur - .3, act.dur, t)), c = { x: n.x, y: n.y - 2, z: dep(n.x, n.y) + 2.5 }
     o.over.push({ i: 0, w, p: s => ({ x: c.x + side.x * s * 4.5 - fwd.x * 2, y: c.y + side.y * s * 4.5 - fwd.y * 2, z: c.z + Math.max(0, Math.sin(t * 13 + (s > 0 ? Math.PI : 0))) * 3.2 }) })
     o.palp = { ...c, w: w * .7 }
   } else if (act.tool === 'Web') {
     const w = sm(0, .6, t) * (1 - sm(act.dur - .5, act.dur, t)); o.lift = m.bodyZ * .9 * w; o.abdUp = w
+  } else if (act.tool === 'Mood' && act.ok) {
+    // une petite danse : elle sautille et agite ses pattes avant
+    const w = sm(0, .25, t) * (1 - sm(act.dur - .35, act.dur, t)), base = dep(sp.x, sp.y)
+    o.lift = w * m.bodyZ * .55 * Math.abs(Math.sin(t * 10))
+    o.over.push({ i: 0, w, p: s => { const q = sp.local(m.cl * .5 + m.legs[0] * .3, s * (m.cw * .6 + m.legs[0] * .22)); return { x: q.x, y: q.y, z: base + m.bodyZ + m.legs[0] * .42 + Math.sin(t * 14 + s * 2) * m.legs[0] * .14 } } })
+    o.over.push({ i: 1, w: w * .6, p: s => { const q = sp.local(m.cl * .3 + m.legs[1] * .25, s * (m.cw * .7 + m.legs[1] * .35)); return { x: q.x, y: q.y, z: base + Math.max(0, Math.sin(t * 10 + s * Math.PI)) * 3 } } })
+  } else if (act.tool === 'Mood') {
+    // l'échec : elle se recroqueville et tremble
+    const w = sm(0, .3, t) * (1 - sm(act.dur - .4, act.dur, t))
+    o.tuck = w * .78; o.lift = -w * m.bodyZ * .4 + Math.sin(t * 40) * .18 * w
   }
   return o
 }
 function pluckTip(sp) { const L = sp.legs.find(l => l.i === 0 && l.s === 1), b = sp.ideal(L), f = { x: Math.cos(sp.h), y: Math.sin(sp.h) }; return { x: b.x + f.x * 3, y: b.y + f.y * 3 } }
 
 /* ---------------- fabrication d'un clip ---------------- */
-// ev : { tool: 'Read'|'Edit'|'Write'|'Grep'|'Bash'|'Web', path?, targets?: string[], label, lines?: string[] }
+// ev : { tool: 'Read'|'Edit'|'Write'|'Grep'|'Bash'|'Web'|'Mood'|'Delete'|'Repair'|'Leave', path?, targets?, label, lines?,
+//        actor?: 'main' | id d'un bébé, ok?: bool (Mood), big?: bool, pace?: rythme (1 = normal) }
 const FPS = 12, MAX_CHARS = 125000
+const ACT_DUR = { Read: 2.6, Edit: 3.3, Write: 3.3, Grep: 1.9, Bash: 2.6, Web: 3.4, Delete: 1.9, Repair: 2.8 }
 export function makeClip(W, ev) {
-  const g = W.g, sp = W.sp, S = SKINS[W.skin], m = sp.m
-  let target = null, targets = []
+  const g = W.g, S = SKINS[W.skin], a = actorFor(W, ev), sp = a.sp, m = sp.m, pace = clamp(ev.pace || 1, .6, 2)
+  let target = null, targets = [], edge = null, at = null
   if (ev.tool === 'Bash') target = g.byId['::terminal']
-  else if (ev.path) target = nodeForPath(g, ev.path)
+  else if (ev.tool === 'Repair') {
+    const i = g.edges.findIndex(e => e.broken && !e.hidden)
+    if (i >= 0) {
+      edge = i; const e = g.edges[i], A = g.byId[e.a], B = g.byId[e.b]
+      target = A.gone ? B : A
+      at = e.broken.kind === 'stub' ? lerp2(target, A.gone ? A : B, .3) : e.pts[Math.floor(e.pts.length / 2)]
+    }
+  } else if (ev.path) target = nodeForPath(g, ev.path)
   if (ev.tool === 'Grep') targets = (ev.targets || []).map(p => nodeForPath(g, p)).filter(Boolean).slice(0, 5)
-  const walkTo = ev.tool === 'Grep' || ev.tool === 'Web' ? null : target
+  if (ev.tool === 'Mood' && !ev.ok) {
+    const term = g.byId['::terminal'], i = g.edges.findIndex(e => !e.broken && !e.hidden && (e.a === term.id || e.b === term.id) && !g.byId[e.a].gone && !g.byId[e.b].gone)
+    if (i >= 0) edge = i
+  }
+  const walkTo = ['Read', 'Edit', 'Write', 'Bash', 'Repair'].includes(ev.tool) ? target : null
+  const actDur = ev.tool === 'Mood' ? (ev.ok ? (ev.big ? 2.6 : 1.7) : 2.3) : (ACT_DUR[ev.tool] || 1.5) / Math.sqrt(pace)
+  const act = { tool: ev.tool, n: target, dur: actDur, ok: ev.ok, at }
+  const frames = [], DT = 1 / 60, rec = Math.round(60 / FPS), edgeNear = new Set(), sounds = []
+  let step = 0
+  const camTo = ev.tool === 'Delete' && target ? target : null
+  const recFrame = (tAct) => {
+    const o = optsFor(a, tAct >= 0 ? act : null, tAct, W.env.depth)
+    const P = sp.pose(W.t, o)
+    const fx = camTo ? camTo.x : sp.x, fy = camTo ? camTo.y : sp.y - 8 - a.hang * TILT * .6
+    W.cam.x += (fx - W.cam.x) * .25; W.cam.y += (fy - W.cam.y) * .25
+    frames.push({ P, cam: { ...W.cam }, o, tAct, hang: a.hang })
+    g.edges.forEach((e, i) => { if (!e.hidden && dist(e.c, sp) < 70) edgeNear.add(i) })
+  }
+  // descente : le bébé qui arrive, ou l'araignée qui se réveille
+  let descDur = 0
+  if (a.hang > .5 && ev.tool !== 'Leave') {
+    const h0 = a.hang, T = a.baby ? 1.3 : 1.1
+    sounds.push({ at: 0, name: 'silk' })
+    for (let t = 0; t < T; t += DT) { a.hang = h0 * (1 - ease(t / T)); stepPhysics(W, DT); if (step++ % rec === 0) recFrame(-1) }
+    a.hang = 0; descDur = T; if (a.id === 'main') W.sleeping = false
+  }
   // marche
   let rt = null, stop = 0
-  if (walkTo && walkTo.id !== W.cur) {
-    const path = bfs(g, W.cur, walkTo.id)
-    if (path.length > 1) { rt = route(g, path); stop = ev.tool === 'Edit' || ev.tool === 'Write' ? m.cl * .48 + m.al * .9 : ev.tool === 'Bash' ? m.cl * .5 + m.palp * .8 + 9 : m.cl * .5 + m.palp * .85 }
+  if (walkTo && walkTo.id !== a.cur) {
+    const path = bfs(g, a.cur, walkTo.id)
+    if (path.length > 1) { rt = route(g, path); stop = ev.tool === 'Edit' || ev.tool === 'Write' ? m.cl * .48 + m.al * .9 : ev.tool === 'Bash' ? m.cl * .5 + m.palp * .8 + 9 : ev.tool === 'Repair' ? m.cl * .5 : m.cl * .5 + m.palp * .85 }
   }
-  const walkLen = rt ? Math.max(0, rt.total - stop) : 0, speed = Math.max(130, walkLen / 2.4), walkDur = walkLen / speed + (rt ? .25 : 0)
-  const actDur = { Read: 2.6, Edit: 3.3, Write: 3.3, Grep: 1.9, Bash: 2.6, Web: 3.4 }[ev.tool] || 1.5
-  const total = walkDur + actDur
-  const act = { tool: ev.tool, n: target, dur: actDur }
-  if (ev.tool === 'Grep') targets.forEach(n => n.visited = true)
-  // simulation
-  const frames = [], DT = 1 / 60, rec = Math.round(60 / FPS)
-  let d = 0, wspd = 0, step = 0
-  const edgeNear = new Set()
-  const recFrame = (tAct) => {
-    const o = tAct >= 0 ? actionOpts(act, tAct, sp, W.env.depth) : {}
-    const P = sp.pose(W.t, o)
-    // caméra qui suit en douceur
-    W.cam.x += (sp.x - W.cam.x) * .25; W.cam.y += (sp.y - 8 - W.cam.y) * .25
-    frames.push({ P, cam: { ...W.cam }, o, tAct, deps: null })
-    g.edges.forEach((e, i) => { if (dist(e.c, sp) < 70) edgeNear.add(i) })
-  }
-  const physics = (o) => { stepPhysics(W, DT, o) }
-  // phase marche
+  const walkLen = rt ? Math.max(0, rt.total - stop) : 0, speed = Math.max(130, walkLen / 2.4) * pace
+  let d = 0, wspd = 0
   if (rt) {
-    if (ev.tool === 'Edit' || ev.tool === 'Write') sp.hTarget = null
+    sp.hTarget = null
     while (d < walkLen - .01) {
       const remain = walkLen - d, tgt = speed * clamp(remain / 28, .2, 1); wspd += (tgt - wspd) * Math.min(1, DT * 5)
       const px = sp.x, py = sp.y; d = Math.min(walkLen, d + wspd * DT); const p = along(rt, d); sp.x = p.x; sp.y = p.y
       sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT; if (Math.hypot(sp.vx, sp.vy) > 4) sp.h += wrap(Math.atan2(sp.vy, sp.vx) - sp.h) * Math.min(1, DT * 7)
-      physics({}); if (step++ % rec === 0) recFrame(-1)
-      if (step > 60 * 6) break
+      stepPhysics(W, DT); if (step++ % rec === 0) recFrame(-1)
+      if (step > 60 * 7) break
     }
-    rt.edgesUsed.forEach(i => g.edges[i].trail = 1)
-    W.cur = walkTo.id
+    const now = Date.now()
+    rt.edgesUsed.forEach(i => { g.edges[i].trail = 1; g.edges[i].trailAt = now })
+    a.cur = walkTo.id
     sp.vx = sp.vy = 0
-    for (let k = 0; k < 15; k++) { physics({}); if (step++ % rec === 0) recFrame(-1) }
+    for (let k = 0; k < 15; k++) { stepPhysics(W, DT); if (step++ % rec === 0) recFrame(-1) }
   }
-  // phase action
-  const t0 = W.t
-  if (ev.tool === 'Edit' || ev.tool === 'Write') sp.hTarget = sp.h + Math.PI
-  let k = 0
-  const plucks = []
-  while (W.t - t0 < actDur) {
-    const ta = W.t - t0
-    if (ev.tool === 'Grep') { const kk = Math.floor((ta - .05) / .5); if (ta > .05 && kk < 3 && kk >= k) { k = kk + 1; const tip = pluckTip(sp); W.waves.push({ ring: true, x: tip.x, y: tip.y, t0: W.t, v: 120, w: 1.6, s2: 60, tau: .7 }); plucks.push({ x: tip.x, y: tip.y, t: walkDur + ta }) } }
-    sp.vx = sp.vy = 0
-    const o = actionOpts(act, ta, sp, W.env.depth)
-    stepPhysics(W, DT, o)
-    if (step++ % rec === 0) recFrame(ta)
+  const actStart = frames.length / FPS
+  // action
+  const X = { walkDur: actStart, act, target, targets, plucks: [], S, actor: a, edge, sounds, pace }
+  if (ev.tool === 'Leave') {
+    // le bébé remonte sur son fil et disparaît
+    sounds.push({ at: actStart, name: 'silk' })
+    for (let t = 0; t < 1.8; t += DT) { a.hang = 90 * ease(t / 1.8); stepPhysics(W, DT); if (step++ % rec === 0) recFrame(-1) }
+    X.fadeOut = actStart + 1.2
+  } else {
+    const t0 = W.t
+    if (ev.tool === 'Edit' || ev.tool === 'Write' || ev.tool === 'Repair') sp.hTarget = sp.h + Math.PI
+    const h0 = sp.h
+    let k = 0
+    while (W.t - t0 < actDur) {
+      const ta = W.t - t0
+      if (ev.tool === 'Grep') { const kk = Math.floor((ta - .05) / .5); if (ta > .05 && kk < 3 && kk >= k) { k = kk + 1; const tip = pluckTip(sp); W.waves.push({ ring: true, x: tip.x, y: tip.y, t0: W.t, v: 120, w: 1.6, s2: 60, tau: .7 }); X.plucks.push({ x: tip.x, y: tip.y, t: actStart + ta }); sounds.push({ at: actStart + ta, name: 'pluck' }) } }
+      if (ev.tool === 'Mood' && ev.ok) sp.hTarget = h0 + Math.sin(ta * 4) * .5
+      sp.vx = sp.vy = 0
+      stepPhysics(W, DT)
+      if (step++ % rec === 0) recFrame(ta)
+    }
+    sp.hTarget = null
   }
-  sp.hTarget = null
+  // conséquences sur la toile
+  const sound = { Read: ['read', .5], Edit: ['silk', .9], Write: ['silk', .9], Bash: ['hum', .3], Web: ['web', .6], Repair: ['silk', .9] }[ev.tool]
+  if (sound) sounds.push({ at: actStart + sound[1], name: sound[0] })
+  if (ev.tool === 'Mood') sounds.push({ at: actStart + .15, name: ev.ok ? 'success' : 'fail' })
+  if (ev.tool === 'Mood' && !ev.ok && edge !== null) { X.snapT = actStart + 1.1; X.snapEdges = [edge]; g.edges[edge].broken = { kind: 'snap' }; sounds.push({ at: X.snapT, name: 'snap' }) }
+  if (ev.tool === 'Delete' && target) {
+    X.snapT = actStart + .35; X.falling = target; X.snapEdges = []
+    g.adj[target.id].forEach(v => { const i = g.edgeIdx[target.id + '|' + v], e = g.edges[i]; if (e && !e.hidden && !e.broken) { e.broken = { kind: 'stub', alive: v }; X.snapEdges.push(i) } })
+    target.gone = true; sounds.push({ at: X.snapT, name: 'snap' })
+  }
+  if (ev.tool === 'Repair' && edge !== null) {
+    const e = g.edges[edge]; X.repairEdge = edge; X.repairStub = e.broken.kind === 'stub'; X.repairT0 = actStart + .9; X.repairT1 = actStart + actDur - .25
+    if (X.repairStub) e.hidden = true; e.broken = null
+  }
+  if (ev.tool === 'Grep') targets.forEach(n => n.visited = true)
   if (target && (ev.tool === 'Edit' || ev.tool === 'Write')) { target.mod = true; target.wrap = Math.min(3, (target.wrap || 0) + 1) }
-  if (target) target.visited = true
-  return renderClip(W, ev, frames, { total, walkDur, act, target, targets, plucks, edgeNear: [...edgeNear].slice(0, 10), S })
+  if (target && ev.tool !== 'Delete') target.visited = true
+  X.total = frames.length / FPS
+  X.edgeNear = [...edgeNear].filter(i => !g.edges[i].broken && i !== X.repairEdge && !(X.snapEdges || []).includes(i)).slice(0, 10)
+  X.others = Object.values(W.actors).filter(o => o !== a).map(o => ({ a: o, P: o.sp.pose(W.t, optsFor(o, null, 0, W.env.depth)) }))
+  if (ev.tool === 'Leave') delete W.actors[a.id]
+  return renderClip(W, ev, frames, X)
+}
+// l'araignée remonte au centre de la toile, se suspend à un fil et dort
+export function sleepClip(W) {
+  const a = W.actors.main, sp = a.sp, g = W.g, hub = hubNode(g), frames = [], DT = 1 / 60, rec = Math.round(60 / FPS)
+  let step = 0
+  const recFrame = () => { const o = optsFor(a, null, 0, W.env.depth), P = sp.pose(W.t, o); W.cam.x += (sp.x - W.cam.x) * .25; W.cam.y += (sp.y - 8 - a.hang * TILT * .6 - W.cam.y) * .25; frames.push({ P, cam: { ...W.cam }, o, tAct: -1, hang: a.hang }) }
+  if (hub.id !== a.cur) {
+    const path = bfs(g, a.cur, hub.id)
+    if (path.length > 1) {
+      const rt = route(g, path), speed = 70; let d = 0
+      while (d < rt.total - .01) { const px = sp.x, py = sp.y; d = Math.min(rt.total, d + speed * DT); const p = along(rt, d); sp.x = p.x; sp.y = p.y; sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT; if (Math.hypot(sp.vx, sp.vy) > 4) sp.h += wrap(Math.atan2(sp.vy, sp.vx) - sp.h) * Math.min(1, DT * 7); stepPhysics(W, DT); if (step++ % rec === 0) recFrame(); if (step > 60 * 8) break }
+      a.cur = hub.id
+    }
+  }
+  sp.vx = sp.vy = 0
+  for (let t = 0; t < 1.6; t += DT) { a.hang = 26 * ease(t / 1.6); stepPhysics(W, DT); if (step++ % rec === 0) recFrame() }
+  a.hang = 26; W.sleeping = true
+  const X = { total: frames.length / FPS, walkDur: frames.length / FPS, act: { tool: 'idle' }, target: null, targets: [], plucks: [], edgeNear: [], S: SKINS[W.skin], actor: a, sounds: [], sleep: true, others: Object.values(W.actors).filter(o => o !== a).map(o => ({ a: o, P: o.sp.pose(W.t, optsFor(o, null, 0, W.env.depth)) })) }
+  return renderClip(W, { tool: 'Sleep', label: 'Sleep', lines: [] }, frames, X)
+}
+// image fixe quand Claude ne fait rien : l'araignée respire (ou dort sur son fil)
+export function idleClip(W) {
+  const a = W.actors.main, frames = []
+  for (let i = 0; i < 2; i++) { stepPhysics(W, 1 / 60); frames.push({ P: a.sp.pose(W.t, optsFor(a, null, 0, W.env.depth)), cam: { ...W.cam }, o: {}, tAct: -1, hang: a.hang }) }
+  return renderClip(W, { tool: 'idle' }, frames, { total: .1, walkDur: 0, act: { tool: 'idle' }, target: null, targets: [], plucks: [], edgeNear: [], S: SKINS[W.skin], actor: a, sounds: [], sleep: W.sleeping, others: Object.values(W.actors).filter(o => o !== a).map(o => ({ a: o, P: o.sp.pose(W.t, optsFor(o, null, 0, W.env.depth)) })) })
 }
 
 /* ---------------- rendu SVG d'un clip ---------------- */
 function vals(arr) { return arr.join(';') }
+const ID_M = '1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 1 0'
+const RED_M = '1 .35 .35 0 .12 0 .22 0 0 0 0 0 .22 0 0 0 0 0 1 0'
+const GREEN_M = '.35 0 0 0 0 .35 1 .35 0 .08 0 0 .4 0 0 0 0 0 1 0'
+const qd = (a, c, b) => `M${f1(a.x)} ${f1(a.y)}Q${f1(c.x)} ${f1(c.y)} ${f1(b.x)} ${f1(b.y)}`
 export function renderClip(W, ev, frames, X) {
   // la vue épouse la forme du panneau (hauteur / largeur), à surface à peu près constante
   const asp = clamp(W.aspect || .63, .3, 3), VIEW_W = Math.sqrt(64000 / asp), VIEW_H = VIEW_W * asp
-  const g = W.g, S = X.S, n = frames.length, dur = Math.max(.1, X.total).toFixed(2) + 's'
+  const g = W.g, S = X.S, n = frames.length, T = Math.max(.1, X.total), dur = T.toFixed(2) + 's', now = Date.now()
   const anim = (attr, values) => `<animate attributeName="${attr}" values="${vals(values)}" dur="${dur}" fill="freeze" calcMode="linear"/>`
+  const kt = s => clamp(s / T, 0, 1).toFixed(3)
   // zone visible pendant le clip
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
   frames.forEach(f => { x0 = Math.min(x0, f.cam.x); x1 = Math.max(x1, f.cam.x); y0 = Math.min(y0, f.cam.y); y1 = Math.max(y1, f.cam.y) })
@@ -434,84 +598,195 @@ export function renderClip(W, ev, frames, X) {
   const f0 = frames[0] ? frames[0].cam : W.cam
   out.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${f1(f0.x - VIEW_W / 2)} ${f1(f0.y - VIEW_H / 2)} ${VIEW_W} ${VIEW_H}" width="1000" height="${Math.round(1000 * asp)}" preserveAspectRatio="xMidYMid slice" style="background:#06040c">`)
   if (n > 1) out.push(anim('viewBox', frames.map(f => `${f1(f.cam.x - VIEW_W / 2)} ${f1(f.cam.y - VIEW_H / 2)} ${VIEW_W} ${VIEW_H}`)))
-  out.push(`<defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation=".8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter><filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="1.6"/></filter>${skinDefs('sk', S)}</defs>`)
+  let defs = `<filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation=".8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter><filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="1.6"/></filter>${skinDefs('sk', S)}`
+  // l'humeur colore l'araignée : vert quand ça réussit, rouge quand ça échoue
+  if (X.act.tool === 'Mood') { const M = X.act.ok ? GREEN_M : RED_M; defs += `<filter id="mood" x="-50%" y="-50%" width="200%" height="200%"><feColorMatrix type="matrix" values="${ID_M}"><animate attributeName="values" values="${ID_M};${M};${M};${ID_M}" keyTimes="0;${kt(X.walkDur + .2)};${kt(T - .45)};1" dur="${dur}" fill="freeze"/></feColorMatrix></filter>` }
+  out.push(`<defs>${defs}</defs>`)
   out.push(`<rect x="${f1(bx0 - 400)}" y="${f1(by0 - 400)}" width="${f1(bx1 - bx0 + 800)}" height="${f1(by1 - by0 + 800)}" fill="#06040c"/>`)
+  // la profondeur : des toiles lointaines, floues, qui glissent moins vite que la nôtre
+  out.push(farLayer(W, frames, VIEW_W, VIEW_H, dur, n))
   // nébuleuses des communautés
-  g.comms.forEach((c, i) => { if (c.cx > bx0 - 250 && c.cx < bx1 + 250 && c.cy > by0 - 250 && c.cy < by1 + 250) out.push(`<circle cx="${f1(c.cx)}" cy="${f1(c.cy)}" r="160" fill="${c.col}" opacity=".035" filter="url(#soft)"/>`) })
-  // fils de soie (statiques), ceux près de l'araignée sont animés
-  const near = new Set(X.edgeNear)
-  let thin = '', strong = '', trail = ''
+  g.comms.forEach(c => { if (c.cx > bx0 - 250 && c.cx < bx1 + 250 && c.cy > by0 - 250 && c.cy < by1 + 250) out.push(`<circle cx="${f1(c.cx)}" cy="${f1(c.cy)}" r="160" fill="${c.col}" opacity=".035" filter="url(#soft)"/>`) })
+  // les toiles des dossiers : spirales entre les rayons
+  let orbs = ''
+  ;(g.orbs || []).forEach(o => { if (o.x + o.r < bx0 || o.x - o.r > bx1 || o.y + o.r < by0 || o.y - o.r > by1) return; o.spirals.forEach(pts => { orbs += pts.map((p, i) => (i ? 'L' : 'M') + f1(p.x) + ' ' + f1(p.y)).join('') }) })
+  if (orbs) out.push(`<path d="${orbs}" fill="none" stroke="#fff" stroke-opacity=".2" stroke-width=".22"/>`)
+  // fils de soie : la mémoire du projet (les fils touchés brillent, les autres restent dans l'ombre)
+  const near = new Set(X.edgeNear), special = new Set([...(X.snapEdges || []), X.repairEdge].filter(v => v !== undefined && v !== null))
+  let cold = '', coldTree = '', thin = '', strong = '', trail = ''
+  const hot = ['', '', ''], broken = [], dews = []
   g.edges.forEach((e, i) => {
-    if (near.has(i)) return
+    if (near.has(i) || special.has(i) || e.hidden) return
     const a = g.byId[e.a], b = g.byId[e.b]; if (!inBox(a) && !inBox(b) && !inBox(e.c)) return
-    const dd = `M${f1(a.x)} ${f1(a.y)}Q${f1(e.c.x)} ${f1(e.c.y)} ${f1(b.x)} ${f1(b.y)}`
-    if (e.trail) trail += dd; else if (e.kind === 'tree') strong += dd; else thin += dd
+    if (e.broken) { broken.push(i); return }
+    const dd = qd(a, e.c, b), h = e.h || 0
+    if (e.trail) trail += dd
+    else if (h < .02) { if (e.kind === 'tree') coldTree += dd; else cold += dd }
+    else if (e.kind === 'tree') strong += dd; else thin += dd
+    if (h > .12) hot[h > .6 ? 2 : h > .3 ? 1 : 0] += dd
+    if (e.trailAt && now - e.trailAt < 300000) dews.push(e)
   })
-  out.push(`<path d="${thin}" fill="none" stroke="#fff" stroke-opacity=".38" stroke-width=".32"/>`)
-  out.push(`<path d="${strong}" fill="none" stroke="#fff" stroke-opacity=".75" stroke-width=".5"/><path d="${strong}" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width=".9" stroke-dasharray="1.4 1.1"/>`)
+  out.push(`<path d="${cold}" fill="none" stroke="#fff" stroke-opacity=".2" stroke-width=".28"/><path d="${coldTree}" fill="none" stroke="#fff" stroke-opacity=".42" stroke-width=".4"/>`)
+  out.push(`<path d="${thin}" fill="none" stroke="#fff" stroke-opacity=".42" stroke-width=".34"/>`)
+  out.push(`<path d="${strong}" fill="none" stroke="#fff" stroke-opacity=".78" stroke-width=".5"/><path d="${strong}" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width=".9" stroke-dasharray="1.4 1.1"/>`)
+  hot.forEach((d, k) => { if (d) out.push(`<path d="${d}" fill="none" stroke="#fff" stroke-opacity="${[.18, .28, .4][k]}" stroke-width="${[1.2, 1.8, 2.6][k]}" filter="url(#soft)"/><path d="${d}" fill="none" stroke="#fff" stroke-opacity=".95" stroke-width="${[.6, .8, 1][k]}"/>`) })
   out.push(`<path d="${trail}" fill="none" stroke="#fff" stroke-opacity=".95" stroke-width=".7" filter="url(#glow)"/>`)
+  // la rosée sur les fils parcourus : elle scintille, puis s'évapore
+  let drops = '', budget = 70
+  dews.forEach(e => {
+    const age = (now - e.trailAt) / 1000, a0 = .95 * Math.exp(-age / 110), step = Math.max(2, Math.floor(e.pts.length / 6))
+    for (let j = step; j < e.pts.length - 1 && budget > 0; j += step) {
+      budget--; const p = e.pts[j], r = .32 + (hash(e.a + j) % 5) * .06, b = -((hash(e.b + j) % 17) / 10)
+      drops += `<circle cx="${f1(p.x)}" cy="${f1(p.y + .3)}" r="${f1(r)}" opacity="${a0.toFixed(2)}"><animate attributeName="opacity" values="${a0.toFixed(2)};${(a0 * .25).toFixed(2)};${a0.toFixed(2)}" dur="1.7s" begin="${b}s" repeatCount="indefinite"/></circle>`
+    }
+  })
+  if (drops) out.push(`<g fill="#e6f6ff" filter="url(#glow)">${drops}</g>`)
+  // fils cassés : les bouts pendent et se balancent
+  broken.forEach(i => out.push(halvesSVG(g, g.edges[i])))
+  // le fil qui claque pendant ce clip
+  ;(X.snapEdges || []).forEach(i => {
+    const e = g.edges[i], a = g.byId[e.a], b = g.byId[e.b], st = X.snapT.toFixed(2)
+    out.push(`<path d="${qd(a, e.c, b)}" fill="none" stroke="#fff" stroke-opacity=".9" stroke-width=".5"><set attributeName="opacity" to="0" begin="${st}s"/></path>`)
+    out.push(`<g opacity="0"><set attributeName="opacity" to="1" begin="${st}s"/>${halvesSVG(g, e)}</g>`)
+    const p = e.pts[Math.floor(e.pts.length / 2)]
+    out.push(`<circle cx="${f1(p.x)}" cy="${f1(p.y)}" r="1" fill="none" stroke="#fff" stroke-width=".6" opacity="0" filter="url(#glow)"><animate attributeName="r" values="1;14" dur=".5s" begin="${st}s" fill="freeze"/><animate attributeName="opacity" values="1;0" dur=".5s" begin="${st}s" fill="freeze"/></circle>`)
+  })
+  // le fil que l'araignée retisse pendant ce clip
+  if (X.repairEdge !== undefined && X.repairEdge !== null) {
+    const e = g.edges[X.repairEdge], a = g.byId[e.a], b = g.byId[e.b], k0 = kt(X.repairT0), k1 = kt(X.repairT1)
+    out.push(`<g>${halvesSVG(g, e, X.repairStub ? (a.gone ? e.b : e.a) : null)}<animate attributeName="opacity" values="1;1;0" keyTimes="0;${k0};${k1}" dur="${dur}" fill="freeze"/></g>`)
+    if (!X.repairStub) out.push(`<path d="${qd(a, e.c, b)}" fill="none" stroke="#fff" stroke-width=".7" filter="url(#glow)" opacity="0"><animate attributeName="opacity" values="0;0;1" keyTimes="0;${k0};${k1}" dur="${dur}" fill="freeze"/></path>`)
+  }
   // fils qui plient sous le poids
   X.edgeNear.forEach(i => {
-    const e = g.edges[i], a = g.byId[e.a], b = g.byId[e.b], pts = e.pts.filter((_, j) => j % Math.max(1, Math.floor(e.pts.length / 8)) === 0 || j === e.pts.length - 1)
-    const ds = frames.map(f => pts.map((p, j) => (j ? 'L' : 'M') + f1(p.x) + ' ' + f1(p.y - (f.dep ? 0 : 0) - depthAtFrame(W, f, p) * TILT)).join(''))
-    const sw = e.trail ? .7 : e.kind === 'tree' ? .55 : .35, op = e.trail ? .95 : e.kind === 'tree' ? .8 : .45
-    out.push(`<path d="${ds[0] || ''}" fill="none" stroke="#fff" stroke-opacity="${op}" stroke-width="${sw}"${e.trail ? ' filter="url(#glow)"' : ''}>${n > 1 ? anim('d', ds) : ''}</path>`)
+    const e = g.edges[i], pts = e.pts.filter((_, j) => j % Math.max(1, Math.floor(e.pts.length / 8)) === 0 || j === e.pts.length - 1)
+    const ds = frames.map(f => pts.map((p, j) => (j ? 'L' : 'M') + f1(p.x) + ' ' + f1(p.y - depthAtFrame(f, p) * TILT)).join(''))
+    const h = e.h || 0, sw = e.trail ? .7 : e.kind === 'tree' ? .5 + h * .5 : .34 + h * .4, op = e.trail ? .95 : h < .02 ? (e.kind === 'tree' ? .45 : .22) : e.kind === 'tree' ? .8 : .45
+    out.push(`<path d="${ds[0] || ''}" fill="none" stroke="#fff" stroke-opacity="${op}" stroke-width="${f1(sw)}"${e.trail || h > .3 ? ' filter="url(#glow)"' : ''}>${n > 1 ? anim('d', ds) : ''}</path>`)
   })
   // nœuds
   const nodesOut = []
   g.nodes.forEach(nd => {
-    if (!inBox(nd)) return
+    if (!inBox(nd) || (nd.gone && X.falling !== nd)) return
     const col = g.comms[nd.comm].col
-    if (nd.kind === 'file') {
-      const held = X.act.tool === 'Read' && X.target === nd
-      const rot = (nd.ang / DEG).toFixed(0), sc = X.act.tool === 'Write' && X.target === nd && nd.isNew ? true : false
-      let s = `<g transform="translate(${f1(nd.x)} ${f1(nd.y)})"><circle r="6" fill="${col}" opacity=".18"/><g transform="rotate(${rot})">`
-      if (held) { const ys = frames.map(f => f1(-(f.o.held ? (f.o.held.z) * TILT : 0))); s = `<g transform="translate(${f1(nd.x)} ${f1(nd.y)})"><circle r="6" fill="${col}" opacity=".18"/><g><animateTransform attributeName="transform" type="translate" values="${frames.map(f => '0 ' + f1(-(f.o.held ? f.o.held.z * TILT : 0))).join(';')}" dur="${dur}" fill="freeze"/><g transform="rotate(${rot})">` }
-      const fill = nd.mod ? '#ff8ae8' : nd.visited ? '#ffffff' : '#c9c2e6'
-      s += `<ellipse rx="3.6" ry="2.3" fill="${fill}" filter="url(#glow)"/>`
-      const cnt = 5 + Math.min(6, (nd.wrap || 0) * 2)
-      let wraps = ''; for (let k = 0; k < cnt; k++) { const x = -3 + k * 6 / cnt + .6, h = 2.3 * Math.sqrt(Math.max(0, 1 - (x / 3.6) ** 2)); wraps += `M${f1(x - .5)} ${f1(-h)}Q${f1(x + .5)} 0 ${f1(x - .5)} ${f1(h)}` }
-      s += `<path d="${wraps}" fill="none" stroke="${nd.mod ? '#ffb3f3' : '#5a4f86'}" stroke-width=".22"/>`
-      if (held) s += `<ellipse rx="2.4" ry="1.2" fill="#c8faff" opacity="0" filter="url(#glow)"><animate attributeName="opacity" values="0;0;.9;.9;0" keyTimes="0;${(X.walkDur / X.total).toFixed(3)};${((X.walkDur + .5) / X.total).toFixed(3)};${((X.total - .5) / X.total).toFixed(3)};1" dur="${dur}" fill="freeze"/></ellipse>`
-      s += held ? '</g></g></g>' : '</g></g>'
-      nodesOut.push(s)
-    } else if (nd.kind === 'term') {
-      nodesOut.push(`<g transform="translate(${f1(nd.x)} ${f1(nd.y)})"><rect x="-10" y="-6.5" width="20" height="13" rx="3" fill="#0b1a0e" stroke="#9dff8a" stroke-width=".6" filter="url(#glow)"/><text y="1.8" text-anchor="middle" font-family="monospace" font-size="5.5" fill="#9dff8a">&gt;_</text></g>`)
-    } else if (nd.kind === 'dir') {
-      nodesOut.push(`<circle cx="${f1(nd.x)}" cy="${f1(nd.y)}" r="2.6" fill="#fff" filter="url(#glow)"/><circle cx="${f1(nd.x)}" cy="${f1(nd.y)}" r="5" fill="none" stroke="${col}" stroke-opacity=".7" stroke-width=".35"/>`)
-    } else {
-      const r = nd.kind === 'concept' ? 2.4 : 1.3 + Math.min(1.5, g.adj[nd.id].length * .16)
-      nodesOut.push(`<circle cx="${f1(nd.x)}" cy="${f1(nd.y)}" r="${f1(r * 2.3)}" fill="${col}" opacity=".2"/><circle cx="${f1(nd.x)}" cy="${f1(nd.y)}" r="${f1(r)}" fill="${col}"/>`)
-    }
+    if (nd.kind === 'file') nodesOut.push(cocoonSVG(nd, col, X, frames, dur, kt))
+    else if (nd.kind === 'term') nodesOut.push(`<g transform="translate(${f1(nd.x)} ${f1(nd.y)})"><rect x="-10" y="-6.5" width="20" height="13" rx="3" fill="#0b1a0e" stroke="#9dff8a" stroke-width=".6" filter="url(#glow)"/><text y="1.8" text-anchor="middle" font-family="monospace" font-size="5.5" fill="#9dff8a">&gt;_</text></g>`)
+    else if (nd.kind === 'dir') nodesOut.push(`<circle cx="${f1(nd.x)}" cy="${f1(nd.y)}" r="2.6" fill="#fff" filter="url(#glow)"/><circle cx="${f1(nd.x)}" cy="${f1(nd.y)}" r="5" fill="none" stroke="${col}" stroke-opacity=".7" stroke-width=".35"/>`)
+    else { const r = nd.kind === 'concept' ? 2.4 : 1.3 + Math.min(1.5, g.adj[nd.id].length * .16); nodesOut.push(`<circle cx="${f1(nd.x)}" cy="${f1(nd.y)}" r="${f1(r * 2.3)}" fill="${col}" opacity=".2"/><circle cx="${f1(nd.x)}" cy="${f1(nd.y)}" r="${f1(r)}" fill="${col}"/>`) }
   })
   out.push(nodesOut.join(''))
-  // étiquettes des nœuds visibles
+  // étiquettes des nœuds visibles (les fichiers jamais touchés restent discrets)
   let labels = ''
-  g.nodes.forEach(nd => { if (!inBox(nd) || nd.kind === 'leaf' || !nd.label) return; const isT = nd === X.target || X.targets.includes(nd); if (nd.kind === 'sym' && !isT && g.adj[nd.id].length < 4) return; labels += `<text x="${f1(nd.x + 6)}" y="${f1(nd.y + 1.4)}" fill="${isT ? '#fff' : nd.kind === 'file' || nd.kind === 'dir' ? 'rgba(240,236,255,.8)' : g.comms[nd.comm].col}" font-size="${isT ? 4.6 : 3.8}" ${isT ? 'font-weight="700"' : ''}>${esc(nd.label)}</text>` })
+  g.nodes.forEach(nd => {
+    if (!inBox(nd) || nd.kind === 'leaf' || !nd.label || nd.gone) return
+    const isT = nd === X.target || X.targets.includes(nd); if (nd.kind === 'sym' && !isT && g.adj[nd.id].length < 4) return
+    const cold = nd.kind === 'file' && !isT && !(nd.heat > .01) && !nd.visited
+    const dx = nd.kind === 'file' ? 4 + 3.6 * cocoonScale(nd) : 6
+    labels += `<text x="${f1(nd.x + dx)}" y="${f1(nd.y + 1.4)}" fill="${isT ? '#fff' : nd.kind === 'dir' ? 'rgba(240,236,255,.85)' : nd.kind === 'file' ? (cold ? 'rgba(240,236,255,.45)' : 'rgba(240,236,255,.88)') : g.comms[nd.comm].col}" font-size="${isT ? 4.6 : nd.kind === 'dir' ? 4.2 : 3.8}" ${isT || nd.kind === 'dir' ? 'font-weight="700"' : ''}>${esc(nd.label)}</text>`
+  })
   out.push(`<g font-family="monospace">${labels}</g>`)
   // effets de l'action
-  out.push(effectsSVG(W, ev, frames, X, dur))
-  // l'araignée
-  out.push(spiderSVG(frames, S, dur, n))
+  out.push(effectsSVG(W, ev, frames, X, dur, kt))
+  // les autres araignées (immobiles pendant ce clip)
+  X.others.forEach(o => {
+    let s = dragSVG([o.P], [o.a.hang], dur, 1) + spiderSVG([o.P], S, dur, 1)
+    if (o.a.id === 'main' && W.sleeping) s = swingWrap(o.P, s, 0) + zzzSVG(o.P)
+    out.push(s)
+  })
+  // l'araignée qui agit
+  const Ps = frames.map(f => f.P)
+  let sp = dragSVG(Ps, frames.map(f => f.hang || 0), dur, n) + spiderSVG(Ps, S, dur, n)
+  if (X.act.tool === 'Mood') sp = `<g filter="url(#mood)">${sp}</g>`
+  if (X.sleep) sp = swingWrap(Ps[Ps.length - 1], sp, T) + zzzSVG(Ps[Ps.length - 1])
+  if (X.fadeOut !== undefined) sp = `<g>${sp}<animate attributeName="opacity" values="1;1;0" keyTimes="0;${kt(X.fadeOut)};1" dur="${dur}" fill="freeze"/></g>`
+  out.push(sp)
   // carte de texte
-  out.push(cardSVG(ev, X, dur))
+  if ((ev.lines || []).length && !['idle', 'Sleep', 'Leave'].includes(ev.tool)) out.push(cardSVG(ev, X, frames))
   out.push('</svg>')
-  let svg = out.join('')
+  const svg = out.join('')
   if (svg.length > MAX_CHARS) { // trop long : on garde une image sur deux
     const half = frames.filter((_, i) => i % 2 === 0 || i === frames.length - 1)
     if (half.length < frames.length && frames.length > 6) return renderClip(W, ev, half, { ...X, edgeNear: X.edgeNear.slice(0, 4) })
   }
-  return { svg, dur: X.total }
+  return { svg, dur: X.total, sounds: X.sounds || [] }
 }
-function depthAtFrame(W, f, p) {
+// des toiles lointaines dans un plan plus profond : elles glissent à 45 % de la vitesse de la caméra
+function farLayer(W, frames, VW, VH, dur, n) {
+  const c0 = frames[0] ? frames[0].cam : W.cam, K = .55, TL = 240, fx = c0.x * (1 - K), fy = c0.y * (1 - K)
+  let d = ''
+  for (let tx = Math.floor((fx - VW / 2 - 130) / TL); tx <= Math.floor((fx + VW / 2 + 130) / TL); tx++) for (let ty = Math.floor((fy - VH / 2 - 130) / TL); ty <= Math.floor((fy + VH / 2 + 130) / TL); ty++) {
+    const h = hash(tx + ':' + ty); if (h % 3 === 0) continue
+    const R = rng(h), cx = tx * TL + R() * TL, cy = ty * TL + R() * TL, r = 60 + R() * 70, N = 9 + Math.floor(R() * 5), a0 = R() * 6
+    for (let k = 0; k < N; k++) { const a = a0 + k / N * Math.PI * 2; d += `M${f1(cx)} ${f1(cy)}L${f1(cx + Math.cos(a) * r)} ${f1(cy + Math.sin(a) * r)}` }
+    for (let f = .25; f < 1; f += .19) for (let k = 0; k <= N; k++) { const a = a0 + k / N * Math.PI * 2; d += (k ? 'L' : 'M') + f1(cx + Math.cos(a) * r * f) + ' ' + f1(cy + Math.sin(a) * r * f) }
+  }
+  const tr = n > 1 ? `<animateTransform attributeName="transform" type="translate" values="${frames.map(f => f1(f.cam.x * K) + ' ' + f1(f.cam.y * K)).join(';')}" dur="${dur}" fill="freeze"/>` : ''
+  return `<g transform="translate(${f1(c0.x * K)} ${f1(c0.y * K)})">${tr}<path d="${d}" fill="none" stroke="#c9c2ff" stroke-opacity=".09" stroke-width=".8" filter="url(#soft)"/></g>`
+}
+// un fil cassé : chaque bout pend depuis son nœud et se balance (only : un seul côté)
+function halvesSVG(g, e, only) {
+  let s = ''
+  for (const [id, from] of [[e.a, 0], [e.b, 1]]) {
+    if (only && id !== only) continue
+    if (e.broken && e.broken.kind === 'stub' && e.broken.alive !== id) continue
+    if (g.byId[id].gone) continue
+    const A = g.byId[id], pts = from ? [...e.pts].reverse() : e.pts, M = pts[Math.floor(pts.length * .42)]
+    const tip = { x: M.x + (A.x - M.x) * .15, y: M.y + 9 + Math.abs(M.x - A.x) * .08 }, c = { x: (A.x + M.x) / 2, y: (A.y + M.y) / 2 + 3 }
+    const sw = (hash(id + e.a + e.b) % 2 ? 1 : -1) * 7, b = -((hash(e.b + id) % 13) / 10)
+    s += `<g><animateTransform attributeName="transform" type="rotate" values="${-sw} ${f1(A.x)} ${f1(A.y)};${sw} ${f1(A.x)} ${f1(A.y)};${-sw} ${f1(A.x)} ${f1(A.y)}" dur="2.6s" begin="${b}s" repeatCount="indefinite"/><path d="${qd(A, c, tip)}" fill="none" stroke="#fff" stroke-opacity=".8" stroke-width=".45"/><circle cx="${f1(tip.x)}" cy="${f1(tip.y)}" r=".5" fill="#fff" filter="url(#glow)"/></g>`
+  }
+  return s
+}
+function cocoonSVG(nd, col0, X, frames, dur, kt) {
+  const col = nd.lang || langColor(nd.path || nd.label), sc = cocoonScale(nd), rx = 3.6 * sc, ry = 2.3 * sc
+  const touched = (nd.heat || 0) > .01 || nd.visited || nd.mod
+  const held = X.act.tool === 'Read' && X.target === nd, born = X.act.tool === 'Write' && X.target === nd && nd.isNew, falling = X.falling === nd
+  let s = `<g transform="translate(${f1(nd.x)} ${f1(nd.y)})"${touched || held ? '' : ' opacity=".55"'}>`
+  if (falling) { const b = X.snapT.toFixed(2); s += `<animateTransform attributeName="transform" type="translate" values="${f1(nd.x)} ${f1(nd.y)};${f1(nd.x + 3)} ${f1(nd.y + 50)}" dur="1.4s" begin="${b}s" fill="freeze"/><animate attributeName="opacity" values="1;1;0" dur="1.4s" begin="${b}s" fill="freeze"/>` }
+  if ((nd.heat || 0) > .08) s += `<circle r="${f1(rx * 1.9)}" fill="${col}" opacity="${(.06 + nd.heat * .16).toFixed(2)}" filter="url(#soft)"/>`
+  s += `<circle r="${f1(6 * sc)}" fill="${col0}" opacity=".14"/>`
+  let close = '</g>'
+  if (held) { s += `<g><animateTransform attributeName="transform" type="translate" values="${frames.map(f => '0 ' + f1(-(f.o.held ? f.o.held.z * TILT : 0))).join(';')}" dur="${dur}" fill="freeze"/>`; close += '</g>' }
+  if (born) { s += `<g transform="scale(.2)"><animateTransform attributeName="transform" type="scale" values=".2;.2;1" keyTimes="0;${kt(X.walkDur + .8)};${kt(X.walkDur + 2.6)}" dur="${dur}" fill="freeze"/>`; close += '</g>' }
+  s += `<g transform="rotate(${(nd.ang / DEG).toFixed(0)})">`; close = '</g>' + close
+  // une couche de soie de plus tous les deux passages d'édition
+  const layers = Math.min(3, Math.floor((nd.edits || 0) / 2))
+  for (let k = layers; k >= 1; k--) s += `<ellipse rx="${f1(rx * (1 + .2 * k))}" ry="${f1(ry * (1 + .3 * k))}" fill="#fff" fill-opacity=".04" stroke="#fff" stroke-opacity=".3" stroke-width=".18" stroke-dasharray="1 .7"/>`
+  s += `<ellipse rx="${f1(rx)}" ry="${f1(ry)}" fill="${col}" fill-opacity="${nd.mod ? .95 : .78}" stroke="${nd.mod ? '#ffc6f4' : '#fff'}" stroke-opacity=".6" stroke-width=".2" filter="url(#glow)"/>`
+  s += `<ellipse cx="${f1(-rx * .25)}" cy="${f1(-ry * .35)}" rx="${f1(rx * .45)}" ry="${f1(ry * .28)}" fill="#fff" opacity=".45"/>`
+  const cnt = 5 + Math.min(10, (nd.edits || 0) * 2 + (nd.wrap || 0) * 2)
+  let wraps = ''; for (let k = 0; k < cnt; k++) { const x = -rx * .83 + k * rx * 1.66 / cnt + rx * .17, h = ry * Math.sqrt(Math.max(0, 1 - (x / rx) ** 2)); wraps += `M${f1(x - .5)} ${f1(-h)}Q${f1(x + .5)} 0 ${f1(x - .5)} ${f1(h)}` }
+  s += `<path d="${wraps}" fill="none" stroke="${nd.mod ? '#fff0fb' : 'rgba(20,14,40,.55)'}" stroke-width="${f1(.22 * Math.sqrt(sc))}"/>`
+  if (held) s += `<ellipse rx="${f1(rx * .66)}" ry="${f1(ry * .5)}" fill="#c8faff" opacity="0" filter="url(#glow)"><animate attributeName="opacity" values="0;0;.9;.9;0" keyTimes="0;${kt(X.walkDur)};${kt(X.walkDur + .5)};${kt(X.total - .5)};1" dur="${dur}" fill="freeze"/></ellipse>`
+  return s + close
+}
+function depthAtFrame(f, p) {
   // profondeur approchée à partir de la pose enregistrée (corps et pieds posés)
   const P = f.P; let z = 0
+  if ((f.hang || 0) > 4) return 0
   const add = (x, y, w, s2) => { const dx = p.x - x, dy = p.y - y, d2 = dx * dx + dy * dy; if (d2 < s2 * 9) z -= w * Math.exp(-d2 / s2) }
-  add(P.x, P.y, 4.2, 420); P.legs.forEach(L => { if (!L.stepping) add(L.F.x, L.F.y, 1.15, 30) })
+  const k = P.m.baby ? .4 : 1
+  add(P.x, P.y, 4.2 * k, 420 * k); P.legs.forEach(L => { if (!L.stepping) add(L.F.x, L.F.y, 1.15 * k, 30) })
   return z
 }
-function spiderSVG(frames, S, dur, n) {
-  if (!frames.length) return ''
+// le fil de suspension (bébé qui descend, araignée qui dort)
+function dragSVG(Ps, hangs, dur, n) {
+  if (!hangs.some(h => h > .5)) return ''
+  const ds = Ps.map((P, i) => { const s = P3(spinneret(P)); return hangs[i] > .5 ? `M${f1(s.x)} ${f1(s.y)}L${f1(s.x)} ${f1(s.y - 420)}` : `M${f1(s.x)} ${f1(s.y)}L${f1(s.x)} ${f1(s.y)}` })
+  return `<path d="${ds[0]}" fill="none" stroke="#fff" stroke-opacity=".8" stroke-width=".3">${n > 1 ? `<animate attributeName="d" values="${ds.join(';')}" dur="${dur}" fill="freeze"/>` : ''}</path>`
+}
+function swingWrap(P, body, begin) {
+  const s = P3(spinneret(P)), px = f1(s.x), py = f1(s.y - 420)
+  return `<g><animateTransform attributeName="transform" type="rotate" values="-1.1 ${px} ${py};1.1 ${px} ${py};-1.1 ${px} ${py}" dur="3.6s" begin="${begin.toFixed(2)}s" repeatCount="indefinite"/>${body}</g>`
+}
+function zzzSVG(P) {
+  const h = P3({ x: P.x, y: P.y, z: P.bz + P.m.cw }), o = []
+  for (let k = 0; k < 3; k++) o.push(`<text x="${f1(h.x + 4)}" y="${f1(h.y)}" font-family="monospace" font-size="${(3 + k).toFixed(1)}" fill="#d9d2ff" opacity="0" filter="url(#glow)">z<animate attributeName="y" values="${f1(h.y)};${f1(h.y - 16)}" dur="3s" begin="${k}s" repeatCount="indefinite"/><animate attributeName="x" values="${f1(h.x + 4)};${f1(h.x + 10)}" dur="3s" begin="${k}s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;.9;0" dur="3s" begin="${k}s" repeatCount="indefinite"/></text>`)
+  return o.join('')
+}
+function spiderSVG(Ps, S, dur, n) {
+  if (!Ps.length) return ''
+  const frames = Ps.map(P => ({ P }))
   const anim = (attr, values) => n > 1 ? `<animate attributeName="${attr}" values="${values.join(';')}" dur="${dur}" fill="freeze"/>` : ''
   const P0 = frames[0].P, m = P0.m, w = m.legW, o = []
   const proj = frames.map(f => f.P.legs.map(L => ({ H: P3(L.H), K: P3(L.K), A: P3(L.A), T: P3(lerp3(L.A, L.F, .72)), F: P3(L.F), Fz: L.F, stepping: L.stepping })))
@@ -562,26 +837,42 @@ function spiderSVG(frames, S, dur, n) {
   return o.join('')
 }
 function unwrapDeg(list) { const out = []; let prev = list[0] || 0; list.forEach((v, i) => { if (i === 0) { out.push(v); return } let d = v - prev; while (d > 180) d -= 360; while (d < -180) d += 360; const nv = out[i - 1] + d; out.push(nv); prev = v }); return out }
-function effectsSVG(W, ev, frames, X, dur) {
-  const o = [], T = X.total, kt = s => (clamp(s / T, 0, 1)).toFixed(3), wd = X.walkDur
-  const at = (s, body) => `<g opacity="0"><set attributeName="opacity" to="1" begin="${s.toFixed(2)}s"/>${body}</g>`
+// les fils de soie qui partent des filières vers un point (cocon, fil à retisser)
+function silkSVG(frames, X, q, dur) {
+  const ds = [[], [], []]
+  frames.forEach(f => { const ta = f.tAct, s = P3(spinneret(f.P)); for (let k = 0; k < 3; k++) { if (ta < .9 || ta > X.act.dur - .2) { ds[k].push(`M${f1(s.x)} ${f1(s.y)}L${f1(s.x)} ${f1(s.y)}`); continue } const a = ta * 11 + k * 2.09, p = { x: q.x + Math.cos(a) * 3.6, y: q.y + Math.sin(a) * 2.3 }; ds[k].push(`M${f1(s.x)} ${f1(s.y)}Q${f1((s.x + p.x) / 2)} ${f1((s.y + p.y) / 2 + 2)} ${f1(p.x)} ${f1(p.y)}`) } })
+  return `<g fill="none" stroke="#fff" stroke-width=".2" filter="url(#glow)">${ds.map(d => `<path d="${d[0]}"><animate attributeName="d" values="${d.join(';')}" dur="${dur}" fill="freeze"/></path>`).join('')}</g>`
+}
+function effectsSVG(W, ev, frames, X, dur, kt) {
+  const o = [], wd = X.walkDur, last = frames[frames.length - 1]?.P
   const n = X.target
   if (ev.tool === 'Read' && n) {
     // le contenu du fichier remonte jusqu'aux yeux
-    const lastP = frames[frames.length - 1].P, head = P3({ ...locP(lastP, lastP.m.cl * .45, 0), z: lastP.bz + lastP.m.cw * .2 })
+    const head = P3({ ...locP(last, last.m.cl * .45, 0), z: last.bz + last.m.cw * .2 })
     const chars = (ev.lines || ['…']).join('').replace(/\s+/g, '').slice(0, 40) || '·'
     for (let k = 0; k < 14; k++) { const ch = esc(chars[k % chars.length]), b = (wd + .5 + k * .1).toFixed(2), jx = ((k * 37) % 7 - 3); o.push(`<text font-family="monospace" font-size="3.4" fill="#c9fbff" filter="url(#glow)" opacity="0" x="0" y="0">${ch}<animateMotion path="M${f1(n.x)} ${f1(n.y - 3)}Q${f1((n.x + head.x) / 2 + jx)} ${f1((n.y + head.y) / 2 - 6)} ${f1(head.x)} ${f1(head.y)}" dur=".8s" begin="${b}s" repeatCount="2"/><animate attributeName="opacity" values="0;1;0" dur=".8s" begin="${b}s" repeatCount="2"/></text>`) }
   }
   if ((ev.tool === 'Edit' || ev.tool === 'Write') && n) {
     // la soie sort des filières et emballe le cocon
-    const ds = [[], [], []]
-    frames.forEach(f => { const ta = f.tAct, s = P3(spinneret(f.P)); for (let k = 0; k < 3; k++) { if (ta < .9 || ta > X.act.dur - .2) { ds[k].push(`M${f1(s.x)} ${f1(s.y)}L${f1(s.x)} ${f1(s.y)}`); continue } const a = ta * 11 + k * 2.09, q = { x: n.x + Math.cos(a) * 3.6, y: n.y + Math.sin(a) * 2.3 }; ds[k].push(`M${f1(s.x)} ${f1(s.y)}Q${f1((s.x + q.x) / 2)} ${f1((s.y + q.y) / 2 + 2)} ${f1(q.x)} ${f1(q.y)}`) } })
-    o.push(`<g fill="none" stroke="#fff" stroke-width=".2" filter="url(#glow)">${ds.map(d => `<path d="${d[0]}"><animate attributeName="d" values="${d.join(';')}" dur="${dur}" fill="freeze"/></path>`).join('')}</g>`)
+    o.push(silkSVG(frames, X, n, dur))
     for (let k = 0; k < 9; k++) { const plus = k % 3 !== 2, b = (wd + 1 + k * .22).toFixed(2), x = n.x + ((k * 53) % 9 - 4); o.push(`<text x="${f1(x)}" y="${f1(n.y - 4)}" font-family="monospace" font-weight="700" font-size="4.2" fill="${plus ? '#c8ffbd' : '#ffc2d0'}" filter="url(#glow)" opacity="0">${plus ? '+' : '−'}<animate attributeName="y" values="${f1(n.y - 4)};${f1(n.y - 20)}" dur="1.1s" begin="${b}s" fill="freeze"/><animate attributeName="opacity" values="1;0" dur="1.1s" begin="${b}s" fill="freeze"/></text>`) }
+    // le vrai texte ajouté file le long de la soie, puis s'enroule autour du cocon
+    const added = (ev.lines || []).filter(l => l[0] === '+').map(l => l.slice(1).trim()).filter(Boolean).join('  ').slice(0, 64)
+    const fi = frames.findIndex(f => f.tAct >= .9)
+    if (added && fi >= 0) {
+      const s = P3(spinneret(frames[fi].P)), L = dist(s, n), txt = esc(added), tl = added.length * 1.45, b0 = wd + 1, T1 = clamp((tl + L) / 26, 1.2, 2.2)
+      const sc = cocoonScale(n), rx = 3.6 * sc + 2.4, ry = 2.3 * sc + 2.4
+      o.push(`<path id="wv" d="M${f1(s.x)} ${f1(s.y)}Q${f1((s.x + n.x) / 2)} ${f1((s.y + n.y) / 2 + 3)} ${f1(n.x)} ${f1(n.y)}" fill="none"/>`)
+      o.push(`<path id="wc" d="M${f1(n.x - rx)} ${f1(n.y)}a${f1(rx)} ${f1(ry)} 0 1 0 ${f1(rx * 2)} 0a${f1(rx)} ${f1(ry)} 0 1 0 ${f1(-rx * 2)} 0" fill="none"/>`)
+      o.push(`<text font-family="monospace" font-size="2.4" fill="#eaffe2" filter="url(#glow)" opacity="0"><set attributeName="opacity" to="1" begin="${b0.toFixed(2)}s"/><textPath href="#wv" startOffset="${f1(-tl)}">${txt}<animate attributeName="startOffset" values="${f1(-tl)};${f1(L)}" dur="${T1.toFixed(2)}s" begin="${b0.toFixed(2)}s" fill="freeze"/></textPath></text>`)
+      const per = Math.PI * (rx + ry), short = esc(added.slice(0, Math.floor(per / 1.45)))
+      o.push(`<text font-family="monospace" font-size="2" fill="#f4ffee" filter="url(#glow)" opacity="0"><animate attributeName="opacity" values="0;.95;.95;0" keyTimes="0;.1;.7;1" dur="1.6s" begin="${(b0 + T1 * .7).toFixed(2)}s" fill="freeze"/><textPath href="#wc" startOffset="0">${short}<animate attributeName="startOffset" values="0;${f1(per * .5)}" dur="1.6s" begin="${(b0 + T1 * .7).toFixed(2)}s" fill="freeze"/></textPath></text>`)
+    }
   }
+  if (ev.tool === 'Repair' && X.act.at) o.push(silkSVG(frames, X, X.act.at, dur))
   if (ev.tool === 'Grep') {
     X.plucks.forEach(p => o.push(`<circle cx="${f1(p.x)}" cy="${f1(p.y)}" r="2" fill="none" stroke="#ffd36b" stroke-width=".5" opacity="0"><animate attributeName="r" values="2;150" dur="1.4s" begin="${p.t.toFixed(2)}s" fill="freeze"/><animate attributeName="opacity" values=".7;0" dur="1.4s" begin="${p.t.toFixed(2)}s" fill="freeze"/></circle>`))
-    const from = X.plucks[0] || { x: W.sp.x, y: W.sp.y, t: wd }
+    const from = X.plucks[0] || { x: last.x, y: last.y, t: wd }
     X.targets.forEach((nd, k) => { const b = (from.t + .1 + k * .12).toFixed(2); o.push(`<circle r="1.1" fill="#fff" filter="url(#glow)" opacity="0"><animateMotion path="M${f1(from.x)} ${f1(from.y)}L${f1(nd.x)} ${f1(nd.y)}" dur=".9s" begin="${b}s" fill="freeze"/><animate attributeName="opacity" values="1;1;0" dur="1.2s" begin="${b}s" fill="freeze"/></circle><circle cx="${f1(nd.x)}" cy="${f1(nd.y)}" r="3" fill="none" stroke="#ffd36b" stroke-width=".7" opacity="0"><animate attributeName="r" values="3;24" dur=".9s" begin="${(+b + .9).toFixed(2)}s" fill="freeze"/><animate attributeName="opacity" values="1;0" dur=".9s" begin="${(+b + .9).toFixed(2)}s" fill="freeze"/></circle>`) })
   }
   if (ev.tool === 'Bash' && n) {
@@ -592,30 +883,29 @@ function effectsSVG(W, ev, frames, X, dur) {
     const ds = [[], [], []]
     frames.forEach((f, i) => { const ta = f.tAct, s = P3(spinneret(f.P)), L = ta < 0 ? 0 : sm(.4, 1.9, ta) * 150, now = i / FPS; for (let k = 0; k < 3; k++) { let d = ''; for (let j = 0; j <= 14; j++) { const u = j / 14, x = s.x + u * L * (.55 + k * .13) + Math.sin(u * 8 - now * 3 + k * 2) * 6 * u, y = s.y - u * L * (.9 - k * .12) + Math.cos(u * 6 - now * 2.5 + k) * 4 * u; d += (j ? 'L' : 'M') + f1(x) + ' ' + f1(y) } ds[k].push(d) } })
     o.push(`<g fill="none" stroke="#f5f5ff" stroke-width=".22" stroke-opacity=".85" filter="url(#glow)">${ds.map(d => `<path d="${d[0]}"><animate attributeName="d" values="${d.join(';')}" dur="${dur}" fill="freeze"/></path>`).join('')}</g>`)
-    const sp = frames[frames.length - 1].P
-    o.push(`<circle cx="${f1(sp.x)}" cy="${f1(sp.y)}" r="3" fill="none" stroke="#a8b4ff" stroke-width=".8" opacity="0"><animate attributeName="r" values="3;30" dur=".9s" begin="${(wd + 2.65).toFixed(2)}s" fill="freeze"/><animate attributeName="opacity" values="1;0" dur=".9s" begin="${(wd + 2.65).toFixed(2)}s" fill="freeze"/></circle>`)
+    o.push(`<circle cx="${f1(last.x)}" cy="${f1(last.y)}" r="3" fill="none" stroke="#a8b4ff" stroke-width=".8" opacity="0"><animate attributeName="r" values="3;30" dur=".9s" begin="${(wd + 2.65).toFixed(2)}s" fill="freeze"/><animate attributeName="opacity" values="1;0" dur=".9s" begin="${(wd + 2.65).toFixed(2)}s" fill="freeze"/></circle>`)
+  }
+  if (ev.tool === 'Mood' && last) {
+    // les photophores pulsent : des anneaux verts (réussite) ou rouges (échec)
+    const col = ev.ok ? '#9dff8a' : '#ff5a7a', c = P3({ x: last.x, y: last.y, z: last.bz })
+    for (let k = 0; k < (ev.ok ? 4 : 2); k++) { const b = (wd + .15 + k * .38).toFixed(2); o.push(`<circle cx="${f1(c.x)}" cy="${f1(c.y)}" r="3" fill="none" stroke="${col}" stroke-width=".7" opacity="0" filter="url(#glow)"><animate attributeName="r" values="3;${ev.big ? 46 : 30}" dur="1.1s" begin="${b}s" fill="freeze"/><animate attributeName="opacity" values="1;0" dur="1.1s" begin="${b}s" fill="freeze"/></circle>`) }
+    const glyph = ev.ok ? '✓' : '✗'
+    o.push(`<text x="${f1(c.x)}" y="${f1(c.y - 8)}" text-anchor="middle" font-family="monospace" font-weight="700" font-size="${ev.big ? 9 : 6}" fill="${col}" filter="url(#glow)" opacity="0">${glyph}<animate attributeName="y" values="${f1(c.y - 8)};${f1(c.y - 24)}" dur="1.4s" begin="${(wd + .3).toFixed(2)}s" fill="freeze"/><animate attributeName="opacity" values="0;1;1;0" dur="1.4s" begin="${(wd + .3).toFixed(2)}s" fill="freeze"/></text>`)
+    if (ev.ok && ev.big) for (let k = 0; k < 10; k++) { const a = k / 10 * Math.PI * 2, b = (wd + .4 + (k % 3) * .15).toFixed(2); o.push(`<circle cx="${f1(c.x)}" cy="${f1(c.y)}" r=".6" fill="#d9ffd0" filter="url(#glow)" opacity="0"><animate attributeName="cx" values="${f1(c.x)};${f1(c.x + Math.cos(a) * 22)}" dur="1s" begin="${b}s" fill="freeze"/><animate attributeName="cy" values="${f1(c.y)};${f1(c.y + Math.sin(a) * 16 - 6)}" dur="1s" begin="${b}s" fill="freeze"/><animate attributeName="opacity" values="1;0" dur="1s" begin="${b}s" fill="freeze"/></circle>`) }
   }
   return o.join('')
 }
-function cardSVG(ev, X, dur) {
-  const col = TOOL_COLOR[ev.toolName || ev.tool] || '#7df9ff', lines = (ev.lines || []).slice(0, 4), title = ev.label || ev.tool
-  const anchor = X.target || (X.targets[0]) || { x: 0, y: 0 }
-  const last = X.target ? X.target : null
+function cardSVG(ev, X, frames) {
+  const col = ev.tool === 'Mood' ? (ev.ok ? '#9dff8a' : '#ff5a7a') : TOOL_COLOR[ev.toolName] || TOOL_COLOR[ev.tool] || '#7df9ff', lines = (ev.lines || []).slice(0, 4), title = ev.label || ev.tool
+  const last = frames[frames.length - 1]?.P
+  const anchor = X.target || X.targets[0] || (last ? { x: last.x, y: last.y } : { x: 0, y: 0 })
   const begin = Math.max(0, X.walkDur + .2).toFixed(2)
   const w = 92, h = 12 + lines.length * 6
-  // la carte suit la caméra : on la place en haut à gauche de la vue finale
-  const cx = X._camEnd ? X._camEnd.x : anchor.x, cy = X._camEnd ? X._camEnd.y : anchor.y
-  const x = (last ? last.x : anchor.x) + 10, y = (last ? last.y : anchor.y) - h - 14
-  let s = `<g opacity="0" font-family="monospace"><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.12;.85;1" dur="${(X.total - X.walkDur).toFixed(2)}s" begin="${begin}s" fill="freeze"/>`
+  const x = anchor.x + 10, y = anchor.y - h - 14
+  let s = `<g opacity="0" font-family="monospace"><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.12;.85;1" dur="${Math.max(.5, X.total - X.walkDur).toFixed(2)}s" begin="${begin}s" fill="freeze"/>`
   s += `<rect x="${f1(x)}" y="${f1(y)}" width="${w}" height="${h}" rx="2.5" fill="rgba(12,9,22,.94)" stroke="${col}" stroke-opacity=".75" stroke-width=".35"/>`
   s += `<rect x="${f1(x)}" y="${f1(y)}" width="${w}" height="7" rx="2.5" fill="${col}" fill-opacity=".12"/>`
   s += `<text x="${f1(x + 3)}" y="${f1(y + 5)}" font-size="3.6" font-weight="700" fill="${col}">${esc(title.slice(0, 44))}</text>`
-  lines.forEach((ln, k) => { const c = ln[0] === '+' || ln[0] === '✓' ? '#9dff8a' : ln[0] === '-' ? '#ff8aa8' : '#cfc4ef'; s += `<text x="${f1(x + 3)}" y="${f1(y + 12 + k * 6)}" font-size="3.3" fill="${c}">${esc(ln.slice(0, 50))}</text>` })
+  lines.forEach((ln, k) => { const c = ln[0] === '+' || ln[0] === '✓' ? '#9dff8a' : ln[0] === '-' || ln[0] === '✗' ? '#ff8aa8' : '#cfc4ef'; s += `<text x="${f1(x + 3)}" y="${f1(y + 12 + k * 6)}" font-size="3.3" fill="${c}">${esc(ln.slice(0, 50))}</text>` })
   return s + '</g>'
-}
-// image fixe quand Claude ne fait rien : l'araignée respire, la toile reste visible
-export function idleClip(W) {
-  const frames = []
-  for (let i = 0; i < 2; i++) { stepPhysics(W, 1 / 60, {}); frames.push({ P: W.sp.pose(W.t, {}), cam: { ...W.cam }, o: {}, tAct: -1 }) }
-  return renderClip(W, { tool: 'idle' }, frames, { total: .1, walkDur: 0, act: { tool: 'idle' }, target: null, targets: [], plucks: [], edgeNear: [], S: SKINS[W.skin] })
 }

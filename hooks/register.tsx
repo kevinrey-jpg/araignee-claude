@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface } from 'claude-code'
 
 import type { Clip, Status, Recap } from '../types'
-import { createWorld, graphFromGraphify, graphFromTree, idleClip, makeClip, nodeForPath, setSkin, SKINS, TOOL_COLOR } from './engine'
+import { applyMemory, createWorld, graphFromGraphify, graphFromTree, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
 
 const PANE = 'araignee'
 // Changer l'étiquette quand la forme d'une valeur change : elle survit aux rechargements.
@@ -11,11 +11,13 @@ const statusAtom = atom({ plugin: 'araignee', key: 'status' } as const, { tool: 
 const skinAtom = atom({ plugin: 'araignee', key: 'skin' } as const, 'fusion')
 const recapAtom = atom({ plugin: 'araignee', key: 'recap' } as const, { title: '', duration: '', said: '', rows: [], at: 0 } as Recap, { shape: 'recap-1' })
 const grandAtom = atom({ plugin: 'araignee', key: 'grand' } as const, false)
+const soundAtom = atom({ plugin: 'araignee', key: 'sound' } as const, false)
 
 const TOOLS: Record<string, string> = { Read: 'Read', Edit: 'Edit', MultiEdit: 'Edit', NotebookEdit: 'Edit', Write: 'Write', Grep: 'Grep', Glob: 'Grep', Bash: 'Bash', WebSearch: 'Web', WebFetch: 'Web' }
 const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', '.venv', 'venv', '__pycache__', '.cache', 'coverage', 'target', '.idea', '.vscode', 'graphify-out'])
 
-type Ev = { tool: string; toolName: string; path?: string; targets?: string[]; label: string; lines: string[] }
+// actor : 'main' (Claude), 'agent:<id>' (un sous-agent) ou 'bg' (une tâche de fond) ; les deux derniers sont des bébés araignées
+type Ev = { tool: string; toolName: string; path?: string; targets?: string[]; label: string; lines: string[]; actor?: string; ok?: boolean; big?: boolean; pace?: number }
 // le monde de l'araignée vit dans le module : un rechargement le reconstruit
 let world: any = null
 let loading: Promise<void> | null = null
@@ -40,7 +42,20 @@ let watchDirs: string[] = []
 const mtimes = new Map<string, number>()
 const ownWrites = new Map<string, number>()
 let watching = false
+// la mémoire de la toile : combien de fois chaque fichier a été lu ou modifié, et quand (gardée d'une discussion à l'autre)
+type Mem = Record<string, { e?: number; r?: number; t?: number; l?: number }>
+let mem: Mem = {}
+let memKey = ''
+let memDirty = false
+const sizes: Record<string, number> = {}
+// le rythme de Claude et le sommeil de l'araignée
+const SLEEP_MS = 180000
+let eventTimes: number[] = []
+let lastEventAt = Date.now()
+let bgLast = 0
+let soundOn = false
 
+const hashStr = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) } return (h >>> 0).toString(36) }
 const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
 function rel(p: unknown): string | undefined {
   if (typeof p !== 'string' || !p) return undefined
@@ -70,7 +85,7 @@ async function ensureWorld($: EngineInterface) {
           if (en.name.startsWith('.') && en.name !== '.claude-plugin') continue
           const p = dir ? `${dir}/${en.name}` : en.name
           if (en.kind === 'dir' && !IGNORE.has(en.name)) await walk(p, depth + 1)
-          else if (en.kind === 'file') files.push(p)
+          else if (en.kind === 'file') { files.push(p); sizes[p] = en.size }
         }
       }
       await walk('', 0)
@@ -80,24 +95,65 @@ async function ensureWorld($: EngineInterface) {
     const saved = await $.store.get('skin')
     world = createWorld(graph, typeof saved === 'string' ? saved : 'fusion')
     await $.state.set({ plugin: 'araignee', key: 'skin' }, world.skin)
+    memKey = 'mem-' + hashStr(norm(cwd).toLowerCase())
+    const m = await $.store.get(memKey).catch(() => undefined)
+    mem = m && typeof m === 'object' ? m as Mem : {}
+    applyMemory(world, mem, sizes)
+    soundOn = (await $.store.get('son').catch(() => false)) === true
+    await $.state.set({ plugin: 'araignee', key: 'sound' }, soundOn)
   })()
   await loading
 }
 
+function touch($: EngineInterface, path: string | undefined, kind: 'e' | 'r', lines?: number) {
+  if (!path || !world) return
+  const m = mem[path] || (mem[path] = {})
+  m[kind] = (m[kind] || 0) + 1; m.t = Date.now(); if (lines) m.l = lines
+  applyMemory(world, mem, sizes)
+  if (memDirty) return
+  memDirty = true
+  $.clock.after(4000, () => {
+    memDirty = false
+    // on garde les 600 fichiers les plus récemment touchés
+    const keys = Object.keys(mem); if (keys.length > 600) keys.sort((a, b) => (mem[a]?.t || 0) - (mem[b]?.t || 0)).slice(0, keys.length - 600).forEach(k => delete mem[k])
+    void $.store.set(memKey, mem).catch(() => undefined)
+  })
+}
+const SOUND_FILES: Record<string, string> = { read: 'read', silk: 'silk', pluck: 'pluck', hum: 'hum', web: 'web', success: 'success', fail: 'fail', snap: 'snap' }
+function playSounds($: EngineInterface, list: { at: number; name: string }[]) {
+  if (!soundOn) return
+  for (const s of list.slice(0, 6)) { const f = SOUND_FILES[s.name]; if (f) $.clock.after(Math.round(s.at * 1000), () => { void $.audio.play({ asset: `sounds/${f}.wav` }, { gain: .55 }).catch(() => undefined) }) }
+}
+// au bout de trois minutes sans rien, l'araignée remonte au centre et s'endort sur son fil
+function scheduleSleep($: EngineInterface) {
+  $.clock.after(SLEEP_MS, () => {
+    if (playing || queue.length || !world || world.sleeping || Date.now() - lastEventAt < SLEEP_MS - 1000) return
+    playing = true
+    try {
+      const clip = sleepClip(world)
+      void update($, statusAtom, () => ({ tool: 'dort', path: 'en attente de Claude', source }))
+      void showClip($, clip)
+      $.clock.after(Math.max(500, clip.dur * 1000 + 150), () => { playing = false })
+    } catch { playing = false }
+  })
+}
 async function showClip($: EngineInterface, clip: { svg: string }) {
   await update($, clipAtom, old => ({ svg: clip.svg, seq: (old?.seq || 0) + 1 }))
 }
 
 async function pump($: EngineInterface) {
   if (playing) return
-  const ev = queue.shift()
-  if (!ev) { if (world) await showClip($, idleClip(world)); return }
+  let ev = queue.shift()
+  // un départ pour un bébé qui n'est jamais arrivé : rien à jouer
+  while (ev && ev.tool === 'Leave' && world && !hasActor(world, ev.actor || '')) ev = queue.shift()
+  if (!ev) { if (world) { await showClip($, idleClip(world)); scheduleSleep($) } return }
   playing = true
   try {
     await ensureWorld($)
     await update($, statusAtom, () => ({ tool: ev.toolName, path: ev.label, source }))
     const clip = makeClip(world, ev)
     await showClip($, clip)
+    playSounds($, clip.sounds || [])
     $.clock.after(Math.max(500, clip.dur * 1000 + 150), () => { playing = false; void pump($) })
   } catch (err) {
     playing = false
@@ -105,8 +161,10 @@ async function pump($: EngineInterface) {
   }
 }
 
-const VIEWER_TOOL: Record<string, string> = { Read: 'Read', Edit: 'Edit', MultiEdit: 'Edit', NotebookEdit: 'Edit', Write: 'Write', Grep: 'Grep', Glob: 'Glob', Bash: 'Bash', WebSearch: 'WebSearch', WebFetch: 'WebSearch' }
-const nodeData = (n: any) => ({ id: n.id, label: n.label, kind: n.kind, comm: n.comm, x: Math.round(n.x * 10) / 10, y: Math.round(n.y * 10) / 10, path: n.path })
+const VIEWER_TOOL: Record<string, string> = { Read: 'Read', Edit: 'Edit', MultiEdit: 'Edit', NotebookEdit: 'Edit', Write: 'Write', Grep: 'Grep', Glob: 'Glob', Bash: 'Bash', WebSearch: 'WebSearch', WebFetch: 'WebSearch', Mood: 'Mood', Delete: 'Delete', Leave: 'Leave' }
+const r2 = (v: number) => Math.round((v || 0) * 100) / 100
+const nodeData = (n: any) => ({ id: n.id, label: n.label, kind: n.kind, comm: n.comm, x: Math.round(n.x * 10) / 10, y: Math.round(n.y * 10) / 10, path: n.path, lines: n.lines, edits: n.edits || undefined, reads: n.reads || undefined, touched: n.touched || undefined, heat: n.heat ? r2(n.heat) : undefined })
+const infoOf = (n: any) => n && ({ id: n.id, lines: n.lines, edits: n.edits || 0, reads: n.reads || 0, touched: n.touched || 0, heat: r2(n.heat) })
 async function viewerSetup($: EngineInterface) {
   if (viewerDir) return
   await ensureWorld($)
@@ -114,7 +172,7 @@ async function viewerSetup($: EngineInterface) {
   const dir = norm(home) + '/.claude/araignee'
   sid = String((await $.session.id()) || Date.now()).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 16)
   const g = world.g
-  const data = { name: norm(cwd).split('/').pop() || 'projet', comms: g.comms.map((c: any) => ({ name: c.name, col: c.col })), nodes: g.nodes.map(nodeData), edges: g.edges.map((e: any) => ({ a: e.a, b: e.b, kind: e.kind })) }
+  const data = { name: norm(cwd).split('/').pop() || 'projet', root: norm(cwd), comms: g.comms.map((c: any) => ({ name: c.name, col: c.col })), nodes: g.nodes.map(nodeData), edges: g.edges.map((e: any) => ({ a: e.a, b: e.b, kind: e.kind })) }
   await $.fs.write(`${dir}/graph-${sid}.js`, 'window.ARAIGNEE_GRAPH = ' + JSON.stringify(data) + ';\n')
   const html = await $.fs.read(`${$.plugin.root}/viewer/viewer.html`) as string
   await $.fs.write(`${dir}/araignee-${sid}.html`, html.replace('<!--SID-->', `<script>window.ARAIGNEE_SID = ${JSON.stringify(sid)}</script><script src="graph-${sid}.js"></script>`))
@@ -153,28 +211,32 @@ async function pushLive($: EngineInterface, toolName: string, ev: Ev, e: any) {
   else if (ev.path) t = nodeForPath(g, ev.path)?.id
   const nodes = g.nodes.slice(before).map((n: any) => ({ ...nodeData(n), anchor: g.adj[n.id][0] }))
   const d = String(e.pattern ?? e.command ?? e.query ?? e.url ?? '').split('\n')[0]?.slice(0, 60) ?? ''
+  const info = ev.path ? infoOf(nodeForPath(g, ev.path)) : undefined
   liveSeq += 1
-  liveEvents.push({ seq: liveSeq, tool: VIEWER_TOOL[toolName] || ev.tool, t, d, label: ev.label, lines: ev.lines, nodes })
+  liveEvents.push({ seq: liveSeq, tool: VIEWER_TOOL[toolName] || VIEWER_TOOL[ev.tool] || ev.tool, t, d, label: ev.label, lines: ev.lines, nodes, actor: ev.actor || 'main', ok: ev.ok, big: ev.big, pace: ev.pace, info })
   if (liveEvents.length > 30) liveEvents = liveEvents.slice(-30)
   await writeLive($)
 }
 
-async function scan($: EngineInterface, first: boolean): Promise<{ path: string; created: boolean }[]> {
-  const changed: { path: string; created: boolean }[] = []
+async function scan($: EngineInterface, first: boolean): Promise<{ path: string; created: boolean; deleted?: boolean }[]> {
+  const changed: { path: string; created: boolean; deleted?: boolean }[] = []
+  const seen = new Set<string>(), listed = new Set<string>()
   for (let i = 0; i < watchDirs.length; i++) {
     const d = watchDirs[i] ?? ''
     const entries = await $.fs.list(d ? `${cwd}/${d}` : cwd).catch(() => null)
     if (!entries) continue
+    listed.add(d)
     for (const en of entries) {
       if (en.name.startsWith('.')) continue
       const p = d ? `${d}/${en.name}` : en.name
       if (en.kind === 'dir') { if (!IGNORE.has(en.name) && !watchDirs.includes(p) && watchDirs.length < 160 && p.split('/').length <= 5) watchDirs.push(p); continue }
       if (en.kind !== 'file' || /\.(pyc|tmp|swp|lock)$|~$/.test(en.name)) continue
       const old = mtimes.get(p)
-      mtimes.set(p, en.mtimeMs)
+      mtimes.set(p, en.mtimeMs); sizes[p] = en.size; seen.add(p)
       if (!first && (old === undefined || en.mtimeMs > old + 1)) changed.push({ path: p, created: old === undefined })
     }
   }
+  if (!first) for (const p of [...mtimes.keys()]) { const dir = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : ''; if (listed.has(dir) && !seen.has(p)) { mtimes.delete(p); changed.push({ path: p, created: false, deleted: true }) } }
   return changed
 }
 async function startWatch($: EngineInterface) {
@@ -192,23 +254,53 @@ async function startWatch($: EngineInterface) {
       const changed = (await scan($, false)).filter(c => !ownWrites.has(c.path)).slice(-3)
       if (changed.length) await showOnce($).catch(() => undefined)
       for (const c of changed) {
+        const name = c.path.split('/').pop() || c.path
+        if (c.deleted) {
+          // le fichier a disparu : son fil claque, le cocon tombe, puis une araignée retisse
+          const who = Date.now() - lastMainAt < 5000 ? 'main' : 'bg'
+          const ev: Ev = { tool: 'Delete', toolName: 'Delete', path: c.path, label: 'Supprimé · ' + name, lines: ['✗ ' + c.path], actor: 'main' }
+          await pushLive($, 'Delete', ev, {}).catch(() => undefined)
+          enqueue($, ev)
+          enqueue($, { tool: 'Repair', toolName: 'Repair', label: 'Retisse la toile', lines: ['la soie est réparée'], actor: who })
+          if (who === 'bg') bgLast = Date.now()
+          continue
+        }
         let lines = [c.created ? '+ nouveau fichier' : '~ modifié en arrière-plan']
         if (c.created) { const txt = await $.fs.read(`${cwd}/${c.path}`).catch(() => '') as string; if (typeof txt === 'string' && txt.length < 200000) lines = firstLines(txt, 3).map(l => '+ ' + l.slice(0, 60)) }
-        const ev: Ev = { tool: c.created ? 'Write' : 'Edit', toolName: 'Arrière-plan', path: c.path, label: 'Arrière-plan · ' + (c.path.split('/').pop() || c.path), lines }
+        const ev: Ev = { tool: c.created ? 'Write' : 'Edit', toolName: 'Arrière-plan', path: c.path, label: 'Arrière-plan · ' + name, lines, actor: 'bg' }
+        bgLast = Date.now()
+        touch($, c.path, 'e')
         await pushLive($, c.created ? 'Write' : 'Edit', ev, {}).catch(() => undefined)
         enqueue($, ev)
       }
+      // la tâche de fond ne touche plus rien : son bébé araignée remonte sur son fil
+      if (world && hasActor(world, 'bg') && bgLast && Date.now() - bgLast > 45000 && !queue.some(q => q.actor === 'bg')) { bgLast = 0; leave($, 'bg') }
     } catch { /* on réessaie au prochain passage */ }
     busy = false
   }
   $.clock.every(2500, () => { void tick() })
 }
 
+const KEEP = new Set(['Mood', 'Delete', 'Repair', 'Leave'])
+let lastMainAt = 0
 function enqueue($: EngineInterface, ev: Ev) {
+  const now = Date.now()
+  if (!KEEP.has(ev.tool)) {
+    // le rythme : plus Claude enchaîne vite, plus l'araignée trotte
+    eventTimes = eventTimes.filter(t => now - t < 30000); eventTimes.push(now)
+    ev.pace = Math.min(1.9, Math.max(.75, .75 + eventTimes.length * .07))
+  }
+  lastEventAt = now
+  if (!ev.actor || ev.actor === 'main') lastMainAt = now
   queue.push(ev)
   // Claude va plus vite que l'araignée : on garde les actions les plus récentes
-  while (queue.length > 4) { const i = queue.findIndex(q => q.tool === 'Read' || q.tool === 'Grep'); queue.splice(i < 0 ? 0 : i, 1) }
+  while (queue.length > 5) { const i = queue.findIndex(q => q.tool === 'Read' || q.tool === 'Grep'); const j = i >= 0 ? i : queue.findIndex(q => !KEEP.has(q.tool)); if (j < 0) break; queue.splice(j, 1) }
   void pump($)
+}
+function leave($: EngineInterface, actor: string) {
+  const ev: Ev = { tool: 'Leave', toolName: 'Leave', label: actor === 'bg' ? 'La tâche de fond a fini' : "L'agent a fini", lines: [], actor }
+  void pushLive($, 'Leave', ev, {}).catch(() => undefined)
+  enqueue($, ev)
 }
 
 async function openPane($: EngineInterface) {
@@ -281,6 +373,13 @@ async function pushRaw($: EngineInterface, data: any) {
   await writeLive($)
 }
 
+async function toggleSound($: EngineInterface): Promise<boolean> {
+  soundOn = !soundOn
+  await $.store.set('son', soundOn)
+  await $.state.set({ plugin: 'araignee', key: 'sound' }, soundOn)
+  if (soundOn) void $.audio.play({ asset: 'sounds/pluck.wav' }, { gain: .55 }).catch(() => undefined)
+  return soundOn
+}
 // la toile en grand, calée sur la zone de discussion de Claude (Windows : Edge en mode application)
 async function openGrand($: EngineInterface): Promise<string> {
   await viewerSetup($)
@@ -290,7 +389,7 @@ async function openGrand($: EngineInterface): Promise<string> {
   const file = `${viewerDir}/araignee-${sid}.html`.replace(/\//g, '\\')
   const url = 'file:///' + file.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/^([A-Za-z])%3A/, '$1:') + '?grand=1'
   const script = `${$.plugin.root}/scripts/grand.ps1`.replace(/\//g, '\\')
-  const argv = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script, '-Url', url, '-Title', 'grand-' + sid, '-Left', String(left), '-Top', String(top)]
+  const argv = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script, '-Url', url, '-Title', 'grand-' + sid, '-Left', String(left), '-Top', String(top), '-Root', cwd.replace(/\//g, '\\')]
   stopGrand()
   const run = $.process.spawn({ argv })
   grandRun = run as any
@@ -316,6 +415,7 @@ export const register: Register = on => {
     // la sentinelle démarre avec la discussion : même si Claude attend, les tâches de fond se voient
     $.clock.after(4000, () => { void ensureWorld($).then(() => startWatch($)).catch(() => undefined) })
     await $.command.register({ name: 'araignee-grand', description: "Agrandit l'araignée sur toute la zone de la discussion (Échap pour revenir)" })
+    await $.command.register({ name: 'araignee-son', description: "Active ou coupe les petits sons de l'araignée" })
     await $.command.register({ name: 'araignee-marges', description: "Règle le calage de la grande toile : /araignee-marges <gauche> <haut> (en pixels, 300 44 par défaut)" })
     return next(e)
   })
@@ -326,6 +426,8 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'araignee-grand' }, async $ => ({ text: await openGrand($) }))
+
+  on('command.run', { command: 'araignee-son' }, async $ => ({ text: await toggleSound($) ? "Les sons de l'araignée sont activés." : "Les sons de l'araignée sont coupés." }))
 
   on('command.run', { command: 'araignee-marges' }, async ($, e) => {
     const n = String(e.args || '').match(/-?\d+/g)?.map(Number) || []
@@ -343,6 +445,7 @@ export const register: Register = on => {
   // le tour se termine : l'araignée affiche le bilan de ce que Claude a fait
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
+    if (e.agentId && world && (hasActor(world, 'agent:' + e.agentId) || queue.some(q => q.actor === 'agent:' + e.agentId))) leave($, 'agent:' + e.agentId)
     if (!e.agentId) {
       try {
         const r = recapOf(e.answer || '', e.durationMs || 0, !!e.isAborted)
@@ -391,7 +494,8 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     const toolName = String(e.tool)
     if (!TOOLS[toolName]) return next(e)
-    const agent = (e as any).agentId ? 'Agent · ' : ''
+    const agentId = (e as any).agentId as string | undefined
+    const actor = agentId ? 'agent:' + agentId : 'main', agent = agentId ? 'Agent · ' : ''
     const play = async (ran: any) => {
       try {
         await ensureWorld($)
@@ -399,13 +503,31 @@ export const register: Register = on => {
         void startWatch($).catch(() => undefined)
         const ev = eventFor(toolName, e, ran)
         if (!ev) return
+        ev.actor = actor
         if (agent) { ev.toolName = 'Agent ' + ev.toolName; ev.label = agent + ev.label }
-        if (ev.path && (ev.tool === 'Edit' || ev.tool === 'Write')) ownWrites.set(ev.path, Date.now())
+        if (ev.path && (ev.tool === 'Edit' || ev.tool === 'Write')) { ownWrites.set(ev.path, Date.now()); touch($, ev.path, 'e', ev.tool === 'Write' ? countLines((e as any).content) : undefined) }
+        if (ev.path && ev.tool === 'Read') { const all = !(e as any).offset && !(e as any).limit, n = ran && typeof ran.text === 'string' ? ran.text.split('\n').length : 0; touch($, ev.path, 'r', all && n > 1 && n < 2000 ? n : undefined) }
         track(toolName, e, ev); await pushLive($, toolName, ev, e).catch(() => undefined); enqueue($, ev)
       } catch { /* l'araignée ne doit jamais gêner Claude */ }
     }
-    // une commande peut durer longtemps : l'araignée part au terminal dès qu'elle commence
-    if (TOOLS[toolName] === 'Bash') { await play(null); return next(e) }
+    // une commande peut durer longtemps : l'araignée part au terminal dès qu'elle commence,
+    // puis réagit au résultat : une petite danse si ça marche, recroquevillée si ça échoue
+    if (TOOLS[toolName] === 'Bash') {
+      await play(null)
+      const ran: any = await next(e)
+      try {
+        const cmd = (String((e as any).command ?? '').split('\n')[0] ?? '').slice(0, 44), ok = !ran?.isError
+        const background = !!ran?.result?.backgroundTaskId, quiet = ok && ran?.isReadOnly
+        if (world && !background && !quiet && !ran?.deny) {
+          const big = /\b(test|tests|pytest|jest|vitest|mocha|spec|build|tsc|cargo|go test|lint|check)\b/i.test(cmd)
+          const ev: Ev = { tool: 'Mood', toolName: 'Bash', label: (ok ? '✓ ' : '✗ ') + cmd, lines: [ok ? (big ? '✓ tout passe' : '✓ réussi') : '✗ échec', ...firstLines(ran?.text, 2).map(l => l.slice(0, 60))], actor, ok, big }
+          await pushLive($, 'Mood', ev, e).catch(() => undefined)
+          enqueue($, ev)
+          if (!ok) enqueue($, { tool: 'Repair', toolName: 'Repair', label: 'Retisse le fil', lines: ['la soie est réparée'], actor })
+        }
+      } catch { /* l'araignée ne doit jamais gêner Claude */ }
+      return ran
+    }
     const ran = await next(e)
     await play(ran)
     return ran
@@ -419,6 +541,7 @@ export const register: Register = on => {
     const skin = await read($, skinAtom)
     const recap = await read($, recapAtom)
     const grand = await read($, grandAtom)
+    const sound = await read($, soundAtom)
     const props: any = e.props
     if (e.surface === 'terminal' || !els.Svg) return (
       <Box flexDirection="column">
@@ -445,6 +568,7 @@ export const register: Register = on => {
           {Button && (grand
             ? <Button key="reduire" onPress={() => { void closeGrand($) }}>Réduire</Button>
             : <Button key="agrandir" variant="primary" onPress={() => { void openGrand($).then(t => $.ui.toast(t)) }}>Agrandir</Button>)}
+          {Button && <Button key="son" onPress={() => { void toggleSound($) }}>{sound ? 'Son : oui' : 'Son : non'}</Button>}
         </Box>
         {clip.svg
           ? <Svg source={svg} alt={`L'araignée : ${st.tool} ${st.path}`} isInteractive />

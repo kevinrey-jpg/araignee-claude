@@ -5,7 +5,8 @@ param(
   [Parameter(Mandatory = $true)][string]$Title,
   [int]$Left = 300,
   [int]$Top = 44,
-  [int]$Bottom = 0
+  [int]$Bottom = 0,
+  [string]$Root = ''
 )
 $ErrorActionPreference = 'SilentlyContinue'
 
@@ -72,8 +73,21 @@ $TOPMOST = [IntPtr](-1)
 $SWP_NOACTIVATE = 0x0010; $SWP_FRAMECHANGED = 0x0020; $SWP_SHOWWINDOW = 0x0040
 $last = ''
 $hidden = $false
+$opened = ''
+# un clic sur un cocon : la page met « #open:<n>:<chemin> » dans son titre, on ouvre le fichier avec son application
+function OpenRequest([string]$title) {
+  if ($title -notmatch '#open:(\d+):(.+)$') { return }
+  $n = $Matches[1]; $rel = $Matches[2]
+  if ($n -eq $script:opened -or -not $Root) { return }
+  $script:opened = $n
+  if ($rel -match '\.\.' ) { return }
+  $full = [System.IO.Path]::GetFullPath((Join-Path $Root ($rel -replace '/', '\')))
+  if (-not $full.StartsWith([System.IO.Path]::GetFullPath($Root), [System.StringComparison]::OrdinalIgnoreCase)) { return }
+  if (Test-Path -LiteralPath $full -PathType Leaf) { Invoke-Item -LiteralPath $full }
+}
 while ([AraigneeWin]::IsWindow($win)) {
   if (-not [AraigneeWin]::IsWindow($claude)) { break }
+  OpenRequest ([AraigneeWin]::Text($win))
   # la toile ne se montre que quand Claude (ou elle-même) est au premier plan
   $fg = [AraigneeWin]::GetForegroundWindow()
   $show = (-not [AraigneeWin]::IsIconic($claude)) -and ($fg -eq $claude -or $fg -eq $win)

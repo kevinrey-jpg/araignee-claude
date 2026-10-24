@@ -100,3 +100,62 @@ test("une tâche en arrière-plan qui modifie un fichier fait bouger l'araignée
   expect((await ui.find({ type: 'Text', text: /Arrière-plan · b\.ts/ }))).toBeDefined()
   await ui.unmount()
 })
+
+// le socle commun des tests suivants
+function base(on: any) {
+  on('command.register', () => ({ value: { command: 'araignee' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [] }))
+  on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/proj' }))
+  on('fs.read', () => ({ value: JSON.stringify(GRAPH) }))
+  on('fs.list', () => ({ value: [] }))
+  on('store.get', () => ({ value: undefined }))
+  on('clock.after', () => ({ value: undefined }))
+}
+const flush = async () => { for (let i = 0; i < 200; i++) await Promise.resolve() }
+
+test("une commande qui échoue : l'araignée se recroqueville, le fil casse, puis elle le retisse", async ($, on) => {
+  base(on)
+  const logs: string[] = []
+  on('ui.log', (_: any, e: any) => { logs.push(String(e.text ?? e.message ?? JSON.stringify(e))); return { value: undefined } })
+  on('clock.every', () => ({ deny: 'pas de sentinelle ici' }) as any)
+  on('tool.call', (_: any, e: any) => e.tool === 'Bash' ? { isError: true, result: 'boom', text: 'Error: exit 1' } as any : { result: {}, text: 'ok' })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'npm test' })
+  await flush()
+  expect(logs.join('\n')).toBe('')
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /Repair|Retisse/ }))).toBeDefined()
+  await ui.unmount()
+})
+
+test('la mémoire de la toile est gardée pour la prochaine discussion', async ($, on) => {
+  base(on)
+  const saved: any[] = []
+  on('store.set', (_: any, e: any) => { saved.push(e); return { value: undefined } })
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/src/b.ts', old_string: 'a', new_string: 'b', replace_all: false })
+  await flush()
+  const m = saved.find(s => String(s.key).startsWith('mem-'))
+  expect(m).toBeDefined()
+  expect(m.value['src/b.ts'].e).toBe(1)
+})
+
+test("un sous-agent a son bébé araignée, qui remonte quand l'agent a fini", async ($, on) => {
+  base(on)
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  on('turn.complete', (_: any, e: any) => ({ text: e.answer }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.tool.call({ tool: 'Read', file_path: '/proj/src/a.ts', agentId: 'a1' } as any)
+  await flush()
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /Agent · Read/ }))).toBeDefined()
+  await ui.unmount()
+  await $.turn.complete({ turnId: 't1', agentId: 'a1', answer: 'fini', durationMs: 1000, isAborted: false, reason: 'answer' } as any)
+  await flush()
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /Leave/ }))).toBeDefined()
+  await ui.unmount()
+})
