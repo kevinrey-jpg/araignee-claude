@@ -351,7 +351,7 @@ function pluckTip(sp) { const L = sp.legs.find(l => l.i === 0 && l.s === 1), b =
 
 /* ---------------- fabrication d'un clip ---------------- */
 // ev : { tool: 'Read'|'Edit'|'Write'|'Grep'|'Bash'|'Web', path?, targets?: string[], label, lines?: string[] }
-const FPS = 12, VIEW_W = 300, VIEW_H = 190, MAX_CHARS = 125000
+const FPS = 12, MAX_CHARS = 125000
 export function makeClip(W, ev) {
   const g = W.g, sp = W.sp, S = SKINS[W.skin], m = sp.m
   let target = null, targets = []
@@ -420,6 +420,8 @@ export function makeClip(W, ev) {
 /* ---------------- rendu SVG d'un clip ---------------- */
 function vals(arr) { return arr.join(';') }
 export function renderClip(W, ev, frames, X) {
+  // la vue épouse la forme du panneau (hauteur / largeur), à surface à peu près constante
+  const asp = clamp(W.aspect || .63, .3, 3), VIEW_W = Math.sqrt(64000 / asp), VIEW_H = VIEW_W * asp
   const g = W.g, S = X.S, n = frames.length, dur = Math.max(.1, X.total).toFixed(2) + 's'
   const anim = (attr, values) => `<animate attributeName="${attr}" values="${vals(values)}" dur="${dur}" fill="freeze" calcMode="linear"/>`
   // zone visible pendant le clip
@@ -430,7 +432,7 @@ export function renderClip(W, ev, frames, X) {
   const inBox = p => p.x > bx0 && p.x < bx1 && p.y > by0 && p.y < by1
   const out = []
   const f0 = frames[0] ? frames[0].cam : W.cam
-  out.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${f1(f0.x - VIEW_W / 2)} ${f1(f0.y - VIEW_H / 2)} ${VIEW_W} ${VIEW_H}" width="640" height="405" preserveAspectRatio="xMidYMid slice" style="background:#06040c">`)
+  out.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${f1(f0.x - VIEW_W / 2)} ${f1(f0.y - VIEW_H / 2)} ${VIEW_W} ${VIEW_H}" width="1000" height="${Math.round(1000 * asp)}" preserveAspectRatio="xMidYMid slice" style="background:#06040c">`)
   if (n > 1) out.push(anim('viewBox', frames.map(f => `${f1(f.cam.x - VIEW_W / 2)} ${f1(f.cam.y - VIEW_H / 2)} ${VIEW_W} ${VIEW_H}`)))
   out.push(`<defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation=".8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter><filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="1.6"/></filter>${skinDefs('sk', S)}</defs>`)
   out.push(`<rect x="${f1(bx0 - 400)}" y="${f1(by0 - 400)}" width="${f1(bx1 - bx0 + 800)}" height="${f1(by1 - by0 + 800)}" fill="#06040c"/>`)

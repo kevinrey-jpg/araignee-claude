@@ -30,6 +30,6 @@ Dans l'application de bureau, où `/plugin` ne s'exécute pas : clique sur **+**
 
 ## Utilisation
 
-Rien à faire : à la première action de Claude dans une discussion, l'araignée s'affiche. Dans le panneau de Claude quand l'application en propose un, sinon dans une page de ton navigateur (fichiers dans `~/.claude/araignee/`). La commande `/araignee` la rouvre à tout moment.
+Rien à faire : à la première action de Claude dans une discussion, l'araignée s'affiche. Dans le panneau de Claude quand l'application en propose un, sinon dans une page de ton navigateur (fichiers dans `~/.claude/araignee/`). La commande `/araignee` la rouvre à tout moment, et `/araignee-plein-ecran` ouvre la toile en grand dans le navigateur, dans sa version haute qualité (F11 pour le plein écran).
 
 La discussion doit tourner sur ton ordinateur : dans une session Claude Code en cloud, le plugin tourne sur le serveur et la page ne peut pas s'ouvrir chez toi.

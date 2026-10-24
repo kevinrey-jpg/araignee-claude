@@ -1622,7 +1622,7 @@ function poll() { if (!SID) return; const sc = document.createElement('script');
 setInterval(poll, 700); poll();
 
 new ResizeObserver(fit).observe(vp);
-fit(); select(AGENTS[0]); document.getElementById('proj-name').textContent = GD.name; document.title = 'Araignée · ' + GD.name;
+win.classList.add('max'); bMax.setAttribute('aria-pressed', 'true'); bMax.textContent = 'Rétablir'; fit(); select(AGENTS[0]); document.getElementById('proj-name').textContent = GD.name; document.title = 'Araignée · ' + GD.name;
 if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) setPaused(true);
 AGENTS.forEach((ag, k) => after(.5 + k * .9, () => nextEvent(ag)));
 requestAnimationFrame(frame);

@@ -182,7 +182,13 @@ function eventFor(toolName: string, e: any, ran: any): Ev | null {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'araignee', description: "Ouvre le panneau de l'araignée qui suit le travail de Claude" })
+    await $.command.register({ name: 'araignee-plein-ecran', description: "Ouvre la toile de l'araignée en grand, dans le navigateur (version haute qualité)" })
     return next(e)
+  })
+
+  on('command.run', { command: 'araignee-plein-ecran' }, async $ => {
+    const file = await openViewer($)
+    return { text: `La toile en plein écran s'ouvre dans ton navigateur (touche F11 pour le vrai plein écran) : ${file}` }
   })
 
   on('command.run', { command: 'araignee' }, async $ => {
@@ -234,24 +240,30 @@ export const register: Register = on => {
     const clip = await read($, clipAtom)
     const st = await read($, statusAtom)
     const skin = await read($, skinAtom)
-    const head = (
-      <Box flexDirection="row" gap={1}>
-        <Text color={(TOOL_COLOR as any)[st.tool] || '#c89bff'} bold>{st.tool}</Text>
-        <Text dimColor>{st.path || 'en attente du travail de Claude'}</Text>
-      </Box>
-    )
+    const props: any = e.props
     if (e.surface === 'terminal' || !els.Svg) return (
       <Box flexDirection="column">
-        {head}
+        <Text bold>{st.tool} <Text dimColor>{st.path}</Text></Text>
         <Text dimColor>La toile animée s'affiche dans l'application de bureau.</Text>
       </Box>
     )
+    // la toile remplit tout le panneau : on prend sa forme (une cellule fait ~2 fois plus haut que large)
+    const cols = Math.max(20, props.bodyColumns || 60), rows = Math.max(8, (props.scroll?.bodyRows || e.viewport?.rows || 30) - 4)
+    const asp = Math.min(3, Math.max(.3, rows * 2.1 / cols))
+    if (world && Math.abs((world.aspect || .63) - asp) / asp > .12) {
+      world.aspect = asp
+      if (!playing) $.clock.after(0, () => { if (!playing && world) void showClip($, idleClip(world)) })
+    }
+    const svg = clip.svg.replace(/width="1000" height="\d+"/, `width="1000" height="${Math.round(1000 * asp)}"`)
     const { Svg, Select } = els
     return (
-      <Box flexDirection="column" gap={1}>
-        {head}
+      <Box flexDirection="column">
+        <Box flexDirection="row" gap={1}>
+          <Text color={(TOOL_COLOR as any)[st.tool] || '#c89bff'} bold>{st.tool}</Text>
+          <Text dimColor>{st.path || 'en attente du travail de Claude'}</Text>
+        </Box>
         {clip.svg
-          ? <Svg source={clip.svg} alt={`L'araignée : ${st.tool} ${st.path}`} isInteractive />
+          ? <Svg source={svg} alt={`L'araignée : ${st.tool} ${st.path}`} isInteractive />
           : <Text dimColor>La toile se prépare au premier geste de Claude.</Text>}
         {Select && (
           <Select
@@ -268,7 +280,6 @@ export const register: Register = on => {
             }}
           />
         )}
-        <Text dimColor size="caption">Toile : {st.source || source || '…'}</Text>
       </Box>
     )
   })
