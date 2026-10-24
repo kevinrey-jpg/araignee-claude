@@ -1,0 +1,5 @@
+{
+  "name": "araignee-claude",
+  "owner": { "name": "kevinrey-jpg" },
+  "plugins": [{ "name": "araignee", "source": "./", "description": "Une araignée suit en direct le travail de Claude sur la toile de ton projet." }]
+}
