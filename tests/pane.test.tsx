@@ -90,7 +90,7 @@ test("une tâche en arrière-plan qui modifie un fichier fait bouger l'araignée
   on('clock.after', () => ({ value: undefined }))
   // chaque période de la sentinelle : le fichier a changé entre-temps
   let periods = 0
-  on('clock.every', () => { periods += 1; if (periods > 3) return { deny: 'fin du test' } as any; mtime += 1000; return { value: undefined } })
+  on('clock.every', (_, e: any) => { if (e.ms !== 2500) return { value: undefined }; periods += 1; if (periods > 3) return { deny: 'fin du test' } as any; mtime += 1000; return { value: undefined } })
   on('tool.call', () => ({ result: {}, text: 'ok' }))
 
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
@@ -202,7 +202,7 @@ test("un dossier supprimé : ses fichiers sont vus comme supprimés", async ($, 
   on('store.get', () => ({ value: undefined }))
   on('clock.after', () => ({ value: undefined }))
   let periods = 0
-  on('clock.every', () => { periods += 1; if (periods > 2) return { deny: 'fin du test' } as any; gone = true; return { value: undefined } })
+  on('clock.every', (_, e: any) => { if (e.ms !== 2500) return { value: undefined }; periods += 1; if (periods > 2) return { deny: 'fin du test' } as any; gone = true; return { value: undefined } })
   on('tool.call', () => ({ result: {}, text: 'ok' }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   await $.tool.call({ tool: 'Read', file_path: '/proj/README.md' })
@@ -234,4 +234,26 @@ test("un nouveau fichier n'est jamais accroché à un fichier supprimé", () => 
   r.gone = true
   const n = E.nodeForPath(g, 'e2e/notes.md')
   expect(g.adj[n.id].includes('e2e/router.py')).toBe(false)
+})
+
+test('des centaines d’événements inattendus : jamais d’erreur, jamais une animation trop lourde', async () => {
+  const nodes: any[] = [], links: any[] = []
+  for (let i = 0; i < 160; i++) { const c = i % 9, isF = i % 3 === 0; nodes.push({ id: isF ? `pkg${c}/m${i}.py` : `sym${i}`, label: isF ? `m${i}.py` : `fn_${i}`, type: isF ? 'file' : 'function', community: c, source_file: isF ? `pkg${c}/m${i}.py` : undefined }) }
+  for (let i = 1; i < 160; i++) links.push({ source: nodes[i].id, target: nodes[(i * 7 + 3) % i].id })
+  const W: any = E.createWorld(E.graphFromGraphify({ nodes, links }), 'fusion')
+  W.aspect = .63
+  const files = W.g.nodes.filter((n: any) => n.kind === 'file').map((n: any) => n.path)
+  let r = 11
+  const R = () => (r = (r * 16807) % 2147483647) / 2147483647, pick = (a: any[]) => a[Math.floor(R() * a.length)]
+  const tools = ['Read', 'Edit', 'Write', 'Grep', 'Bash', 'WebSearch', 'Mood', 'Delete', 'Leave', 'Repair', undefined]
+  const paths = [...files.slice(0, 12), 'nouveau/x.py', '', undefined]
+  for (let i = 0; i < 90; i++) {
+    const tool = pick(tools), ev: any = { tool, toolName: tool, path: pick(paths), label: R() < .1 ? undefined : 'x', lines: R() < .5 ? [] : ['+ a', 'x'.repeat(200)], actor: pick(['main', 'agent:1', 'bg', undefined]), ok: R() < .5 }
+    if (R() < .3) ev.targets = R() < .2 ? 'pas-un-tableau' : [pick(paths), pick(paths)]
+    if (R() < .3) ev.page = { start: 3, lines: ['a', 'b', 'c'], hi: [0, 1], kind: 'edit' }
+    const c = E.makeClip(W, ev)
+    expect(c.svg.length).toBeLessThan(131072)
+    expect(c.svg).not.toContain('NaN')
+  }
+  expect(E.idleClip(W).svg.length).toBeLessThan(131072)
 })

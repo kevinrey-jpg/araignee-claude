@@ -1320,7 +1320,7 @@ function agentFor(actor, ev) {
   let ag = AGENTS.find(a => a.id === actor); if (ag) return ag;
   const near = (ev && typeof ev.t === 'string' && byId[ev.t]) || (ev && Array.isArray(ev.t) && byId[ev.t[0]]) || byId[AGENTS[0].cur] || nodes[0];
   ag = makeAgent(actor, AGENTS[0].style, true, near, actor === 'bg' ? 'tâche de fond' : 'agent');
-  AGENTS.push(ag); after(.05, () => nextEvent(ag));
+  AGENTS.push(ag); later(ag, .05);
   return ag;
 }
 function removeAgent(ag) { ag.gone = true; const i = AGENTS.indexOf(ag); if (i > 0) AGENTS.splice(i, 1); if (sel === ag) select(AGENTS[0]); }
@@ -1334,13 +1334,16 @@ function goTo(ag, id, cb, stop) {
 }
 const stopFor = (ag, tool) => { const m = ag.sp.m; return tool === 'Edit' || tool === 'Write' ? m.cl * .48 + m.al * .9 : tool === 'Bash' ? m.cl * .5 + m.palp * .8 + 9 : tool === 'Repair' ? m.cl * .5 : m.cl * .5 + m.palp * .85; };
 function hangTo(ag, to, dur, cb) { ag.hangAnim = { from: ag.hang, to, t0: simT, dur, cb }; }
+// une seule chaîne d'étapes par araignée : un rappel périmé (remplacé par un plus récent) ne fait rien
+function later(ag, d) { const tok = ag.tok = (ag.tok || 0) + 1; ag.lastTick = simT + d; after(d, () => { if (ag.tok === tok) nextEvent(ag); }); }
 function nextEvent(ag) {
   if (ag.gone) return;
+  ag.lastTick = simT;
   if (!ag.queue.length) {
     if (ag.status.tool !== 'prête' && !ag.sleeping) { ag.status = { tool: 'prête', path: 'en attente de Claude' }; refreshSide(ag); }
     // trois minutes sans rien : elle remonte au centre de la toile et s'endort sur son fil
     if (ag === AGENTS[0] && !ag.sleeping && AGENTS.length === 1 && simT - ag.lastEvt > SLEEP_S) return goSleep(ag);
-    after(.35, () => nextEvent(ag)); return;
+    later(ag, .35); return;
   }
   const ev = ag.queue.shift(); ag.lastEvt = simT;
   if (ag.hang > .5 && ev.tool !== 'Leave') { sfx('silk'); hangTo(ag, 0, ag.baby ? 1.3 : 1.1, () => { ag.sleeping = false; runEvent(ag, ev); }); return; }
@@ -1348,7 +1351,7 @@ function nextEvent(ag) {
 }
 function goSleep(ag) {
   ag.sleeping = true; ag.status = { tool: 'dort', path: 'en attente de Claude' }; refreshSide(ag);
-  ag.pace = .55; goTo(ag, hubId(), () => hangTo(ag, 26, 1.6, () => after(.35, () => nextEvent(ag))), 0);
+  ag.pace = .55; goTo(ag, hubId(), () => hangTo(ag, 26, 1.6, () => later(ag, .35)), 0);
 }
 function runEvent(ag, ev) {
   const label = ev.label ? ev.label : Array.isArray(ev.t) ? ev.d + ' → ' + ev.t.length + ' fichiers' : ev.tool === 'Bash' ? '$ ' + ev.d : ev.tool === 'WebSearch' ? '« ' + ev.d + ' »' : ev.t ? short(ev.t) : ev.tool;
@@ -1359,8 +1362,8 @@ function runEvent(ag, ev) {
   ag.pace = clamp(ev.pace || 1, .6, 2);
   if (ev.tool === 'Leave') { sfx('silk'); hangTo(ag, 90, 1.8, () => removeAgent(ag)); return; }
   if (['Grep', 'Glob', 'WebSearch', 'Mood', 'Delete'].includes(ev.tool)) return startAction(ag, ev);
-  if (ev.tool === 'Repair') { const r = pickRepair(); if (!r) { after(.2, () => nextEvent(ag)); return; } ev.repair = r; return goTo(ag, r.anchor, () => startAction(ag, ev), stopFor(ag, 'Repair')); }
-  if (!ev.t || !byId[ev.t] || byId[ev.t].gone) { after(.2, () => nextEvent(ag)); return; }
+  if (ev.tool === 'Repair') { const r = pickRepair(); if (!r) { later(ag, .2); return; } ev.repair = r; return goTo(ag, r.anchor, () => startAction(ag, ev), stopFor(ag, 'Repair')); }
+  if (!ev.t || !byId[ev.t] || byId[ev.t].gone) { later(ag, .2); return; }
   if (wantsDive(ag, ev)) return goTo(ag, ev.t, () => { if (!dive && !byId[ev.t].gone) startDive(ag, ev); else startAction(ag, ev); }, stopFor(ag, 'Read'));
   goTo(ag, ev.t, () => startAction(ag, ev), stopFor(ag, ev.tool));
 }
@@ -1395,7 +1398,7 @@ function startAction(ag, ev) {
     A.weave = (ev.lines || []).filter(l => l[0] === '+').map(l => l.slice(1).trim()).filter(Boolean).join('  ').slice(0, 90); A.wi = 0; A.wacc = 0;
     ag.cards.push({ node: n, title: ev.label || (ev.tool + ' · ' + n.label), lines: ev.lines && ev.lines.length ? ev.lines : editFor(n.id), color: col, t0: simT + .8, dur: 2.6 });
   }
-  else if (ev.tool === 'Grep' || ev.tool === 'Glob') { A.dur = 1.8; A.targets = (ev.t || []).filter(id => byId[id] && !byId[id].gone); }
+  else if (ev.tool === 'Grep' || ev.tool === 'Glob') { A.dur = 1.8; A.targets = (Array.isArray(ev.t) ? ev.t : ev.t ? [ev.t] : []).filter(id => byId[id] && !byId[id].gone); }
   else if (ev.tool === 'Bash') { A.dur = 2.9 * pk; after(.3, () => sfx('hum')); ag.cards.push({ node: n, title: ev.label || 'Bash', lines: ev.lines && ev.lines.length ? ev.lines : ['$ ' + ev.d], color: col, t0: simT + .2, dur: 2.6 }); }
   else if (ev.tool === 'WebSearch') { A.dur = 3.6 * pk; after(.6, () => sfx('web')); ag.cards.push({ at: sp, title: ev.label || 'WebSearch', lines: ev.lines && ev.lines.length ? ev.lines : ['« ' + ev.d + ' »'], color: col, t0: simT + 2.4, dur: 1.6 }); }
   else if (ev.tool === 'Mood') {
@@ -1439,13 +1442,13 @@ function updateAction(ag, dt) {
   else if (A.tool === 'WebSearch') { if (t > 2.65 && !A.sent) { A.sent = true; rings.push({ x: sp.x, y: sp.y, t0: simT, dur: .9, col: '#a8b4ff' }); } }
   else if (A.tool === 'Mood') {
     // l'échec fait claquer un fil du terminal, que l'araignée ira retisser
-    if (!A.ev.ok && !A.snapped && t > 1.1) { A.snapped = true; const i = edges.findIndex((e, k) => !cutEdge(k) && (e.a === '::terminal' || e.b === '::terminal') && !byId[e.a].gone && !byId[e.b].gone); if (i >= 0) { snapEdge(i, 'snap'); sfx('snap'); ag.queue.unshift({ tool: 'Repair', label: 'Retisse le fil', lines: ['la soie est réparée'] }); } }
+    if (!A.ev.ok && !A.snapped && t > 1.1) { A.snapped = true; const i = edges.findIndex((e, k) => !cutEdge(k) && (e.a === '::terminal' || e.b === '::terminal') && !byId[e.a].gone && !byId[e.b].gone); if (i >= 0) { snapEdge(i, 'snap'); sfx('snap'); if (ag.queue.filter(q => q.tool === 'Repair').length < 2) ag.queue.unshift({ tool: 'Repair', label: 'Retisse le fil', lines: ['la soie est réparée'] }); } }
     if (A.ev.ok && A.ev.big && !A.burst && t > .4) { A.burst = true; for (let k = 0; k < 16; k++) { const a = k / 16 * Math.PI * 2; parts.push({ k: 'spark', x: sp.x, y: sp.y, vx: Math.cos(a) * 26, vy: Math.sin(a) * 20 - 8, t0: simT, dur: 1.1 }); } }
   }
-  else if (A.tool === 'Delete') { if (!A.snapped && t > .35 && n) { A.snapped = true; snapNode(n); sfx('snap'); const fixer = AGENTS.find(a => a.id === 'bg') || AGENTS[0]; fixer.queue.push({ tool: 'Repair', label: 'Retisse la toile', lines: ['la soie est réparée'] }); } }
+  else if (A.tool === 'Delete') { if (!A.snapped && t > .35 && n) { A.snapped = true; snapNode(n); sfx('snap'); const fixer = AGENTS.find(a => a.id === 'bg') || AGENTS[0]; if (fixer.queue.filter(q => q.tool === 'Repair').length < 2) fixer.queue.push({ tool: 'Repair', label: 'Retisse la toile', lines: ['la soie est réparée'] }); } }
   if (t >= A.dur) {
     if (A.tool === 'Repair') finishRepair(A.ev.repair);
-    sp.hTarget = null; sp.display = false; ag.A = null; ag.target = null; after(.4 + Math.random() * .6, () => nextEvent(ag));
+    sp.hTarget = null; sp.display = false; ag.A = null; ag.target = null; later(ag, .4 + Math.random() * .6);
   }
 }
 function heldCocoon(Act, t, depth) { const n = Act.n, w = sm(0, .35, t) * (1 - sm(2.4, 2.8, t)); return { x: n.x, y: n.y, z: depth(n.x, n.y) + w * 3.5, w }; }
@@ -1510,8 +1513,21 @@ function stepAgent(ag, dt) {
 }
 function step(dt) {
   simT += dt;
-  for (let k = timers.length - 1; k >= 0; k--) if (timers[k].at <= simT) { const f = timers[k].fn; timers.splice(k, 1); f(); }
-  [...AGENTS].forEach(ag => stepAgent(ag, dt));
+  for (let k = timers.length - 1; k >= 0; k--) if (timers[k].at <= simT) { const f = timers[k].fn; timers.splice(k, 1); try { f(); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : minuterie', e); } }
+  [...AGENTS].forEach(ag => {
+    try { stepAgent(ag, dt); }
+    catch (e) {
+      // une araignée qui trébuche sur un événement inattendu : on l'arrête proprement et elle repart
+      errCount++; if (errCount < 20) console.warn('araignée : action', e);
+      if (dive && dive.ag === ag) { ag.sp.env = dive.env0 || stageEnv; dive = null; }
+      ag.A = null; ag.walk = null; ag.hangAnim = null; ag.sp.hTarget = null; ag.lastTick = simT;
+      later(ag, .3);
+    }
+    // le chien de garde : une araignée sans rien à faire et sans prochaine étape prévue est relancée
+    if (!ag.gone && !ag.A && !ag.walk && !ag.hangAnim && simT - (ag.lastTick || 0) > 3) later(ag, 0);
+    // une action qui n'en finit pas (ne devrait pas arriver) : on la termine
+    else if (ag.A && !(dive && dive.ag === ag) && simT - ag.A.t0 > 40) { ag.A = null; ag.target = null; ag.sp.hTarget = null; later(ag, .2); }
+  });
   pulses.forEach(p => { p.d += p.speed * dt; p.head = alongRoute(p, p.d); });
   for (let k = pulses.length - 1; k >= 0; k--) if (pulses[k].d >= pulses[k].total) { const p = pulses[k]; pulses.splice(k, 1); p.onEnd && p.onEnd(); }
   if (dt > 0) {
@@ -1984,11 +2000,13 @@ function drawCard(c, cd) {
 }
 
 let last = performance.now();
+// une erreur ne doit jamais arrêter l'animation : on la note et l'image suivante repart
+let errCount = 0;
 function frame(now) {
-  const rdt = Math.min(.05, (now - last) / 1000); last = now;
-  if (!paused) step(rdt * speed);
-  if (!win.classList.contains('min')) render(rdt);
   requestAnimationFrame(frame);
+  const rdt = Math.min(.08, (now - last) / 1000); last = now;
+  try { if (!paused) step(rdt * speed); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : étape', e); }
+  try { if (!win.classList.contains('min')) render(rdt); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : dessin', e); try { ctx.restore(); } catch (e2) {} }
 }
 
 /* ---------- panneau : nœud, communautés, journal ---------- */
@@ -2214,9 +2232,13 @@ window.__araigneeLive = data => {
   }
   // le plugin a redémarré avec un compteur plus petit : on repart de son état actuel
   if (data.seq < liveSeq - 1000) { liveSeq = data.seq; return; }
-  (data.events || []).forEach(ev => {
-    if (ev.seq <= liveSeq) return;
-    liveSeq = ev.seq;
+  (data.events || []).forEach(ev => { try { receive(ev); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : événement', e); } });
+};
+let recvCount = 0;
+function receive(ev) {
+  {
+    if (!ev || typeof ev.seq !== 'number' || ev.seq <= liveSeq) return;
+    liveSeq = ev.seq; recvCount++;
     if (ev.close) { if (GRAND) window.close(); return; }
     if (ev.summary) { showRecap(ev.summary); return; }
     hideRecap(); (ev.nodes || []).forEach(addLiveNode);
@@ -2226,10 +2248,14 @@ window.__araigneeLive = data => {
     if (ev.tool === 'Leave') { const ag = AGENTS.find(a => a.id === ev.actor); if (ag) ag.queue.push(ev); return; }
     const ag = ev.tool === 'Delete' ? AGENTS[0] : agentFor(ev.actor, ev);
     if (ev.tool === 'Delete' && !(ev.t && byId[ev.t])) return;
+    // une humeur remplace la précédente pas encore jouée ; deux retissages en attente suffisent
+    if (ev.tool === 'Mood') ag.queue = ag.queue.filter(q => q.tool !== 'Mood');
+    if (ev.tool === 'Repair' && ag.queue.filter(q => q.tool === 'Repair').length >= 2) return;
     ag.queue.push(ev);
+    while (ag.queue.length > 10) { const j = ag.queue.findIndex(q => q.tool !== 'Delete' && q.tool !== 'Leave'); if (j < 0) break; ag.queue.splice(j, 1); }
     while (ag.queue.length > 6) { const j = ag.queue.findIndex(q => !['Mood', 'Delete', 'Repair', 'Leave'].includes(q.tool)); if (j < 0) break; ag.queue.splice(j, 1); }
-  });
-};
+  }
+}
 // le plugin peut être en train d'écrire le fichier quand la page le lit : la lecture suivante sera bonne
 window.addEventListener('error', e => { if (e.filename && /live-[^/]*\.js/.test(e.filename)) e.preventDefault(); }, true);
 function poll() { if (!SID) return; const sc = document.createElement('script'); sc.src = 'live-' + SID + '.js?t=' + Date.now(); sc.onload = sc.onerror = () => sc.remove(); document.head.append(sc); }
@@ -2243,9 +2269,10 @@ if (GRAND) {
   bMax.addEventListener('click', e => { e.stopImmediatePropagation(); window.close(); }, { capture: true });
 }
 if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) setPaused(true);
-AGENTS.forEach((ag, k) => after(.5 + k * .9, () => nextEvent(ag)));
+AGENTS.forEach((ag, k) => later(ag, .5 + k * .9));
 requestAnimationFrame(frame);
 requestAnimationFrame(miniLoop);
+window.__araignee = { etat: () => ({ simT, erreurs: errCount, recus: recvCount, plonge: !!dive, araignees: AGENTS.map(a => ({ id: a.id, action: a.A ? a.A.tool : null, marche: !!a.walk, fil: !!a.hangAnim, file: a.queue.length, dort: a.sleeping })) }) };
 })();
 </script>
 

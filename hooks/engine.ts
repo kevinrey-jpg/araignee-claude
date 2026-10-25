@@ -456,7 +456,7 @@ export function makeClip(W, ev) {
       at = e.broken.kind === 'stub' ? lerp2(target, A.gone ? A : B, .3) : e.pts[Math.floor(e.pts.length / 2)]
     }
   } else if (ev.path) target = nodeForPath(g, ev.path)
-  if (ev.tool === 'Grep') targets = (ev.targets || []).map(p => nodeForPath(g, p)).filter(Boolean).slice(0, 5)
+  if (ev.tool === 'Grep') targets = (Array.isArray(ev.targets) ? ev.targets : []).map(p => nodeForPath(g, p)).filter(Boolean).slice(0, 5)
   if (ev.tool === 'Mood' && !ev.ok) {
     const term = g.byId['::terminal'], i = g.edges.findIndex(e => !e.broken && !e.hidden && (e.a === term.id || e.b === term.id) && !g.byId[e.a].gone && !g.byId[e.b].gone)
     if (i >= 0) edge = i
@@ -554,7 +554,7 @@ export function makeClip(W, ev) {
   X.total = frames.length / FPS
   X.edgeNear = [...edgeNear].filter(i => !g.edges[i].broken && i !== X.repairEdge && !(X.snapEdges || []).includes(i)).slice(0, 10)
   X.others = Object.values(W.actors).filter(o => o !== a).map(o => ({ a: o, P: o.sp.pose(W.t, optsFor(o, null, 0, W.env.depth)) }))
-  if (ev.tool === 'Leave') delete W.actors[a.id]
+  if (ev.tool === 'Leave' && a.id !== 'main') delete W.actors[a.id]
   return renderClip(W, ev, frames, X)
 }
 // l'araignée remonte au centre de la toile, se suspend à un fil et dort
@@ -650,9 +650,12 @@ export function renderClip(W, ev, frames, X) {
   })
   if (drops) out.push(`<g fill="#e6f6ff" filter="url(#glow)">${drops}</g>`)
   // fils cassés : les bouts pendent et se balancent
-  broken.forEach(i => out.push(halvesSVG(g, g.edges[i])))
+  // (après la suppression d'un gros dossier il peut y en avoir des centaines : on garde les plus proches de la caméra)
+  const cam = n ? frames[n - 1].cam : W.cam, byCam = i => { const e = g.edges[i]; return Math.hypot(e.c.x - cam.x, e.c.y - cam.y) }
+  const capB = lod >= 5 ? 6 : lod >= 3 ? 16 : 40
+  ;(broken.length > capB ? broken.sort((p, q) => byCam(p) - byCam(q)).slice(0, capB) : broken).forEach(i => out.push(halvesSVG(g, g.edges[i])))
   // le fil qui claque pendant ce clip
-  ;(X.snapEdges || []).forEach(i => {
+  ;(X.snapEdges || []).slice(0, lod >= 5 ? 4 : 12).forEach(i => {
     const e = g.edges[i], a = g.byId[e.a], b = g.byId[e.b], st = X.snapT.toFixed(2)
     out.push(`<path d="${qd(a, e.c, b)}" fill="none" stroke="#fff" stroke-opacity=".9" stroke-width=".5"><set attributeName="opacity" to="0" begin="${st}s"/></path>`)
     out.push(`<g opacity="0"><set attributeName="opacity" to="1" begin="${st}s"/>${halvesSVG(g, e)}</g>`)
@@ -937,7 +940,7 @@ function effectsSVG(W, ev, frames, X, dur, kt) {
   return o.join('')
 }
 function cardSVG(ev, X, frames) {
-  const col = ev.tool === 'Mood' ? (ev.ok ? '#9dff8a' : '#ff5a7a') : TOOL_COLOR[ev.toolName] || TOOL_COLOR[ev.tool] || '#7df9ff', lines = (ev.lines || []).slice(0, 4), title = ev.label || ev.tool
+  const col = ev.tool === 'Mood' ? (ev.ok ? '#9dff8a' : '#ff5a7a') : TOOL_COLOR[ev.toolName] || TOOL_COLOR[ev.tool] || '#7df9ff', lines = (ev.lines || []).slice(0, 4).map(l => String(l)), title = String(ev.label || ev.tool || '')
   const last = frames[frames.length - 1]?.P
   const anchor = X.target || X.targets[0] || (last ? { x: last.x, y: last.y } : { x: 0, y: 0 })
   const begin = Math.max(0, X.walkDur + .2).toFixed(2)

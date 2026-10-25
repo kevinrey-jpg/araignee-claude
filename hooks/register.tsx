@@ -27,6 +27,8 @@ let cwd = ''
 let source = ''
 let queue: Ev[] = []
 let playing = false
+let playUntil = 0
+let guarding = false
 // la fenêtre du navigateur : quand le panneau ne peut pas s'afficher, la toile vit dans une page locale
 let viewerDir = ''
 let sid = ''
@@ -175,7 +177,9 @@ function scheduleSleep($: EngineInterface) {
       const clip = sleepClip(world)
       void update($, statusAtom, () => ({ tool: 'dort', path: 'en attente de Claude', source }))
       void showClip($, clip)
-      $.clock.after(Math.max(500, clip.dur * 1000 + 150), () => { playing = false })
+      const ms = Math.max(500, clip.dur * 1000 + 150); playUntil = Date.now() + ms
+      // un événement arrivé pendant qu'elle s'endormait : elle se réveille aussitôt
+      $.clock.after(ms, () => { playing = false; void pump($) })
     } catch { playing = false }
   })
 }
@@ -183,23 +187,36 @@ async function showClip($: EngineInterface, clip: { svg: string }) {
   await update($, clipAtom, old => ({ svg: clip.svg, seq: (old?.seq || 0) + 1 }))
 }
 
+// le chien de garde : une animation jamais terminée ou une file qui ne repart pas sont relancées
+function guard($: EngineInterface) {
+  if (guarding) return
+  guarding = true
+  $.clock.every(3000, () => {
+    if (playing && Date.now() > playUntil + 5000) playing = false
+    if (!playing && queue.length) void pump($)
+  })
+}
 async function pump($: EngineInterface) {
+  guard($)
   if (playing) return
   let ev = queue.shift()
   // un départ pour un bébé qui n'est jamais arrivé : rien à jouer
   while (ev && ev.tool === 'Leave' && world && !hasActor(world, ev.actor || '')) ev = queue.shift()
   if (!ev) { if (world) { await showClip($, idleClip(world)); scheduleSleep($) } return }
-  playing = true
+  playing = true; playUntil = Date.now() + 15000
   try {
     await ensureWorld($)
     await update($, statusAtom, () => ({ tool: ev.toolName, path: ev.label, source }))
     const clip = makeClip(world, ev)
     await showClip($, clip)
     playSounds($, clip.sounds || [])
-    $.clock.after(Math.max(500, clip.dur * 1000 + 150), () => { playing = false; void pump($) })
+    const ms = Math.max(500, clip.dur * 1000 + 150); playUntil = Date.now() + ms
+    $.clock.after(ms, () => { playing = false; void pump($) })
   } catch (err) {
+    // cet événement ne se joue pas : on passe au suivant au lieu de rester figé
     playing = false
     $.ui.log(`araignee : ${String(err)}`)
+    $.clock.after(300, () => { void pump($) })
   }
 }
 
@@ -350,7 +367,11 @@ function enqueue($: EngineInterface, ev: Ev) {
   }
   lastEventAt = now
   if (!ev.actor || ev.actor === 'main') lastMainAt = now
+  // une humeur remplace la précédente pas encore jouée ; deux retissages en attente suffisent
+  if (ev.tool === 'Mood') queue = queue.filter(q => q.tool !== 'Mood' || q.actor !== ev.actor)
+  if (ev.tool === 'Repair' && queue.filter(q => q.tool === 'Repair').length >= 2) return void pump($)
   queue.push(ev)
+  while (queue.length > 10) { const j = queue.findIndex(q => q.tool !== 'Delete' && q.tool !== 'Leave'); if (j < 0) break; queue.splice(j, 1) }
   // Claude va plus vite que l'araignée : on garde les actions les plus récentes
   while (queue.length > 5) { const i = queue.findIndex(q => q.tool === 'Read' || q.tool === 'Grep'); const j = i >= 0 ? i : queue.findIndex(q => !KEEP.has(q.tool)); if (j < 0) break; queue.splice(j, 1) }
   void pump($)
