@@ -188,3 +188,50 @@ test('sur un très gros projet, chaque animation reste sous la taille que le pan
   expect(E.sleepClip(W).svg.length).toBeLessThan(131072)
   expect(E.idleClip(W).svg.length).toBeLessThan(131072)
 })
+
+test("un dossier supprimé : ses fichiers sont vus comme supprimés", async ($, on) => {
+  let gone = false
+  on('command.register', () => ({ value: { command: 'araignee' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [] }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/proj' }))
+  on('fs.read', () => ({ value: JSON.stringify(GRAPH) }))
+  on('fs.list', (_, e: any) => (e.path === '/proj' ? { value: gone ? [] : [{ name: 'src', kind: 'dir', size: 0, mtimeMs: 1, isLink: false }] } : gone ? { deny: 'absent' } : { value: [{ name: 'b.ts', kind: 'file', size: 10, mtimeMs: 1, isLink: false }] }) as any)
+  on('fs.exists', () => ({ value: !gone }))
+  on('store.get', () => ({ value: undefined }))
+  on('clock.after', () => ({ value: undefined }))
+  let periods = 0
+  on('clock.every', () => { periods += 1; if (periods > 2) return { deny: 'fin du test' } as any; gone = true; return { value: undefined } })
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.tool.call({ tool: 'Read', file_path: '/proj/README.md' })
+  for (let i = 0; i < 300; i++) await Promise.resolve()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // la suppression fait claquer les fils : une araignée vient ensuite retisser la toile
+  expect((await ui.find({ type: 'Text', text: /Retisse la toile/ }))).toBeDefined()
+  await ui.unmount()
+})
+
+test("une cible injoignable par la soie : l'araignée y descend sur son fil au lieu d'étirer ses pattes", () => {
+  const g: any = E.graphFromTree(['src/a.ts', 'src/b.ts', 'docs/c.md'], 'proj')
+  const W: any = E.createWorld(g, 'fusion')
+  // on coupe tous les fils de docs/c.md : il devient injoignable
+  const c = g.nodes.find((n: any) => n.id === 'docs/c.md')
+  g.adj[c.id].forEach((v: string) => { g.edges[g.edgeIdx[c.id + '|' + v]].broken = { kind: 'snap' } })
+  const clip = E.makeClip(W, { tool: 'Read', path: 'docs/c.md', label: 'Read', lines: ['x'] })
+  const sp = W.actors.main.sp
+  expect(Math.hypot(sp.x - c.x, sp.y - c.y)).toBeLessThan(30)
+  // les pattes restent près du corps : aucune ne s'étire au loin
+  const far = Math.max(...sp.legs.map((L: any) => Math.hypot(L.foot.x - sp.x, L.foot.y - sp.y)))
+  expect(far).toBeLessThan(sp.m.R * 1.6)
+  expect(clip.svg.length).toBeLessThan(131072)
+})
+
+test("un nouveau fichier n'est jamais accroché à un fichier supprimé", () => {
+  const g: any = E.graphFromTree(['e2e/router.py', 'src/a.ts'], 'proj')
+  const r = g.nodes.find((n: any) => n.id === 'e2e/router.py')
+  r.gone = true
+  const n = E.nodeForPath(g, 'e2e/notes.md')
+  expect(g.adj[n.id].includes('e2e/router.py')).toBe(false)
+})

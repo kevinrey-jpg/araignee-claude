@@ -1252,11 +1252,13 @@ const bgCache = (() => {
 })();
 // la soie fixe : redessinée seulement quand la caméra s'éloigne, zoome franchement, ou quand la toile change
 const webCache = { cv: document.createElement('canvas'), s: 0, x0: 0, y0: 0, x1: 0, y1: 0, dirty: true };
-function webCacheFor(s, vx0, vy0, vx1, vy1) {
-  const C = webCache, r = s / (C.s || 1);
-  if (!C.dirty && r > .8 && r < 1.25 && vx0 >= C.x0 && vy0 >= C.y0 && vx1 <= C.x1 && vy1 <= C.y1) return C;
+function webCacheFor(s, vx0, vy0, vx1, vy1, zooming) {
+  const C = webCache, r = s / (C.s || 1), inside = vx0 >= C.x0 && vy0 >= C.y0 && vx1 <= C.x1 && vy1 <= C.y1;
+  // pendant un zoom (la plongée), on étire l'image existante plutôt que de la redessiner à chaque palier
+  if (!C.dirty && inside && (zooming ? r > .5 && r < 2.2 : r > .8 && r < 1.25)) return C;
   const mx = (vx1 - vx0) * .3, my = (vy1 - vy0) * .3, x0 = vx0 - mx, y0 = vy0 - my, x1 = vx1 + mx, y1 = vy1 + my;
-  const ss = Math.min(s, 4096 / (x1 - x0), 4096 / (y1 - y0));
+  // pas plus de 2,5 fois les pixels de l'écran : au-delà, le dessin coûte trop cher sans carte graphique
+  const ss = Math.min(s, 4096 / (x1 - x0), 4096 / (y1 - y0), Math.sqrt(2.5 * cv.width * cv.height / ((x1 - x0) * (y1 - y0))));
   C.cv.width = Math.ceil((x1 - x0) * ss); C.cv.height = Math.ceil((y1 - y0) * ss);
   const k = C.cv.getContext('2d'); k.setTransform(ss, 0, 0, ss, -x0 * ss, -y0 * ss); k._px = ss;
   COMM.forEach((cm, i) => { k.fillStyle = hexA(cm.col, .3); k.fill(G.cdust[i]); }); k.fillStyle = 'rgba(255,255,255,.35)'; k.fill(G.dustC);
@@ -1325,6 +1327,8 @@ function removeAgent(ag) { ag.gone = true; const i = AGENTS.indexOf(ag); if (i >
 const short = id => id.split('/').slice(1).join('/') || id;
 function goTo(ag, id, cb, stop) {
   ag.target = id; const path = bfs(ag.cur, id);
+  // injoignable par la soie : elle remonte sur son fil, se déplace dans les airs, et redescend sur la cible
+  if (path.length <= 1 && id !== ag.cur && byId[id]) { const n = byId[id]; hangTo(ag, 45, .8, () => { ag.sp.x = n.x; ag.sp.y = n.y; ag.cur = id; ag.sp.setMorph(ag.sp.m); hangTo(ag, 0, 1, cb); }); return; }
   if (path.length <= 1) { cb(); return; }
   const r = routePts(path); ag.walk = { ...r, seg: 0, u: 0, cb, done: 0, end: Math.max(0, r.total - stop) };
 }
@@ -1365,8 +1369,13 @@ function sendPulse(path, col, onEnd) { if (path.length < 2) { onEnd && onEnd(); 
 function snapEdge(i, kind, alive) { const e = edges[i]; e.broken = { kind, t0: simT, alive }; rebuildStatic(); const p = e.pts[Math.floor(e.pts.length / 2)]; rings.push({ x: p.x, y: p.y, t0: simT, dur: .6, col: '#ffffff' }); }
 function snapNode(n) {
   adj[n.id].forEach(v => { const i = edgeIdx[n.id + '|' + v]; if (i !== undefined && !cutEdge(i)) edges[i].broken = { kind: 'stub', t0: simT, alive: v }; });
-  n.fallT = simT; after(1.6, () => { n.gone = true; });
+  n.fallT = simT; after(1.6, () => { if (n.fallT !== undefined) n.gone = true; });
   AGENTS.forEach(a => { if (a.cur === n.id) a.cur = adj[n.id].find(v => !byId[v].gone) || hubId(); });
+  rebuildStatic();
+}
+function reviveNode(n) {
+  n.gone = false; n.fallT = undefined; n.born = simT; n.isNew = true;
+  adj[n.id].forEach(v => { const i = edgeIdx[n.id + '|' + v]; if (i !== undefined) { edges[i].broken = null; edges[i].hidden = false; edges[i].repairing = false; } });
   rebuildStatic();
 }
 function pickRepair() {
@@ -1801,7 +1810,7 @@ function render(rdt) {
   // fusionne les zones qui se chevauchent, pour ne pas dessiner deux fois la même soie
   for (let i = 0; i < zones.length; i++) for (let j = i + 1; j < zones.length; j++) { const a = zones[i], b = zones[j], d = Math.hypot(a.x - b.x, a.y - b.y); if (d < a.r + b.r) { const r = (d + a.r + b.r) / 2, k = d ? (r - a.r) / d : 0; zones[i] = { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, r }; zones.splice(j, 1); i = -1; break; } }
   const dyn = buildDyn(zones, stageEnv.depth);
-  const sc = vs * cam.z * dpr, hw = cssW / (2 * vs * cam.z), hh = cssH / (2 * vs * cam.z), WC = webCacheFor(sc, cam.x - hw, cam.y - hh, cam.x + hw, cam.y + hh);
+  const sc = vs * cam.z * dpr, hw = cssW / (2 * vs * cam.z), hh = cssH / (2 * vs * cam.z), WC = webCacheFor(sc, cam.x - hw, cam.y - hh, cam.x + hw, cam.y + hh, Math.abs(tz - cam.z) / cam.z > .06);
   c.save(); const out = new Path2D(); out.rect(-5000, -5000, 11000, 11000); zones.forEach(z => { out.moveTo(z.x + z.r, z.y); out.arc(z.x, z.y, z.r, 0, Math.PI * 2); }); c.clip(out, 'evenodd');
   c.drawImage(WC.cv, WC.x0, WC.y0, WC.x1 - WC.x0, WC.y1 - WC.y0); drawWebOverlay(c, null); c.restore();
   c.save(); const inn = new Path2D(); zones.forEach(z => { inn.moveTo(z.x + z.r, z.y); inn.arc(z.x, z.y, z.r, 0, Math.PI * 2); }); c.clip(inn);
@@ -2213,6 +2222,7 @@ window.__araigneeLive = data => {
     hideRecap(); (ev.nodes || []).forEach(addLiveNode);
     // ce que le plugin sait du fichier : lignes, passages, chaleur
     if (ev.info && byId[ev.info.id]) { const n = byId[ev.info.id]; if (ev.info.lines) n.lines = ev.info.lines; n.edits = ev.info.edits; n.reads = ev.info.reads; n.touched = ev.info.touched; n.heat = ev.info.heat; refreshHeat(); }
+    if (ev.t && typeof ev.t === 'string' && byId[ev.t] && byId[ev.t].gone && (ev.tool === 'Write' || ev.tool === 'Edit')) reviveNode(byId[ev.t]);
     if (ev.tool === 'Leave') { const ag = AGENTS.find(a => a.id === ev.actor); if (ag) ag.queue.push(ev); return; }
     const ag = ev.tool === 'Delete' ? AGENTS[0] : agentFor(ev.actor, ev);
     if (ev.tool === 'Delete' && !(ev.t && byId[ev.t])) return;

@@ -269,7 +269,14 @@ async function scan($: EngineInterface, first: boolean): Promise<{ path: string;
   for (let i = 0; i < watchDirs.length; i++) {
     const d = watchDirs[i] ?? ''
     const entries = await $.fs.list(d ? `${cwd}/${d}` : cwd).catch(() => null)
-    if (!entries) continue
+    if (!entries) {
+      // le dossier a disparu : ses fichiers sont supprimés, et on cesse de le guetter
+      if (d && !first && !(await $.fs.exists(`${cwd}/${d}`).catch(() => true))) {
+        for (const p of [...mtimes.keys()]) if (p.startsWith(d + '/')) { mtimes.delete(p); changed.push({ path: p, created: false, deleted: true }) }
+        watchDirs = watchDirs.filter(w => w !== d && !w.startsWith(d + '/')); i--
+      }
+      continue
+    }
     listed.add(d)
     for (const en of entries) {
       if (en.name.startsWith('.')) continue

@@ -194,7 +194,9 @@ export function nodeForPath(g, rel) {
   }
   // fichier inconnu : un nouveau cocon, accroché au nœud le plus proche par le nom de dossier
   const dir = rel.split('/').slice(0, -1).join('/')
-  const anchor = g.nodes.find(x => x.path && dir && x.path.startsWith(dir + '/')) || g.nodes.filter(x => x.kind === 'file')[hash(rel) % Math.max(1, g.nodes.filter(x => x.kind === 'file').length)] || g.nodes[0]
+  // jamais accroché à un fichier supprimé : il ne serait pas joignable
+  const alive = g.nodes.filter(x => x.kind === 'file' && !x.gone)
+  const anchor = g.nodes.find(x => !x.gone && x.path && dir && x.path.startsWith(dir + '/')) || alive[hash(rel) % Math.max(1, alive.length)] || g.nodes[0]
   const a = hash(rel) % 360 * DEG
   n = { id: rel, label: base, kind: 'file', comm: anchor.comm, path: rel, x: anchor.x + Math.cos(a) * 55, y: anchor.y + Math.sin(a) * 55, ang: a, visited: false, mod: false, wrap: 0, lang: langColor(rel), heat: 0, edits: 0 }
   g.nodes.push(n); g.byId[n.id] = n; g.adj[n.id] = []
@@ -472,6 +474,11 @@ export function makeClip(W, ev) {
     W.cam.x += (fx - W.cam.x) * .25; W.cam.y += (fy - W.cam.y) * .25
     frames.push({ P, cam: { ...W.cam }, o, tAct, hang: a.hang })
     g.edges.forEach((e, i) => { if (!e.hidden && dist(e.c, sp) < 70) edgeNear.add(i) })
+  }
+  // une cible injoignable par la soie : plutôt que de tendre les pattes à travers la toile,
+  // l'araignée remonte sur son fil et redescend dessus
+  if (walkTo && walkTo.id !== a.cur && bfs(g, a.cur, walkTo.id).length <= 1) {
+    a.hang = Math.max(a.hang, 45); sp.x = walkTo.x; sp.y = walkTo.y; a.cur = walkTo.id; sp.setMorph(sp.m)
   }
   // descente : le bébé qui arrive, ou l'araignée qui se réveille
   let descDur = 0
