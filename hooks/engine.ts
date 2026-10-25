@@ -701,7 +701,9 @@ export function renderClip(W, ev, frames, X) {
   if (X.fadeOut !== undefined) sp = `<g>${sp}<animate attributeName="opacity" values="1;1;0" keyTimes="0;${kt(X.fadeOut)};1" dur="${dur}" fill="freeze"/></g>`
   out.push(sp)
   // carte de texte
-  if ((ev.lines || []).length && !['idle', 'Sleep', 'Leave'].includes(ev.tool)) out.push(cardSVG(ev, X, frames))
+  // les bébés araignées ouvrent une petite page : les vraies lignes, lues ou tissées
+  if (ev.page && ev.page.lines && ev.page.lines.length && ev.actor && ev.actor !== 'main' && X.target && ['Read', 'Edit', 'Write'].includes(ev.tool)) out.push(pageCardSVG(ev, X))
+  else if ((ev.lines || []).length && !['idle', 'Sleep', 'Leave'].includes(ev.tool)) out.push(cardSVG(ev, X, frames))
   out.push('</svg>')
   const svg = out.join('')
   if (svg.length > MAX_CHARS) { // trop long : on garde une image sur deux
@@ -907,5 +909,34 @@ function cardSVG(ev, X, frames) {
   s += `<rect x="${f1(x)}" y="${f1(y)}" width="${w}" height="7" rx="2.5" fill="${col}" fill-opacity=".12"/>`
   s += `<text x="${f1(x + 3)}" y="${f1(y + 5)}" font-size="3.6" font-weight="700" fill="${col}">${esc(title.slice(0, 44))}</text>`
   lines.forEach((ln, k) => { const c = ln[0] === '+' || ln[0] === '✓' ? '#9dff8a' : ln[0] === '-' || ln[0] === '✗' ? '#ff8aa8' : '#cfc4ef'; s += `<text x="${f1(x + 3)}" y="${f1(y + 12 + k * 6)}" font-size="3.3" fill="${c}">${esc(ln.slice(0, 50))}</text>` })
+  return s + '</g>'
+}
+
+function pageCardSVG(ev, X) {
+  const pg = ev.page, n = X.target, kind = pg.kind || 'read', R = 7, L = pg.lines.length
+  const focus = pg.hi ? pg.hi[0] : 0, s0 = clamp(focus - 2, 0, Math.max(0, L - R)), rows = pg.lines.slice(s0, s0 + R)
+  const w = 120, lh = 5.4, h = 13 + rows.length * lh + 3, x = n.x + 10, y = n.y - h - 12
+  const col = n.lang || langColor(n.path || n.label), b = X.walkDur + .2, T = Math.max(.6, X.total - X.walkDur)
+  const what = kind === 'read' ? 'lecture' : kind === 'write' ? 'écriture' : 'modification'
+  let s = `<g opacity="0" font-family="monospace" xml:space="preserve" style="white-space:pre"><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.88;1" dur="${T.toFixed(2)}s" begin="${b.toFixed(2)}s" fill="freeze"/>`
+  s += `<rect x="${f1(x)}" y="${f1(y)}" width="${w}" height="${f1(h)}" rx="2.6" fill="rgba(9,6,20,.95)" stroke="${col}" stroke-opacity=".7" stroke-width=".35" filter="url(#glow)"/>`
+  s += `<text x="${f1(x + 3)}" y="${f1(y + 5.4)}" font-size="3.5" font-weight="700" fill="${col}">${esc(n.label.slice(0, 26))}</text><text x="${f1(x + w - 3)}" y="${f1(y + 5.4)}" font-size="2.8" text-anchor="end" fill="rgba(200,190,235,.75)">${ev.actor === 'bg' ? 'tâche de fond' : 'agent'} · ${what}</text>`
+  s += `<line x1="${f1(x + 2)}" y1="${f1(y + 8)}" x2="${f1(x + w - 2)}" y2="${f1(y + 8)}" stroke="#fff" stroke-opacity=".18" stroke-width=".2"/>`
+  rows.forEach((ln, k) => {
+    const i = s0 + k, yy = y + 13 + k * lh, inHi = !!pg.hi && i >= pg.hi[0] && i <= pg.hi[1], txt = esc(ln.slice(0, 46)).replace(/^ +/, m => '\u00a0'.repeat(m.length))
+    s += `<text x="${f1(x + 9)}" y="${f1(yy)}" font-size="2.7" text-anchor="end" fill="${inHi ? 'rgba(157,255,138,.75)' : 'rgba(150,140,190,.5)'}">${pg.start + i}</text>`
+    if (kind === 'read') {
+      // la lecture : chaque ligne s'allume à son tour
+      const bk = (b + .35 + k * .28).toFixed(2)
+      s += `<rect x="${f1(x + 11)}" y="${f1(yy - lh * .72)}" width="${f1(w - 13)}" height="${f1(lh)}" fill="#7df9ff" opacity="0"><animate attributeName="opacity" values="0;.28;.08" dur=".7s" begin="${bk}s" fill="freeze"/></rect>`
+      s += `<text x="${f1(x + 12)}" y="${f1(yy)}" font-size="3" fill="rgba(205,198,235,.6)">${txt}<animate attributeName="fill" values="rgba(205,198,235,.6);#e6fdff;#cdeff5" dur=".7s" begin="${bk}s" fill="freeze"/></text>`
+    } else if (inHi || kind === 'write') {
+      // le tissage : la ligne apparaît de gauche à droite
+      const bk = (b + .7 + k * .38).toFixed(2)
+      s += `<clipPath id="pc${k}"><rect x="${f1(x + 11)}" y="${f1(yy - lh)}" width="0" height="${f1(lh * 1.4)}"><animate attributeName="width" values="0;${w - 12}" dur=".45s" begin="${bk}s" fill="freeze"/></rect></clipPath>`
+      s += `<rect x="${f1(x + 11)}" y="${f1(yy - lh * .72)}" width="${f1(w - 13)}" height="${f1(lh)}" fill="#9dff8a" opacity=".1"/>`
+      s += `<text x="${f1(x + 12)}" y="${f1(yy)}" font-size="3" fill="#e6ffe0" clip-path="url(#pc${k})" filter="url(#glow)">${txt}</text>`
+    } else s += `<text x="${f1(x + 12)}" y="${f1(yy)}" font-size="3" fill="rgba(205,198,235,.55)">${txt}</text>`
+  })
   return s + '</g>'
 }

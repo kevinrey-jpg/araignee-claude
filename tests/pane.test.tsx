@@ -102,16 +102,17 @@ test("une tâche en arrière-plan qui modifie un fichier fait bouger l'araignée
 })
 
 // le socle commun des tests suivants
-function base(on: any) {
+function base(on: any, read?: (path: string) => string, hold = false) {
   on('command.register', () => ({ value: { command: 'araignee' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [] }))
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/proj' }))
-  on('fs.read', () => ({ value: JSON.stringify(GRAPH) }))
+  on('fs.read', (_: any, e: any) => ({ value: read ? read(String(e.path)) : JSON.stringify(GRAPH) }) as any)
   on('fs.list', () => ({ value: [] }))
   on('store.get', () => ({ value: undefined }))
-  on('clock.after', () => ({ value: undefined }))
+  // hold : les minuteries ne partent pas, le clip en cours reste affiché
+  on('clock.after', () => (hold ? { deny: 'on garde le clip' } : { value: undefined }) as any)
 }
 const flush = async () => { for (let i = 0; i < 200; i++) await Promise.resolve() }
 
@@ -157,5 +158,19 @@ test("un sous-agent a son bébé araignée, qui remonte quand l'agent a fini", a
   await flush()
   ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect((await ui.find({ type: 'Text', text: /Leave/ }))).toBeDefined()
+  await ui.unmount()
+})
+
+test("un agent qui modifie un fichier ouvre une petite page avec les vraies lignes", async ($, on) => {
+  base(on, path => path.endsWith('b.ts') ? 'const a = 1\nfunction total(items) {\n  return items.reduce(add, 0)\n}\n' : JSON.stringify(GRAPH), true)
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/src/b.ts', old_string: '  return 0', new_string: '  return items.reduce(add, 0)', replace_all: false, agentId: 'a1' } as any)
+  for (let i = 0; i < 200; i++) await Promise.resolve()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const svg: any = await ui.find({ type: 'Svg' })
+  const src = String(svg?.props?.source ?? svg?.source ?? '')
+  expect(src).toContain('agent · modification')
+  expect(src).toContain('return items.reduce(add, 0)')
   await ui.unmount()
 })

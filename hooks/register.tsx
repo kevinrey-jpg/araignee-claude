@@ -17,7 +17,9 @@ const TOOLS: Record<string, string> = { Read: 'Read', Edit: 'Edit', MultiEdit: '
 const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', '.venv', 'venv', '__pycache__', '.cache', 'coverage', 'target', '.idea', '.vscode', 'graphify-out'])
 
 // actor : 'main' (Claude), 'agent:<id>' (un sous-agent) ou 'bg' (une tâche de fond) ; les deux derniers sont des bébés araignées
-type Ev = { tool: string; toolName: string; path?: string; targets?: string[]; label: string; lines: string[]; actor?: string; ok?: boolean; big?: boolean; pace?: number }
+type Ev = { tool: string; toolName: string; path?: string; targets?: string[]; label: string; lines: string[]; actor?: string; ok?: boolean; big?: boolean; pace?: number; page?: Page }
+// une page de texte pour la plongée : les vraies lignes lues ou écrites, la zone modifiée (hi, dans la page) et les lignes retirées
+type Page = { start: number; lines: string[]; hi?: [number, number]; del?: string[]; kind: 'read' | 'edit' | 'write' }
 // le monde de l'araignée vit dans le module : un rechargement le reconstruit
 let world: any = null
 let loading: Promise<void> | null = null
@@ -64,6 +66,45 @@ function rel(p: unknown): string | undefined {
   return a.replace(/^\.\//, '')
 }
 const firstLines = (text: string | undefined, n: number) => (text || '').split('\n').map(l => l.replace(/^\s*\d+[\t→]/, '').replace(/\t/g, ' ').trimEnd()).filter(l => l.trim()).slice(0, n)
+
+const PAGE_ROWS = 40
+const clipLine = (l: string) => l.replace(/\t/g, '  ').replace(/\r/g, '').slice(0, 140)
+function readPage(text: string | undefined): Page | undefined {
+  const out: string[] = []; let start = 0
+  for (const raw of (text || '').split('\n')) { const m = /^\s*(\d+)[\t→](.*)$/.exec(raw); if (!m) continue; if (!start) start = Number(m[1]); if (out.length < PAGE_ROWS) out.push(clipLine(m[2] ?? '')) }
+  return out.length ? { start: start || 1, lines: out, kind: 'read' } : undefined
+}
+// une fenêtre de 40 lignes autour de la zone modifiée (a et b : lignes du fichier, en partant de 0)
+function windowPage(content: string, a: number, b: number, del: string[], kind: Page['kind']): Page {
+  const all = content.split('\n'), s0 = Math.max(0, Math.min(a - 8, all.length - PAGE_ROWS))
+  return { start: s0 + 1, lines: all.slice(s0, s0 + PAGE_ROWS).map(clipLine), hi: [a - s0, Math.min(b, s0 + PAGE_ROWS - 1) - s0], del: del.slice(0, 12).map(clipLine), kind }
+}
+// les dernières versions des fichiers touchés : pour retrouver ce qu'une tâche de fond a changé
+const snapshots = new Map<string, string>()
+function keepSnapshot(path: string, txt: string) { if (txt.length > 200000) return; snapshots.delete(path); snapshots.set(path, txt); if (snapshots.size > 40) { const k = snapshots.keys().next().value; if (k !== undefined) snapshots.delete(k) } }
+function diffPage(prev: string | undefined, now: string): Page | undefined {
+  const B = now.split('\n')
+  if (prev === undefined) { const a = Math.max(0, B.length - 3); return windowPage(now, a, B.length - 1, [], 'edit') }
+  const A = prev.split('\n'); let p = 0; while (p < A.length && p < B.length && A[p] === B[p]) p++
+  let q = 0; while (q < A.length - p && q < B.length - p && A[A.length - 1 - q] === B[B.length - 1 - q]) q++
+  if (p === A.length && p === B.length) return undefined
+  return windowPage(now, p, Math.max(p, B.length - 1 - q), A.slice(p, A.length - q), 'edit')
+}
+async function pageFor($: EngineInterface, ev: Ev, e: any, ran: any): Promise<Page | undefined> {
+  if (!ev.path) return undefined
+  if (ev.tool === 'Read') return readPage(ran && typeof ran.text === 'string' ? ran.text : '')
+  if (ev.tool === 'Write') { const txt = String(e.content ?? ''); keepSnapshot(ev.path, txt); const n = Math.min(PAGE_ROWS, txt.split('\n').length); return { start: 1, lines: txt.split('\n').slice(0, PAGE_ROWS).map(clipLine), hi: [0, n - 1], kind: 'write' } }
+  if (ev.tool === 'Edit') {
+    const ed = Array.isArray(e.edits) && e.edits[0] ? e.edits[0] : e, neu = String(ed?.new_string ?? ''), old = String(ed?.old_string ?? '')
+    const txt = await $.fs.read(`${cwd}/${ev.path}`).catch(() => null)
+    if (typeof txt !== 'string' || txt.length > 600000) return undefined
+    keepSnapshot(ev.path, txt)
+    const idx = neu ? txt.indexOf(neu) : -1; if (idx < 0) return undefined
+    const a = txt.slice(0, idx).split('\n').length - 1
+    return windowPage(txt, a, a + Math.max(0, neu.split('\n').length - 1), old ? old.split('\n') : [], 'edit')
+  }
+  return undefined
+}
 
 async function ensureWorld($: EngineInterface) {
   if (world) return
@@ -213,8 +254,10 @@ async function pushLive($: EngineInterface, toolName: string, ev: Ev, e: any) {
   const d = String(e.pattern ?? e.command ?? e.query ?? e.url ?? '').split('\n')[0]?.slice(0, 60) ?? ''
   const info = ev.path ? infoOf(nodeForPath(g, ev.path)) : undefined
   liveSeq += 1
-  liveEvents.push({ seq: liveSeq, tool: VIEWER_TOOL[toolName] || VIEWER_TOOL[ev.tool] || ev.tool, t, d, label: ev.label, lines: ev.lines, nodes, actor: ev.actor || 'main', ok: ev.ok, big: ev.big, pace: ev.pace, info })
+  liveEvents.push({ seq: liveSeq, tool: VIEWER_TOOL[toolName] || VIEWER_TOOL[ev.tool] || ev.tool, t, d, label: ev.label, lines: ev.lines, nodes, actor: ev.actor || 'main', ok: ev.ok, big: ev.big, pace: ev.pace, info, page: ev.page })
   if (liveEvents.length > 30) liveEvents = liveEvents.slice(-30)
+  // seules les pages récentes voyagent : le fichier relu toutes les 0,7 s reste léger
+  liveEvents.forEach((x, i) => { if (i < liveEvents.length - 6) delete x.page })
   await writeLive($)
 }
 
@@ -265,9 +308,14 @@ async function startWatch($: EngineInterface) {
           if (who === 'bg') bgLast = Date.now()
           continue
         }
-        let lines = [c.created ? '+ nouveau fichier' : '~ modifié en arrière-plan']
-        if (c.created) { const txt = await $.fs.read(`${cwd}/${c.path}`).catch(() => '') as string; if (typeof txt === 'string' && txt.length < 200000) lines = firstLines(txt, 3).map(l => '+ ' + l.slice(0, 60)) }
-        const ev: Ev = { tool: c.created ? 'Write' : 'Edit', toolName: 'Arrière-plan', path: c.path, label: 'Arrière-plan · ' + name, lines, actor: 'bg' }
+        let lines = [c.created ? '+ nouveau fichier' : '~ modifié en arrière-plan'], page: Page | undefined
+        const txt = (sizes[c.path] ?? 0) < 400000 ? await $.fs.read(`${cwd}/${c.path}`).catch(() => null) : null
+        if (typeof txt === 'string' && txt.length < 400000 && !txt.includes('\u0000')) {
+          if (c.created) { lines = firstLines(txt, 3).map(l => '+ ' + l.slice(0, 60)); const n = Math.min(PAGE_ROWS, txt.split('\n').length); page = { start: 1, lines: txt.split('\n').slice(0, PAGE_ROWS).map(clipLine), hi: [0, n - 1], kind: 'write' } }
+          else { page = diffPage(snapshots.get(c.path), txt); const added = page?.hi ? page.lines.slice(page.hi[0], page.hi[1] + 1).filter(l => l.trim()) : []; if (added.length) lines = added.slice(0, 3).map(l => '+ ' + l.trim().slice(0, 60)) }
+          keepSnapshot(c.path, txt)
+        }
+        const ev: Ev = { tool: c.created ? 'Write' : 'Edit', toolName: 'Arrière-plan', path: c.path, label: 'Arrière-plan · ' + name, lines, actor: 'bg', page }
         bgLast = Date.now()
         touch($, c.path, 'e')
         await pushLive($, c.created ? 'Write' : 'Edit', ev, {}).catch(() => undefined)
@@ -507,6 +555,7 @@ export const register: Register = on => {
         if (agent) { ev.toolName = 'Agent ' + ev.toolName; ev.label = agent + ev.label }
         if (ev.path && (ev.tool === 'Edit' || ev.tool === 'Write')) { ownWrites.set(ev.path, Date.now()); touch($, ev.path, 'e', ev.tool === 'Write' ? countLines((e as any).content) : undefined) }
         if (ev.path && ev.tool === 'Read') { const all = !(e as any).offset && !(e as any).limit, n = ran && typeof ran.text === 'string' ? ran.text.split('\n').length : 0; touch($, ev.path, 'r', all && n > 1 && n < 2000 ? n : undefined) }
+        ev.page = await pageFor($, ev, e, ran).catch(() => undefined)
         track(toolName, e, ev); await pushLive($, toolName, ev, e).catch(() => undefined); enqueue($, ev)
       } catch { /* l'araignée ne doit jamais gêner Claude */ }
     }

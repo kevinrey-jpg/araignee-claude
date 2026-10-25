@@ -158,6 +158,7 @@ html.grand .window.max { inset: 0; border: 0; border-radius: 0; box-shadow: none
         <span class="status"><span class="chip" id="st-tool" style="color:#7df9ff">prête</span><span class="path" id="st-path">araignee-claude/</span></span>
         <span class="win-btns">
           <button id="b-min" title="Réduire le panneau" aria-pressed="false">Réduire</button>
+          <button id="b-dive" title="Quand un agent travaille sur un fichier, la toile plonge dans la page" aria-pressed="true">Plongée : agents</button>
           <button id="b-sound" title="Les petits sons de l'araignée" aria-pressed="false">♪ Son : non</button>
           <button id="b-max" title="Agrandir le panneau" aria-pressed="false">Agrandir</button>
         </span>
@@ -211,6 +212,7 @@ html.grand .window.max { inset: 0; border: 0; border-radius: 0; box-shadow: none
       <li><span class="chip" style="color:#9dff8a">Réussite</span>Quand une commande réussit, elle danse et passe au vert. Quand des tests passent, c'est la fête.</li>
       <li><span class="chip" style="color:#ff5a7a">Échec</span>Elle se recroqueville et vire au rouge, un fil du terminal claque. Elle revient le retisser.</li>
       <li><span class="chip" style="color:#c89bff">Agents</span>Chaque sous-agent ou tâche de fond a son bébé araignée, qui descend d'un fil et remonte quand il a fini.</li>
+      <li><span class="chip" style="color:#7df9ff">Plongée</span>Quand un agent travaille sur un fichier, le cocon s'ouvre en page : l'araignée marche sur les vraies lignes, les lit ou les tisse lettre par lettre.</li>
       <li><span class="chip" style="color:#e2dcff">Sommeil</span>Après trois minutes sans rien, elle se suspend au centre de la toile et dort en se balançant.</li>
     </ul>
     <p class="note">Toute la soie est blanche ; les fils déjà parcourus brillent davantage. Tu peux faire glisser la scène et zoomer à la molette. Dans la version finale, la toile viendra de ton graphe Graphify (graphify-out/graph.json) quand il existe, sinon de l'arborescence des dossiers.</p>
@@ -1307,6 +1309,7 @@ function runEvent(ag, ev) {
   if (['Grep', 'Glob', 'WebSearch', 'Mood', 'Delete'].includes(ev.tool)) return startAction(ag, ev);
   if (ev.tool === 'Repair') { const r = pickRepair(); if (!r) { after(.2, () => nextEvent(ag)); return; } ev.repair = r; return goTo(ag, r.anchor, () => startAction(ag, ev), stopFor(ag, 'Repair')); }
   if (!ev.t || !byId[ev.t] || byId[ev.t].gone) { after(.2, () => nextEvent(ag)); return; }
+  if (wantsDive(ag, ev)) return goTo(ag, ev.t, () => { if (!dive && !byId[ev.t].gone) startDive(ag, ev); else startAction(ag, ev); }, stopFor(ag, 'Read'));
   goTo(ag, ev.t, () => startAction(ag, ev), stopFor(ag, ev.tool));
 }
 function sendPulse(path, col, onEnd) { if (path.length < 2) { onEnd && onEnd(); return 0; } const r = routePts(path); pulses.push({ ...r, d: 0, speed: 230, col, onEnd, head: null }); return r.total / 230; }
@@ -1441,6 +1444,7 @@ function stepAgent(ag, dt) {
     }
     if (w.done >= w.end - .01) { w.marks.forEach(mk => { markTrail(mk.from, mk.to); ag.cur = mk.to; }); ag.walk = null; ag.wspd = 0; w.cb(); }
   }
+  updateDive(ag, dt);
   updateAction(ag, dt);
   if (dt > 0) { sp.vx = (sp.x - px) / dt; sp.vy = (sp.y - py) / dt; if (Math.hypot(sp.vx, sp.vy) > 4) sp.h += wrap(Math.atan2(sp.vy, sp.vx) - sp.h) * Math.min(1, dt * 7); }
   for (let k = ag.cards.length - 1; k >= 0; k--) if (simT - ag.cards[k].t0 > ag.cards[k].dur) ag.cards.splice(k, 1);
@@ -1469,6 +1473,153 @@ function step(dt) {
   for (let k = waves.length - 1; k >= 0; k--) if (simT - waves[k].t0 > 2.5) waves.splice(k, 1);
   for (const arr of [rings, parts]) for (let k = arr.length - 1; k >= 0; k--) if (simT - arr[k].t0 > arr[k].dur) arr.splice(k, 1);
 }
+
+/* ---------- la plongée : le cocon s'ouvre en page de soie, et l'araignée marche sur les vraies lignes ---------- */
+const DIVE_MODES = ['agents', 'tout', 'non'], DIVE_LABEL = { agents: 'Plongée : agents', tout: 'Plongée : tout', non: 'Plongée : non' };
+let diveMode = 'agents';
+try { const m = localStorage.getItem('araignee-plongee'); if (DIVE_MODES.includes(m)) diveMode = m; } catch (e) {}
+let dive = null;
+const ROWS = 26, LH = 7.4, FS = 4.5, CW = FS * .6;
+function pageMorph(m) { const k = .36, o = { ...m }; ['cl', 'cw', 'al', 'aw', 'bodyZ', 'legW', 'palp', 'R'].forEach(key => o[key] = m[key] * k); o.legs = m.legs.map(v => v * k); o.stepDur = m.stepDur * .7; o.mass = .2; o.baby = true; return o; }
+function wantsDive(ag, ev) {
+  if (dive || diveMode === 'non' || !ev.page || !ev.page.lines || !ev.page.lines.length) return false;
+  if (!['Read', 'Edit', 'Write'].includes(ev.tool) || !ev.t || !byId[ev.t] || byId[ev.t].gone) return false;
+  if (diveMode === 'agents' && !ag.baby) return false;
+  // Claude (ou l'agent) enchaîne trop vite : on garde la plongée pour ce qui écrit
+  if (ev.tool === 'Read' && ag.queue.length > 2) return false;
+  return true;
+}
+function startDive(ag, ev) {
+  const n = byId[ev.t], pg = ev.page, L = pg.lines.length, sp = ag.sp;
+  const longest = Math.min(64, Math.max(24, ...pg.lines.map(l => l.length))), w = 34 + longest * CW + 22, rows = Math.min(ROWS, L), h = 22 + rows * LH + 8;
+  let x = n.x + 26, y = n.y - h * .3; if (x + w > W - 20) x = n.x - 26 - w; x = Math.max(20, x); y = clamp(y, 20, Math.max(20, H - h - 20));
+  const hi = pg.hi ? [clamp(pg.hi[0], 0, L - 1), clamp(Math.max(pg.hi[0], pg.hi[1]), 0, L - 1)] : null;
+  const kind = pg.kind || (ev.tool === 'Read' ? 'read' : 'edit'), del = kind === 'edit' ? (pg.del || []).slice(0, 10) : [];
+  const typeRange = kind === 'write' ? [0, Math.min(L - 1, 23)] : hi;
+  const chars = typeRange ? pg.lines.slice(typeRange[0], typeRange[1] + 1).reduce((s, l) => s + Math.max(1, l.length), 0) : 0;
+  const tType = typeRange ? clamp(chars / 60, .9, kind === 'write' ? 3.2 : 2.4) : 0;
+  const tRead = kind === 'read' ? clamp(L * .085, 1.4, 3.2) : 0, tDel = del.length ? 1.1 : 0;
+  const d = { ag, n, ev, pg, kind, x, y, w, h, L, rows, hi, del, typeRange, chars, tRead, tDel, tType, t0: simT, lit: new Float32Array(L), scroll: 0, focus: hi ? hi[0] : 0, flash: -9, typed: 0, home: { x: sp.x, y: sp.y, h: sp.h } };
+  // les temps : ouverture, saut sur la page, lecture / effacement / tissage, éclat, fermeture
+  d.tAct = 1.25; d.tEnd = d.tAct + (kind === 'read' ? tRead + .5 : tDel + tType + .2) + .6; d.dur = d.tEnd + .8;
+  dive = d;
+  const A = ag.A = { tool: 'Dive', ev, n, t0: simT, dur: d.dur, acc: 0 };
+  ag.target = n.id; n.visited = true; n.pulse = simT;
+  if (ev.tool !== 'Read') { n.mod = true; n.wrapT = Math.min(3, (n.wrapT || 0) + 1); }
+  sfx(kind === 'read' ? 'read' : 'silk');
+  return A;
+}
+const rowY = (d, i) => d.y + 22 + (i - d.scroll) * LH + LH * .5;
+const textX = d => d.x + 34;
+// sur la page, les pattes se posent sur les lignes de texte
+function pageEnv(d) { return { loads: [], snapK: .95, snap: (p) => { const i = clamp(Math.round((p.y - d.y - 22 - LH * .5) / LH + d.scroll), Math.floor(d.scroll), Math.floor(d.scroll) + d.rows - 1); return { x: clamp(p.x, d.x + 4, d.x + d.w - 4), y: rowY(d, i) + LH * .38 }; }, depth: () => 0, onPlant: () => {} }; }
+function diveCursor(d, t) {
+  // où en est le tissage : ligne et colonne du curseur
+  if (!d.typeRange) return null;
+  const u = clamp((t - d.tAct - d.tDel) / d.tType, 0, 1); let left = Math.floor(u * d.chars), row = d.typeRange[0];
+  for (; row <= d.typeRange[1]; row++) { const len = Math.max(1, d.pg.lines[row].length); if (left < len) break; left -= len; }
+  if (row > d.typeRange[1]) return { row: d.typeRange[1], col: d.pg.lines[d.typeRange[1]].length, done: true, u };
+  return { row, col: left, done: false, u };
+}
+function updateDive(ag, dt) {
+  const d = dive; if (!d || d.ag !== ag) return;
+  const t = simT - d.t0, sp = ag.sp, m0 = ag.baby ? babyMorph(ag.style.m) : ag.style.m;
+  // le saut sur la page : l'araignée rapetisse et se pose sur les lignes
+  if (t > .9 && !d.onPage) { d.onPage = true; d.env0 = sp.env; sp.env = pageEnv(d); sp.setMorph(pageMorph(ag.style.m)); }
+  if (t > d.tEnd + .35 && d.onPage && !d.back) { d.back = true; sp.env = d.env0; sp.setMorph(m0); sp.x = d.home.x; sp.y = d.home.y; sfx('pluck'); }
+  // la page défile pour suivre l'action
+  let focus = d.focus;
+  if (d.kind === 'read' && t > d.tAct) { const u = clamp((t - d.tAct) / d.tRead, 0, 1); focus = u * (d.L - 1); const r = Math.floor(focus); for (let i = d.litTo || 0; i <= r; i++) d.lit[i] = 1; d.litTo = r + 1; }
+  const cur = diveCursor(d, t); if (cur && t > d.tAct + d.tDel) focus = cur.row;
+  const target = clamp(focus - d.rows * .45, 0, Math.max(0, d.L - d.rows)); d.scroll += (target - d.scroll) * Math.min(1, dt * 4);
+  for (let i = 0; i < d.L; i++) if (d.lit[i] > .3) d.lit[i] = Math.max(.3, d.lit[i] - dt * .6);
+  if (cur && cur.done && d.flash < 0) { d.flash = simT; sfx('success'); for (let k = 0; k < 14; k++) parts.push({ k: 'spark', x: textX(d) + Math.random() * (d.w - 50), y: rowY(d, cur.row) + (Math.random() - .5) * LH * 3, vx: (Math.random() - .5) * 30, vy: -10 - Math.random() * 16, t0: simT, dur: .9 }); }
+  if (d.kind === 'read' && t > d.tAct + d.tRead && d.flash < 0) { d.flash = simT; sfx('pluck'); }
+  // où se tient l'araignée sur la page
+  if (d.onPage && !d.back) {
+    let tx, ty;
+    if (d.kind === 'read') { const r = t > d.tAct ? focus : 0; tx = d.x + d.w - 16; ty = rowY(d, r); }
+    else if (cur && t > d.tAct + d.tDel) { tx = Math.min(d.x + d.w - 8, textX(d) + (cur.col + 9) * CW + 6); ty = rowY(d, cur.row) - LH * 1.1; }
+    else { const r = d.hi ? d.hi[0] : 0; tx = d.x + d.w - 18; ty = rowY(d, r); }
+    const k = Math.min(1, dt * (t < 1.25 ? 3 : 6)); sp.x += (tx - sp.x) * k; sp.y += (ty - sp.y) * k;
+  } else if (!d.onPage) { const k = Math.min(1, dt * 4), tx = d.x + d.w - 18, ty = rowY(d, d.hi ? d.hi[0] : 0); if (t > .6) { sp.x += (tx - sp.x) * k * sm(.6, .9, t); sp.y += (ty - sp.y) * k * sm(.6, .9, t); } }
+  if (t >= d.dur) { dive = null; if (!d.back) { sp.env = d.env0 || stageEnv; sp.setMorph(m0); sp.x = d.home.x; sp.y = d.home.y; } }
+}
+function drawDive(c) {
+  const d = dive; if (!d) return;
+  const t = simT - d.t0, op = ease(sm(0, .75, t)) * (1 - ease(sm(d.tEnd, d.dur, t)));
+  if (op < .005) return;
+  const n = d.n, pc = P3({ x: n.x, y: n.y, z: stageEnv.depth(n.x, n.y) }), x = lerp(pc.x - 3, d.x, op), y = lerp(pc.y - 2, d.y, op), w = lerp(6, d.w, op), h = lerp(4, d.h, op);
+  const lang = n.lang || '#c9c2e6';
+  c.save();
+  // le fil qui relie la page à son cocon
+  c.strokeStyle = `rgba(255,255,255,${.5 * op})`; c.lineWidth = .3; c.beginPath(); c.moveTo(pc.x, pc.y); c.quadraticCurveTo((pc.x + x) / 2, Math.max(pc.y, y + h * .3) + 8, x + (x > pc.x ? 0 : w), y + h * .3); c.stroke();
+  glow(c, lang, 18 * op); c.fillStyle = `rgba(9,6,20,${.93 * op})`; c.beginPath(); c.roundRect(x, y, w, h, 5); c.fill(); noglow(c);
+  c.strokeStyle = hexA(lang, .6 * op); c.lineWidth = .45; c.stroke();
+  if (op < .55) { c.restore(); return; }
+  const a = sm(.55, 1, op); c.globalAlpha = a;
+  // l'en-tête : le fichier, ses lignes, ce qui se passe
+  c.font = `600 ${FS * .95}px "JetBrains Mono", monospace`; c.textBaseline = 'middle'; c.textAlign = 'left';
+  c.fillStyle = lang; c.fillText(n.label, x + 8, y + 9);
+  const what = d.kind === 'read' ? 'lecture' : d.kind === 'write' ? 'écriture' : 'modification', who = d.ag.baby ? (d.ag.id === 'bg' ? 'tâche de fond' : 'agent') : 'Claude';
+  c.fillStyle = 'rgba(200,190,235,.75)'; c.textAlign = 'right'; c.fillText(`${who} · ${what} · l.${d.pg.start}–${d.pg.start + d.L - 1}`, x + w - 8, y + 9);
+  c.strokeStyle = 'rgba(255,255,255,.18)'; c.lineWidth = .3; c.beginPath(); c.moveTo(x + 4, y + 17); c.lineTo(x + w - 4, y + 17); c.stroke();
+  // les lignes, des fils de soie qui portent le texte
+  c.beginPath(); c.rect(x + 1, y + 18, w - 2, h - 20); c.clip();
+  const first = Math.max(0, Math.floor(d.scroll) - 1), last = Math.min(d.L - 1, Math.ceil(d.scroll) + d.rows), cur = diveCursor(d, t), typing = cur && t > d.tAct + d.tDel, maxC = Math.floor((w - 44) / CW);
+  c.font = `${FS}px "JetBrains Mono", monospace`;
+  for (let i = first; i <= last; i++) {
+    const yy = rowY(d, i), inHi = d.hi && i >= d.hi[0] && i <= d.hi[1], inType = d.typeRange && i >= d.typeRange[0] && i <= d.typeRange[1];
+    c.strokeStyle = 'rgba(255,255,255,.07)'; c.lineWidth = .25; c.beginPath(); c.moveTo(x + 30, yy + LH * .38); c.lineTo(x + w - 6, yy + LH * .38); c.stroke();
+    c.textAlign = 'right'; c.fillStyle = inHi ? 'rgba(157,255,138,.7)' : 'rgba(150,140,190,.45)'; c.fillText(String(d.pg.start + i), x + 26, yy);
+    c.textAlign = 'left';
+    let txt = d.pg.lines[i]; if (txt.length > maxC) txt = txt.slice(0, maxC - 1) + '…';
+    if (inType) {
+      // tissé lettre par lettre : avant le curseur, le texte est là ; après, pas encore
+      let shown = txt;
+      if (!typing) shown = '';
+      else if (!cur.done && i > cur.row) shown = '';
+      else if (!cur.done && i === cur.row) shown = txt.slice(0, cur.col);
+      if (inHi || d.kind === 'write') { c.fillStyle = 'rgba(157,255,138,.1)'; c.fillRect(x + 29, yy - LH * .5, w - 34, LH); }
+      const fl = d.flash > 0 ? Math.exp(-(simT - d.flash) * 2.2) : 0;
+      if (fl > .02) { c.fillStyle = `rgba(200,255,190,${.35 * fl})`; c.fillRect(x + 29, yy - LH * .5, w - 34, LH); }
+      glow(c, '#9dff8a', 6 + fl * 10); c.fillStyle = '#e6ffe0'; c.fillText(shown, textX(d), yy); noglow(c);
+      if (typing && !cur.done && i === cur.row && Math.floor(simT * 4) % 2 === 0) { c.fillStyle = '#9dff8a'; c.fillRect(textX(d) + cur.col * CW + .3, yy - LH * .36, CW * .8, LH * .72); }
+    } else if (d.kind === 'write' && !(cur && cur.done)) {
+      // la suite du nouveau fichier apparaîtra quand le tissage sera fini
+    } else {
+      const lit = d.lit[i] || 0;
+      if (lit > .05) { c.fillStyle = `rgba(125,249,255,${.1 * lit})`; c.fillRect(x + 29, yy - LH * .5, w - 34, LH); glow(c, '#7df9ff', 8 * lit); }
+      c.fillStyle = lit > .05 ? `rgba(${Math.round(lerp(205, 210, lit))},${Math.round(lerp(198, 252, lit))},255,${.55 + .45 * lit})` : 'rgba(205,198,235,.55)';
+      c.fillText(txt, textX(d), yy); noglow(c);
+    }
+  }
+  // la lecture : un faisceau balaie la ligne regardée
+  if (d.kind === 'read' && t > d.tAct && t < d.tAct + d.tRead) { const r = clamp((t - d.tAct) / d.tRead, 0, 1) * (d.L - 1), yy = rowY(d, r); const g = c.createLinearGradient(x, 0, x + w, 0); g.addColorStop(0, 'rgba(125,249,255,0)'); g.addColorStop(.7, 'rgba(125,249,255,.25)'); g.addColorStop(1, 'rgba(125,249,255,.55)'); c.fillStyle = g; c.fillRect(x + 28, yy - LH * .55, w - 30, LH * 1.1); }
+  // l'effacement : les lettres retirées tombent et se défont en fils
+  if (d.del.length && d.hi && t > d.tAct - .2 && t < d.tAct + d.tDel + .4) {
+    const u = clamp((t - d.tAct) / d.tDel, 0, 1.3);
+    d.del.forEach((ln, k) => {
+      const yy = rowY(d, d.hi[0] + k); let s = ln.length > maxC ? ln.slice(0, maxC - 1) + '…' : ln;
+      c.fillStyle = 'rgb(9,6,20)'; c.fillRect(x + 29, yy - LH * .5, w - 34, LH); c.fillStyle = 'rgba(255,90,122,.14)'; c.fillRect(x + 29, yy - LH * .5, w - 34, LH);
+      for (let j = 0; j < s.length; j++) {
+        if (s[j] === ' ') continue; const fall = Math.max(0, u * 1.4 - j / Math.max(1, s.length) * .7 - k * .05), al = clamp(1 - fall * 1.3, 0, 1); if (al < .02) continue;
+        c.globalAlpha = a * al; c.fillStyle = '#ffb3c4'; c.fillText(s[j], textX(d) + j * CW + Math.sin(j * 3.1 + k) * fall * 3, yy + fall * fall * 26);
+      }
+      c.globalAlpha = a; const sw = clamp(u * 2, 0, 1); if (sw > 0) { c.strokeStyle = 'rgba(255,90,122,.8)'; c.lineWidth = .35; c.beginPath(); c.moveTo(textX(d), yy); c.lineTo(textX(d) + Math.min(s.length, maxC) * CW * sw, yy); c.stroke(); }
+    });
+  }
+  c.restore();
+  // le fil de soie entre les filières et la lettre en train d'être tissée
+  if (typing && !cur.done && d.ag.P && d.onPage && !d.back) {
+    const s0 = P3(spinneret(d.ag.P)), q = { x: textX(d) + cur.col * CW, y: rowY(d, cur.row) };
+    glow(c, '#ffffff', 6); c.strokeStyle = 'rgba(255,255,255,.85)'; c.lineWidth = .16; c.beginPath(); c.moveTo(s0.x, s0.y); c.quadraticCurveTo((s0.x + q.x) / 2, Math.max(s0.y, q.y) + 3, q.x, q.y); c.stroke(); noglow(c);
+  }
+}
+const diveBtn = document.getElementById('b-dive');
+function paintDive() { diveBtn.textContent = DIVE_LABEL[diveMode]; diveBtn.setAttribute('aria-pressed', String(diveMode !== 'non')); }
+diveBtn.addEventListener('click', () => { diveMode = DIVE_MODES[(DIVE_MODES.indexOf(diveMode) + 1) % DIVE_MODES.length]; try { localStorage.setItem('araignee-plongee', diveMode); } catch (e) {} paintDive(); });
+paintDive();
 
 /* ---------- rendu ---------- */
 function cocoon(c, n, acc, env) {
@@ -1563,6 +1714,8 @@ function drawDew(c) {
     });
   });
 }
+// pendant la plongée, la page cache ce qui est derrière elle (étiquettes, cartes)
+function pageHides(x, y) { if (!dive) return false; const t = simT - dive.t0; if (t < .5 || t > dive.tEnd + .3) return false; return x > dive.x - 30 && x < dive.x + dive.w + 60 && y > dive.y - 10 && y < dive.y + dive.h + 10; }
 function render(rdt) {
   const c = ctx, S0 = sel.sp;
   let tx = CX, ty = CY, tz = 1;
@@ -1574,6 +1727,8 @@ function render(rdt) {
       let x0 = S0.x, x1 = S0.x, y0 = S0.y, y1 = S0.y; busy.forEach(a => { x0 = Math.min(x0, a.sp.x); x1 = Math.max(x1, a.sp.x); y0 = Math.min(y0, a.sp.y - a.hang * TILT); y1 = Math.max(y1, a.sp.y); });
       tx = (x0 + x1) / 2; ty = (y0 + y1) / 2; tz = Math.min(tz, cssW * .62 / (vs * Math.max(60, x1 - x0)), cssH * .62 / (vs * Math.max(50, y1 - y0)));
     }
+    // la plongée : la caméra entre dans la page
+    if (dive) { const t = simT - dive.t0, k = sm(0, .8, t) * (1 - sm(dive.tEnd, dive.dur - .1, t)); if (k > .01) { const px = dive.x + dive.w / 2, py = dive.y + dive.h / 2, pz = Math.min(cssW * .88 / (vs * (dive.w + 30)), cssH * .84 / (vs * (Math.max(dive.h, 22 + 14 * LH + 8) + 30))); tx = lerp(tx, px, k); ty = lerp(ty, py, k); tz = lerp(tz, pz, k); } }
     // un fichier supprimé : la caméra va voir le cocon tomber
     if (sel.A && sel.A.tool === 'Delete' && sel.A.n) { tx = (tx + sel.A.n.x) / 2; ty = (ty + sel.A.n.y) / 2; tz = Math.min(tz, cssW * .6 / (vs * Math.max(60, Math.abs(S0.x - sel.A.n.x))), cssH * .6 / (vs * Math.max(50, Math.abs(S0.y - sel.A.n.y)))); }
     tz *= 1 + Math.sin(simT * .23) * .015;
@@ -1638,8 +1793,9 @@ function render(rdt) {
     if (n === selNode || n === hoverNode) { c.strokeStyle = 'rgba(255,255,255,.9)'; c.lineWidth = .4; c.setLineDash([1.5, 1.5]); c.lineDashOffset = -simT * 6; c.beginPath(); c.arc(n.x, y, 7 * (n.kind === 'file' ? cocoonScale(n) : 1), 0, Math.PI * 2); c.stroke(); c.setLineDash([]); }
     const age = simT - n.pulse; if (age >= 0 && age < 1.2) { c.strokeStyle = `rgba(255,255,255,${1 - age / 1.2})`; c.lineWidth = .8; c.beginPath(); c.arc(n.x, y, 4 + age * 20, 0, Math.PI * 2); c.stroke(); }
   });
-  // les araignées, la suivie en dernier pour qu'elle passe devant
-  [...AGENTS].sort((a, b) => (a === sel) - (b === sel) || a.sp.y - b.sp.y).forEach(ag => {
+  // les araignées, la suivie en dernier pour qu'elle passe devant ; pendant la plongée, la page
+  // recouvre les autres et seule l'araignée qui plonge marche dessus
+  const drawAgent = ag => {
     const sp = ag.sp, P = sp.pose(simT, ag.opts); ag.P = P; const A = ag.A;
     c.save();
     // endormie, elle se balance doucement au bout de son fil
@@ -1661,7 +1817,10 @@ function render(rdt) {
       }
     }
     c.restore();
-  });
+  };
+  [...AGENTS].sort((a, b) => (a === sel) - (b === sel) || a.sp.y - b.sp.y).forEach(ag => { if (!dive || ag !== dive.ag) drawAgent(ag); });
+  drawDive(c);
+  if (dive && AGENTS.includes(dive.ag)) drawAgent(dive.ag);
   parts.forEach(pt => {
     const u = (simT - pt.t0) / pt.dur; if (u < 0 || u > 1) return;
     if (pt.k === 'glyph') {
@@ -1702,6 +1861,7 @@ function render(rdt) {
     const active = targets.has(n.id) || n === selNode || n === hoverNode;
     if (!(active || n.kind === 'term' || (n.isDir && pxu > .75) || (n.kind === 'file' && pxu > 1.15) || (n.kind !== 'file' && !n.isDir && pxu > 1.8))) return;
     const p = toScreen(n.x, n.y); if (p.x < -80 || p.x > cssW + 80 || p.y < -20 || p.y > cssH + 20) return;
+    if (pageHides(n.x, n.y)) return;
     const col = COMM[n.comm].col, dof = active ? 0 : (n.dof || 0), cold = n.kind === 'file' && !active && !((n.heat || 0) > .01) && !n.visited;
     const fs = (n.isDir ? 12 : n.kind === 'concept' ? 11 : n.kind === 'file' ? 10.5 : 10) * (1 - .25 * dof);
     c.font = n.isDir ? `700 ${fs.toFixed(1)}px "Chakra Petch", sans-serif` : n.kind === 'concept' ? `italic 600 ${fs.toFixed(1)}px "Chakra Petch", sans-serif` : `${fs.toFixed(1)}px "JetBrains Mono", monospace`;
@@ -1712,7 +1872,7 @@ function render(rdt) {
     c.globalAlpha = 1;
   });
   AGENTS.forEach(ag => {
-    if (ag === sel && cam.mode === 'follow') return;
+    if ((ag === sel && cam.mode === 'follow') || (dive && dive.ag === ag)) return;
     const p = toScreen(ag.sp.x, ag.sp.y - ag.sp.m.bodyZ - ag.hang * TILT), txt = ag.name, tool = ag.A ? ag.A.tool : ag.walk ? 'marche' : ag.hangAnim ? 'fil' : '…';
     c.font = '600 11px "Chakra Petch", sans-serif'; const w1 = c.measureText(txt).width; c.font = '10px "JetBrains Mono", monospace'; const w2 = c.measureText(tool).width, w = w1 + w2 + 34, x = p.x - w / 2, y = p.y - 26 - ag.sp.m.R * pxu * .35;
     c.beginPath(); c.roundRect(x, y, w, 20, 10); c.fillStyle = 'rgba(10,8,20,.82)'; c.fill(); c.strokeStyle = hexA(ag.style.accent, ag === sel ? .9 : .5); c.lineWidth = 1; c.stroke();
@@ -1725,6 +1885,7 @@ function render(rdt) {
 function drawCard(c, cd) {
   const age = simT - cd.t0; if (age < 0) return;
   const a = clamp(Math.min(age / .15, (cd.dur - age) / .3), 0, 1), src = cd.node || cd.at || sel.sp;
+  if (pageHides(src.x, src.y)) return;
   const p = toScreen(src.x, src.y), w = Math.min(250, cssW - 16), lh = 15, hgt = 34 + cd.lines.length * lh;
   let x = p.x + 54, y = p.y - hgt - 46; if (x + w > cssW - 8) x = p.x - 54 - w; x = clamp(x, 8, cssW - w - 8); y = clamp(y, 8, cssH - hgt - 8);
   c.globalAlpha = a; c.lineWidth = 1;
@@ -1924,7 +2085,7 @@ paintSound();
 let hoverNode = null;
 const tipEl = document.getElementById('tip');
 const ago = ms => { const s = Math.round((Date.now() - ms) / 1000); if (s < 60) return "à l'instant"; if (s < 3600) return 'il y a ' + Math.round(s / 60) + ' min'; if (s < 86400) return 'il y a ' + Math.round(s / 3600) + ' h'; return 'il y a ' + Math.round(s / 86400) + ' j'; };
-function nodeAt(ev, radius = 14) { const r = cv.getBoundingClientRect(), s = vs * cam.z, wx = cam.x + (ev.clientX - r.left - cssW / 2) / s, wy = cam.y + (ev.clientY - r.top - cssH / 2) / s; let best = null, bd = radius / s; nodes.forEach(n => { if (n.gone) return; const d = Math.hypot(n.x - wx, n.y - wy); if (d < bd) { bd = d; best = n; } }); return best; }
+function nodeAt(ev, radius = 14) { const r = cv.getBoundingClientRect(), s = vs * cam.z, wx = cam.x + (ev.clientX - r.left - cssW / 2) / s, wy = cam.y + (ev.clientY - r.top - cssH / 2) / s; let best = null, bd = radius / s; nodes.forEach(n => { if (n.gone || pageHides(n.x, n.y)) return; const d = Math.hypot(n.x - wx, n.y - wy); if (d < bd) { bd = d; best = n; } }); return best; }
 cv.addEventListener('pointermove', ev => {
   if (drag && drag.moved) { tipEl.hidden = true; return; }
   const n = nodeAt(ev); hoverNode = n && n.kind === 'file' ? n : null;

@@ -58,6 +58,16 @@ Si le calage n'est pas parfait, règle les marges en pixels : `/araignee-marges 
 
 Les sous-agents de Claude et les tâches en arrière-plan ont chacun leur bébé araignée. Il descend d'un fil au-dessus de l'endroit où il travaille, fait ses gestes sur la même toile, puis remonte quand son agent a fini. Une sentinelle guette le projet toutes les 2,5 secondes : quand une commande, un script ou un agent lancé en arrière-plan crée, modifie ou supprime un fichier, la toile réagit même si Claude est en train d'attendre.
 
+### La plongée
+
+Quand un sous-agent ou une tâche de fond travaille sur un fichier, la grande toile plonge dedans : le cocon s'ouvre en page de soie, la caméra entre dans la page, et un bébé araignée miniature marche sur les vraies lignes.
+
+- **Lecture** : un faisceau balaie les lignes une à une, et chaque ligne lue s'allume.
+- **Modification** : l'araignée va à l'endroit exact du changement. Les lignes retirées se barrent et leurs lettres tombent, puis les nouvelles se tissent lettre par lettre au bout d'un fil de soie, avant un éclat vert.
+- **Nouveau fichier** : la page se remplit ligne après ligne.
+
+Le bouton **Plongée** de la grande toile choisit qui plonge : les agents seulement (par défaut), tout le monde (Claude aussi), ou personne. Dans le petit panneau, les bébés araignées ouvrent une petite page avec les mêmes lignes.
+
 ### Survoler et cliquer
 
 Dans la grande toile, survoler un cocon montre son chemin, sa taille, son langage et la dernière fois que Claude l'a touché. Un clic ouvre le fichier avec son application habituelle (dans la page du navigateur, il copie son chemin).
