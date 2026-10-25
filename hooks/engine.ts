@@ -585,7 +585,8 @@ const qd = (a, c, b) => `M${f1(a.x)} ${f1(a.y)}Q${f1(c.x)} ${f1(c.y)} ${f1(b.x)}
 export function renderClip(W, ev, frames, X) {
   // la vue épouse la forme du panneau (hauteur / largeur), à surface à peu près constante
   const asp = clamp(W.aspect || .63, .3, 3), VIEW_W = Math.sqrt(64000 / asp), VIEW_H = VIEW_W * asp
-  const g = W.g, S = X.S, n = frames.length, T = Math.max(.1, X.total), dur = T.toFixed(2) + 's', now = Date.now()
+  const g = W.g, S = X.S, n = frames.length, T = Math.max(.1, X.total), dur = T.toFixed(2) + 's', now = Date.now(), lod = X.lod || 0
+  X.sym = new Set()
   const anim = (attr, values) => `<animate attributeName="${attr}" values="${vals(values)}" dur="${dur}" fill="freeze" calcMode="linear"/>`
   const kt = s => clamp(s / T, 0, 1).toFixed(3)
   // zone visible pendant le clip
@@ -604,12 +605,12 @@ export function renderClip(W, ev, frames, X) {
   out.push(`<defs>${defs}</defs>`)
   out.push(`<rect x="${f1(bx0 - 400)}" y="${f1(by0 - 400)}" width="${f1(bx1 - bx0 + 800)}" height="${f1(by1 - by0 + 800)}" fill="#06040c"/>`)
   // la profondeur : des toiles lointaines, floues, qui glissent moins vite que la nôtre
-  out.push(farLayer(W, frames, VIEW_W, VIEW_H, dur, n))
+  if (lod < 1) out.push(farLayer(W, frames, VIEW_W, VIEW_H, dur, n))
   // nébuleuses des communautés
   g.comms.forEach(c => { if (c.cx > bx0 - 250 && c.cx < bx1 + 250 && c.cy > by0 - 250 && c.cy < by1 + 250) out.push(`<circle cx="${f1(c.cx)}" cy="${f1(c.cy)}" r="160" fill="${c.col}" opacity=".035" filter="url(#soft)"/>`) })
   // les toiles des dossiers : spirales entre les rayons
   let orbs = ''
-  ;(g.orbs || []).forEach(o => { if (o.x + o.r < bx0 || o.x - o.r > bx1 || o.y + o.r < by0 || o.y - o.r > by1) return; o.spirals.forEach(pts => { orbs += pts.map((p, i) => (i ? 'L' : 'M') + f1(p.x) + ' ' + f1(p.y)).join('') }) })
+  if (lod < 1) (g.orbs || []).forEach(o => { if (o.x + o.r < bx0 || o.x - o.r > bx1 || o.y + o.r < by0 || o.y - o.r > by1) return; o.spirals.forEach((pts, k) => { if (k % 2 && pts.length > 16) return; orbs += pts.map((p, i) => (i ? 'L' : 'M') + Math.round(p.x) + ' ' + Math.round(p.y)).join('') }) })
   if (orbs) out.push(`<path d="${orbs}" fill="none" stroke="#fff" stroke-opacity=".2" stroke-width=".22"/>`)
   // fils de soie : la mémoire du projet (les fils touchés brillent, les autres restent dans l'ombre)
   const near = new Set(X.edgeNear), special = new Set([...(X.snapEdges || []), X.repairEdge].filter(v => v !== undefined && v !== null))
@@ -619,12 +620,12 @@ export function renderClip(W, ev, frames, X) {
     if (near.has(i) || special.has(i) || e.hidden) return
     const a = g.byId[e.a], b = g.byId[e.b]; if (!inBox(a) && !inBox(b) && !inBox(e.c)) return
     if (e.broken) { broken.push(i); return }
-    const dd = qd(a, e.c, b), h = e.h || 0
+    const dd = `M${Math.round(a.x)} ${Math.round(a.y)}Q${Math.round(e.c.x)} ${Math.round(e.c.y)} ${Math.round(b.x)} ${Math.round(b.y)}`, h = e.h || 0
     if (e.trail) trail += dd
     else if (h < .02) { if (e.kind === 'tree') coldTree += dd; else cold += dd }
     else if (e.kind === 'tree') strong += dd; else thin += dd
     if (h > .12) hot[h > .6 ? 2 : h > .3 ? 1 : 0] += dd
-    if (e.trailAt && now - e.trailAt < 300000) dews.push(e)
+    if (e.trailAt && now - e.trailAt < 300000 && lod < 1) dews.push(e)
   })
   out.push(`<path d="${cold}" fill="none" stroke="#fff" stroke-opacity=".2" stroke-width=".28"/><path d="${coldTree}" fill="none" stroke="#fff" stroke-opacity=".42" stroke-width=".4"/>`)
   out.push(`<path d="${thin}" fill="none" stroke="#fff" stroke-opacity=".42" stroke-width=".34"/>`)
@@ -665,20 +666,28 @@ export function renderClip(W, ev, frames, X) {
     out.push(`<path d="${ds[0] || ''}" fill="none" stroke="#fff" stroke-opacity="${op}" stroke-width="${f1(sw)}"${e.trail || h > .3 ? ' filter="url(#glow)"' : ''}>${n > 1 ? anim('d', ds) : ''}</path>`)
   })
   // nœuds
-  const nodesOut = []
+  const nodesOut = [], dots = {}, halos = {}
   g.nodes.forEach(nd => {
     if (!inBox(nd) || (nd.gone && X.falling !== nd)) return
     const col = g.comms[nd.comm].col
     if (nd.kind === 'file') nodesOut.push(cocoonSVG(nd, col, X, frames, dur, kt))
     else if (nd.kind === 'term') nodesOut.push(`<g transform="translate(${f1(nd.x)} ${f1(nd.y)})"><rect x="-10" y="-6.5" width="20" height="13" rx="3" fill="#0b1a0e" stroke="#9dff8a" stroke-width=".6" filter="url(#glow)"/><text y="1.8" text-anchor="middle" font-family="monospace" font-size="5.5" fill="#9dff8a">&gt;_</text></g>`)
     else if (nd.kind === 'dir') nodesOut.push(`<circle cx="${f1(nd.x)}" cy="${f1(nd.y)}" r="2.6" fill="#fff" filter="url(#glow)"/><circle cx="${f1(nd.x)}" cy="${f1(nd.y)}" r="5" fill="none" stroke="${col}" stroke-opacity=".7" stroke-width=".35"/>`)
-    else { const r = nd.kind === 'concept' ? 2.4 : 1.3 + Math.min(1.5, g.adj[nd.id].length * .16); nodesOut.push(`<circle cx="${f1(nd.x)}" cy="${f1(nd.y)}" r="${f1(r * 2.3)}" fill="${col}" opacity=".2"/><circle cx="${f1(nd.x)}" cy="${f1(nd.y)}" r="${f1(r)}" fill="${col}"/>`) }
+    else {
+      // les fonctions et concepts : regroupés en un seul tracé par communauté (bien plus léger)
+      const r = nd.kind === 'concept' ? 2.4 : 1.3 + Math.min(1.5, g.adj[nd.id].length * .16), k = nd.comm, dot = (rr) => `M${f1(nd.x - rr)} ${f1(nd.y)}a${f1(rr)} ${f1(rr)} 0 1 0 ${f1(rr * 2)} 0a${f1(rr)} ${f1(rr)} 0 1 0 ${f1(-rr * 2)} 0`
+      dots[k] = (dots[k] || '') + dot(r); if (lod < 3) halos[k] = (halos[k] || '') + dot(r * 2.3)
+    }
   })
-  out.push(nodesOut.join(''))
+  Object.keys(halos).forEach(k => out.push(`<path d="${halos[k]}" fill="${g.comms[k].col}" opacity=".2"/>`))
+  Object.keys(dots).forEach(k => out.push(`<path d="${dots[k]}" fill="${g.comms[k].col}"/>`))
+  out.push(nodesOut.join(''), cocoonDefs(X.sym))
   // étiquettes des nœuds visibles (les fichiers jamais touchés restent discrets)
   let labels = ''
-  g.nodes.forEach(nd => {
-    if (!inBox(nd) || nd.kind === 'leaf' || !nd.label || nd.gone) return
+  const cEnd = frames.length ? frames[frames.length - 1].cam : W.cam, lx0 = Math.min(cEnd.x, f0.x) - VIEW_W * .55, lx1 = Math.max(cEnd.x, f0.x) + VIEW_W * .55, ly0 = Math.min(cEnd.y, f0.y) - VIEW_H * .55, ly1 = Math.max(cEnd.y, f0.y) + VIEW_H * .55
+  const shown = g.nodes.filter(nd => nd.x > lx0 && nd.x < lx1 && nd.y > ly0 && nd.y < ly1).sort((a, b) => Math.hypot(a.x - cEnd.x, a.y - cEnd.y) - Math.hypot(b.x - cEnd.x, b.y - cEnd.y)).slice(0, lod >= 3 ? 12 : 70)
+  shown.forEach(nd => {
+    if (nd.kind === 'leaf' || !nd.label || nd.gone) return
     const isT = nd === X.target || X.targets.includes(nd); if (nd.kind === 'sym' && !isT && g.adj[nd.id].length < 4) return
     const cold = nd.kind === 'file' && !isT && !(nd.heat > .01) && !nd.visited
     const dx = nd.kind === 'file' ? 4 + 3.6 * cocoonScale(nd) : 6
@@ -706,9 +715,12 @@ export function renderClip(W, ev, frames, X) {
   else if ((ev.lines || []).length && !['idle', 'Sleep', 'Leave'].includes(ev.tool)) out.push(cardSVG(ev, X, frames))
   out.push('</svg>')
   const svg = out.join('')
-  if (svg.length > MAX_CHARS) { // trop long : on garde une image sur deux
-    const half = frames.filter((_, i) => i % 2 === 0 || i === frames.length - 1)
-    if (half.length < frames.length && frames.length > 6) return renderClip(W, ev, half, { ...X, edgeNear: X.edgeNear.slice(0, 4) })
+  if (svg.length > MAX_CHARS && lod < 7) {
+    // trop lourd pour le panneau : 1 sans décor lointain, 2 et 4 une image sur deux, 3 moins d'étiquettes,
+    // 5 et 6 l'essentiel, 7 en dernier recours une image fixe de la vue finale (elle passe toujours)
+    const next = lod + 1, thin = next === 2 || next === 4 || next === 6
+    const fr = next === 7 ? frames.slice(-1) : thin && frames.length > 4 ? frames.filter((_, i) => i % 2 === 0 || i === frames.length - 1) : frames
+    return renderClip(W, ev, fr, { ...X, lod: next, edgeNear: X.edgeNear.slice(0, next >= 4 ? 2 : 5) })
   }
   return { svg, dur: X.total, sounds: X.sounds || [] }
 }
@@ -743,6 +755,17 @@ function cocoonSVG(nd, col0, X, frames, dur, kt) {
   const col = nd.lang || langColor(nd.path || nd.label), sc = cocoonScale(nd), rx = 3.6 * sc, ry = 2.3 * sc
   const touched = (nd.heat || 0) > .01 || nd.visited || nd.mod
   const held = X.act.tool === 'Read' && X.target === nd, born = X.act.tool === 'Write' && X.target === nd && nd.isNew, falling = X.falling === nd
+  const cnt = 5 + Math.min(10, (nd.edits || 0) * 2 + (nd.wrap || 0) * 2)
+  if (!held && !born && !falling) {
+    // le cas courant : une simple référence au modèle de cocon, tournée et mise à l'échelle
+    const v = 'ck' + cnt + (nd.mod ? 'm' : ''); X.sym.add(v)
+    let c = `<g transform="translate(${f1(nd.x)} ${f1(nd.y)}) rotate(${(nd.ang / DEG).toFixed(0)}) scale(${sc.toFixed(2)})"${touched ? '' : ' opacity=".55"'}>`
+    if ((nd.heat || 0) > .08) c += `<circle r="6.8" fill="${col}" opacity="${(.06 + nd.heat * .16).toFixed(2)}" filter="url(#soft)"/>`
+    if (!X.lod || X.lod < 3) c += `<circle r="6" fill="${col0}" opacity=".14"/>`
+    const layers = Math.min(3, Math.floor((nd.edits || 0) / 2))
+    for (let k = layers; k >= 1; k--) c += `<ellipse rx="${f1(3.6 * (1 + .2 * k))}" ry="${f1(2.3 * (1 + .3 * k))}" fill="#fff" fill-opacity=".04" stroke="#fff" stroke-opacity=".3" stroke-width=".18" stroke-dasharray="1 .7"/>`
+    return c + `<use href="#${v}" fill="${col}"${touched ? ' filter="url(#glow)"' : ''}/></g>`
+  }
   let s = `<g transform="translate(${f1(nd.x)} ${f1(nd.y)})"${touched || held ? '' : ' opacity=".55"'}>`
   if (falling) { const b = X.snapT.toFixed(2); s += `<animateTransform attributeName="transform" type="translate" values="${f1(nd.x)} ${f1(nd.y)};${f1(nd.x + 3)} ${f1(nd.y + 50)}" dur="1.4s" begin="${b}s" fill="freeze"/><animate attributeName="opacity" values="1;1;0" dur="1.4s" begin="${b}s" fill="freeze"/>` }
   if ((nd.heat || 0) > .08) s += `<circle r="${f1(rx * 1.9)}" fill="${col}" opacity="${(.06 + nd.heat * .16).toFixed(2)}" filter="url(#soft)"/>`
@@ -756,11 +779,20 @@ function cocoonSVG(nd, col0, X, frames, dur, kt) {
   for (let k = layers; k >= 1; k--) s += `<ellipse rx="${f1(rx * (1 + .2 * k))}" ry="${f1(ry * (1 + .3 * k))}" fill="#fff" fill-opacity=".04" stroke="#fff" stroke-opacity=".3" stroke-width=".18" stroke-dasharray="1 .7"/>`
   s += `<ellipse rx="${f1(rx)}" ry="${f1(ry)}" fill="${col}" fill-opacity="${nd.mod ? .95 : .78}" stroke="${nd.mod ? '#ffc6f4' : '#fff'}" stroke-opacity=".6" stroke-width=".2" filter="url(#glow)"/>`
   s += `<ellipse cx="${f1(-rx * .25)}" cy="${f1(-ry * .35)}" rx="${f1(rx * .45)}" ry="${f1(ry * .28)}" fill="#fff" opacity=".45"/>`
-  const cnt = 5 + Math.min(10, (nd.edits || 0) * 2 + (nd.wrap || 0) * 2)
   let wraps = ''; for (let k = 0; k < cnt; k++) { const x = -rx * .83 + k * rx * 1.66 / cnt + rx * .17, h = ry * Math.sqrt(Math.max(0, 1 - (x / rx) ** 2)); wraps += `M${f1(x - .5)} ${f1(-h)}Q${f1(x + .5)} 0 ${f1(x - .5)} ${f1(h)}` }
   s += `<path d="${wraps}" fill="none" stroke="${nd.mod ? '#fff0fb' : 'rgba(20,14,40,.55)'}" stroke-width="${f1(.22 * Math.sqrt(sc))}"/>`
   if (held) s += `<ellipse rx="${f1(rx * .66)}" ry="${f1(ry * .5)}" fill="#c8faff" opacity="0" filter="url(#glow)"><animate attributeName="opacity" values="0;0;.9;.9;0" keyTimes="0;${kt(X.walkDur)};${kt(X.walkDur + .5)};${kt(X.total - .5)};1" dur="${dur}" fill="freeze"/></ellipse>`
   return s + close
+}
+// les modèles de cocons : l'ellipse, son reflet et ses tours de soie (la couleur vient de chaque cocon)
+function cocoonDefs(sym) {
+  let d = ''
+  for (const v of sym) {
+    const cnt = parseInt(v.slice(2)), mod = v.endsWith('m'), rx = 3.6, ry = 2.3
+    let wraps = ''; for (let k = 0; k < cnt; k++) { const x = -rx * .83 + k * rx * 1.66 / cnt + rx * .17, h = ry * Math.sqrt(Math.max(0, 1 - (x / rx) ** 2)); wraps += `M${f1(x - .5)} ${f1(-h)}Q${f1(x + .5)} 0 ${f1(x - .5)} ${f1(h)}` }
+    d += `<g id="${v}"><ellipse rx="${rx}" ry="${ry}" fill-opacity="${mod ? .95 : .78}" stroke="${mod ? '#ffc6f4' : '#fff'}" stroke-opacity=".6" stroke-width=".2"/><ellipse cx="-.9" cy="-.8" rx="1.62" ry=".64" fill="#fff" opacity=".45"/><path d="${wraps}" fill="none" stroke="${mod ? '#fff0fb' : 'rgba(20,14,40,.55)'}" stroke-width=".22"/></g>`
+  }
+  return d ? `<defs>${d}</defs>` : ''
 }
 function depthAtFrame(f, p) {
   // profondeur approchée à partir de la pose enregistrée (corps et pieds posés)

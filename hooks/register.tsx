@@ -30,7 +30,8 @@ let playing = false
 // la fenêtre du navigateur : quand le panneau ne peut pas s'afficher, la toile vit dans une page locale
 let viewerDir = ''
 let sid = ''
-let liveSeq = 0
+// le compteur part de l'heure : après un rechargement du plugin, il continue de croître (la grande toile ouverte suit)
+let liveSeq = Date.now()
 let liveEvents: any[] = []
 let shown = false
 // ce que Claude a fait pendant le tour en cours, pour le bilan de fin
@@ -254,10 +255,11 @@ async function pushLive($: EngineInterface, toolName: string, ev: Ev, e: any) {
   const d = String(e.pattern ?? e.command ?? e.query ?? e.url ?? '').split('\n')[0]?.slice(0, 60) ?? ''
   const info = ev.path ? infoOf(nodeForPath(g, ev.path)) : undefined
   liveSeq += 1
-  liveEvents.push({ seq: liveSeq, tool: VIEWER_TOOL[toolName] || VIEWER_TOOL[ev.tool] || ev.tool, t, d, label: ev.label, lines: ev.lines, nodes, actor: ev.actor || 'main', ok: ev.ok, big: ev.big, pace: ev.pace, info, page: ev.page })
+  const now = Date.now()
+  liveEvents.push({ seq: liveSeq, at: now, tool: VIEWER_TOOL[toolName] || VIEWER_TOOL[ev.tool] || ev.tool, t, d, label: ev.label, lines: ev.lines, nodes, actor: ev.actor || 'main', ok: ev.ok, big: ev.big, pace: ev.pace, info, page: ev.page })
   if (liveEvents.length > 30) liveEvents = liveEvents.slice(-30)
-  // seules les pages récentes voyagent : le fichier relu toutes les 0,7 s reste léger
-  liveEvents.forEach((x, i) => { if (i < liveEvents.length - 6) delete x.page })
+  // seules les pages récentes voyagent (la grande toile relit le fichier toutes les 0,7 s) : il reste léger
+  liveEvents.forEach((x, i) => { if (x.page && i < liveEvents.length - 3 && now - (x.at || 0) > 20000) delete x.page })
   await writeLive($)
 }
 
@@ -294,7 +296,8 @@ async function startWatch($: EngineInterface) {
     try {
       const now = Date.now()
       for (const [p, t] of ownWrites) if (now - t > 8000) ownWrites.delete(p)
-      const changed = (await scan($, false)).filter(c => !ownWrites.has(c.path)).slice(-3)
+      // les modifications faites par les outils de Claude sont déjà montrées ; une suppression, jamais
+      const changed = (await scan($, false)).filter(c => c.deleted || !ownWrites.has(c.path)).slice(-3)
       if (changed.length) await showOnce($).catch(() => undefined)
       for (const c of changed) {
         const name = c.path.split('/').pop() || c.path

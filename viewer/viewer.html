@@ -512,6 +512,21 @@ function drawPixel(c, P, S, I) {
   c.drawImage(pixBuf, Math.round(T.a * x0 + T.e), Math.round(T.d * y0 + T.f), size * block, size * block); c.restore();
 }
 function drawSpider(c, P, S, I) { if (S.pixel) drawPixel(c, P, S, I); else renderSpider(c, P, S, I); }
+// l'humeur colore l'araignée : on la dessine dans une petite image, on la teinte d'un coup, puis on la recopie
+// (un filtre appliqué à chaque trait coûterait trop cher sans carte graphique)
+const tintBuf = document.createElement('canvas'), tintCtx = tintBuf.getContext('2d');
+function drawTinted(c, P, S, I, col, w) {
+  const T = c.getTransform(), s = Math.hypot(T.a, T.b), R = P.m.R * 1.25 + Math.abs(P.bz) * TILT + 10, size = Math.ceil(2 * R * s);
+  if (size < 4 || size > 2400) { drawSpider(c, P, S, I); return; }
+  if (tintBuf.width !== size || tintBuf.height !== size) { tintBuf.width = size; tintBuf.height = size; } else tintCtx.clearRect(0, 0, size, size);
+  const x0 = P.x - R, y0 = P.y - R - Math.max(0, P.bz) * TILT * .5;
+  tintCtx.globalCompositeOperation = 'source-over'; tintCtx.globalAlpha = 1;
+  tintCtx.setTransform(s, 0, 0, s, -x0 * s, -y0 * s); tintCtx._px = s;
+  drawSpider(tintCtx, P, S, I);
+  tintCtx.setTransform(1, 0, 0, 1, 0, 0); tintCtx.globalCompositeOperation = 'source-atop'; tintCtx.globalAlpha = .62 * w; tintCtx.fillStyle = col; tintCtx.fillRect(0, 0, size, size);
+  tintCtx.globalAlpha = 1; tintCtx.globalCompositeOperation = 'source-over';
+  c.drawImage(tintBuf, x0, y0, 2 * R, 2 * R);
+}
 
 /* ============ les 9 araignées ============ */
 const pal = hs => hs.map(hexRgb);
@@ -1165,40 +1180,46 @@ function buildOrbs() {
 const cutEdge = i => i >= 0 && (edges[i].broken || edges[i].hidden);
 // un fil casse ou disparaît : on redessine la soie fixe sans lui
 function rebuildStatic() {
-  CLS.forEach(k => G[k] = new Path2D());
+  CLS.forEach(k => G[k] = new Path2D()); webCache.dirty = true;
   tiles.forEach(t => { for (const cls in t.p) for (const pc of t.p[cls]) { if (cutEdge(pc.e)) continue; const a = pc.a, P = G[cls]; P.moveTo(a[0], a[1]); for (let j = 2; j < a.length; j += 2) P.lineTo(a[j], a[j + 1]); } });
 }
 function buildDyn(zones, depth) {
   const S = { dew: new Path2D(), dewSpec: new Path2D() }; CLS.forEach(k => S[k] = new Path2D());
   const em = new Map(), seen = new Set();
   zones.forEach(z => {
-    const r2 = z.r * z.r;
+    const r2 = z.r * z.r, m2 = (z.r + 24) * (z.r + 24), out = (x, y) => (x - z.x) * (x - z.x) + (y - z.y) * (y - z.y) > m2;
     for (let tx = Math.floor((z.x - z.r - 20) / TILE); tx <= Math.floor((z.x + z.r + 20) / TILE); tx++) for (let ty = Math.floor((z.y - z.r - 20) / TILE); ty <= Math.floor((z.y + z.r + 20) / TILE); ty++) {
       const k = tx + ',' + ty; if (seen.has(k)) continue; seen.add(k); const t = tiles.get(k); if (!t) continue;
       for (const cls in t.p) {
+        // près de l'araignée, la soie jamais parcourue (déjà pâle) garde ses brins principaux seulement
+        if (cls === 'back_c' || cls === 'sheen_c') continue;
         const path = S[cls];
         for (const pc of t.p[cls]) {
           if (cutEdge(pc.e)) continue;
-          const a = pc.a; let ep = null;
+          const a = pc.a, n = a.length; if (out(a[0], a[1]) && out(a[n - 2], a[n - 1]) && out(a[(n >> 2) * 2], a[(n >> 2) * 2 + 1])) continue;
+          let ep = null;
           if (pc.e >= 0 && (edges[pc.e].trail > .01 || (edges[pc.e].h || 0) > .12)) { let o = em.get(pc.e); if (!o) em.set(pc.e, o = {}); ep = o[cls] || (o[cls] = new Path2D()); }
           for (let j = 0; j < a.length; j += 2) { const x = a[j], dx = x - z.x, dy = a[j + 1] - z.y, y = dx * dx + dy * dy < r2 ? a[j + 1] - depth(x, a[j + 1]) * TILT : a[j + 1]; if (j) { path.lineTo(x, y); if (ep) ep.lineTo(x, y); } else { path.moveTo(x, y); if (ep) ep.moveTo(x, y); } }
         }
       }
-      t.dew.forEach(d => { const y = d.y - depth(d.x, d.y) * TILT; S.dew.moveTo(d.x + d.s, y); S.dew.arc(d.x, y, d.s, 0, Math.PI * 2); S.dewSpec.moveTo(d.x, y - d.s * .3); S.dewSpec.arc(d.x - d.s * .3, y - d.s * .3, d.s * .3, 0, Math.PI * 2); });
+      t.dew.forEach(d => { if (out(d.x, d.y)) return; const y = d.y - depth(d.x, d.y) * TILT; S.dew.moveTo(d.x + d.s, y); S.dew.arc(d.x, y, d.s, 0, Math.PI * 2); S.dewSpec.moveTo(d.x, y - d.s * .3); S.dewSpec.arc(d.x - d.s * .3, y - d.s * .3, d.s * .3, 0, Math.PI * 2); });
     }
   });
   return { G: S, edges: em };
 }
 // toute la soie est blanche, néon, brillante
 function strokeSilk(c, S, x) {
-  c.strokeStyle = 'rgba(255,255,255,.06)'; c.lineWidth = 1.6; c.stroke(S['dep' + x]); c.strokeStyle = 'rgba(255,255,255,.42)'; c.lineWidth = .3; c.stroke(S['dep' + x]);
-  c.strokeStyle = 'rgba(255,255,255,.07)'; c.lineWidth = 4.2; c.stroke(S['core' + x]);
+  // le halo large n'est dessiné que pour la soie parcourue : sur la soie pâle il serait invisible (et coûteux)
+  if (!x) { c.strokeStyle = 'rgba(255,255,255,.06)'; c.lineWidth = 1.6; c.stroke(S['dep' + x]); }
+  c.strokeStyle = 'rgba(255,255,255,.42)'; c.lineWidth = .3; c.stroke(S['dep' + x]);
+  if (!x) { c.strokeStyle = 'rgba(255,255,255,.07)'; c.lineWidth = 4.2; c.stroke(S['core' + x]); }
   c.strokeStyle = 'rgba(20,16,36,.65)'; c.lineWidth = .7; c.stroke(S['front' + x]);
   c.strokeStyle = 'rgba(205,205,230,.55)'; c.lineWidth = .36; c.stroke(S['back' + x]);
   c.strokeStyle = 'rgba(255,255,255,.88)'; c.lineWidth = .42; c.stroke(S['front' + x]);
   c.strokeStyle = 'rgba(255,255,255,.7)'; c.lineWidth = .16; c.stroke(S['sheen' + x]);
 }
-function drawWebSet(c, S, edgeMap) {
+function drawWebSet(c, S, edgeMap) { drawWebBase(c, S); drawWebOverlay(c, edgeMap); c.fillStyle = 'rgba(225,240,255,.32)'; c.fill(S.dew); c.fillStyle = 'rgba(255,255,255,.9)'; c.fill(S.dewSpec); }
+function drawWebBase(c, S) {
   c.lineCap = 'round'; c.lineJoin = 'round';
   c.strokeStyle = 'rgba(235,235,255,.17)'; c.lineWidth = .34; c.stroke(S.orb);
   strokeSilk(c, S, '');
@@ -1206,6 +1227,10 @@ function drawWebSet(c, S, edgeMap) {
   c.globalAlpha = .4; strokeSilk(c, S, '_c'); c.globalAlpha = 1;
   c.strokeStyle = 'rgba(240,240,255,.38)'; c.lineWidth = .22; c.stroke(S.hub);
   c.strokeStyle = 'rgba(240,240,255,.32)'; c.lineWidth = .2; c.stroke(S.anch);
+}
+// les fils parcourus et les fils chauds : ils changent sans cesse, on les dessine à chaque image
+function drawWebOverlay(c, edgeMap) {
+  c.lineCap = 'round'; c.lineJoin = 'round';
   edges.forEach((e, i) => {
     const k = Math.max(e.trail, (e.h || 0) > .12 ? .25 + e.h * .75 : 0); if (k < .01 || cutEdge(i)) return; const P = edgeMap ? edgeMap.get(i) : e.paths; if (!P) return;
     const core = P.core || P.core_c, dep = P.dep || P.dep_c, front = P.front || P.front_c, back = P.back || P.back_c, wide = 1 + (e.h || 0) * 1.4;
@@ -1214,7 +1239,30 @@ function drawWebSet(c, S, edgeMap) {
     if (front) { c.strokeStyle = `rgba(255,255,255,${.25 * k})`; c.lineWidth = 1.6 * wide; c.stroke(front); c.strokeStyle = `rgba(255,255,255,${k})`; c.lineWidth = .62; c.stroke(front); }
     if (back) { c.strokeStyle = `rgba(230,230,255,${.55 * k})`; c.lineWidth = .45; c.stroke(back); }
   });
-  c.fillStyle = 'rgba(225,240,255,.32)'; c.fill(S.dew); c.fillStyle = 'rgba(255,255,255,.9)'; c.fill(S.dewSpec);
+}
+/* ---------- caches : ce qui ne bouge pas est dessiné une fois dans une image, puis recopié ---------- */
+// le fond (halos des communautés) : flou par nature, une petite image suffit
+const bgCache = (() => {
+  const K = .25, x0 = -W * .3, y0 = -H * .3, w = W * 1.6, h = H * 1.6, cv = document.createElement('canvas');
+  cv.width = Math.ceil(w * K); cv.height = Math.ceil(h * K); const k = cv.getContext('2d'); k.setTransform(K, 0, 0, K, -x0 * K, -y0 * K);
+  const P = (x, y, r, col) => { const g = k.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)'); k.fillStyle = g; k.fillRect(x - r, y - r, r * 2, r * 2); };
+  P(CX, CY, Math.max(W, H) * .6, 'rgba(90,50,180,.12)');
+  COMM.forEach(cm => P(cm.cx, cm.cy, 230, hexA(cm.col, .055)));
+  return { cv, x0, y0, w, h };
+})();
+// la soie fixe : redessinée seulement quand la caméra s'éloigne, zoome franchement, ou quand la toile change
+const webCache = { cv: document.createElement('canvas'), s: 0, x0: 0, y0: 0, x1: 0, y1: 0, dirty: true };
+function webCacheFor(s, vx0, vy0, vx1, vy1) {
+  const C = webCache, r = s / (C.s || 1);
+  if (!C.dirty && r > .8 && r < 1.25 && vx0 >= C.x0 && vy0 >= C.y0 && vx1 <= C.x1 && vy1 <= C.y1) return C;
+  const mx = (vx1 - vx0) * .3, my = (vy1 - vy0) * .3, x0 = vx0 - mx, y0 = vy0 - my, x1 = vx1 + mx, y1 = vy1 + my;
+  const ss = Math.min(s, 4096 / (x1 - x0), 4096 / (y1 - y0));
+  C.cv.width = Math.ceil((x1 - x0) * ss); C.cv.height = Math.ceil((y1 - y0) * ss);
+  const k = C.cv.getContext('2d'); k.setTransform(ss, 0, 0, ss, -x0 * ss, -y0 * ss); k._px = ss;
+  COMM.forEach((cm, i) => { k.fillStyle = hexA(cm.col, .3); k.fill(G.cdust[i]); }); k.fillStyle = 'rgba(255,255,255,.35)'; k.fill(G.dustC);
+  drawWebBase(k, G); k.fillStyle = 'rgba(225,240,255,.32)'; k.fill(G.dew); k.fillStyle = 'rgba(255,255,255,.9)'; k.fill(G.dewSpec);
+  Object.assign(C, { s: ss, x0, y0, x1, y1, dirty: false });
+  return C;
 }
 
 /* ============ scène ============ */
@@ -1539,7 +1587,7 @@ function updateDive(ag, dt) {
   if (d.onPage && !d.back) {
     let tx, ty;
     if (d.kind === 'read') { const r = t > d.tAct ? focus : 0; tx = d.x + d.w - 16; ty = rowY(d, r); }
-    else if (cur && t > d.tAct + d.tDel) { tx = Math.min(d.x + d.w - 8, textX(d) + (cur.col + 9) * CW + 6); ty = rowY(d, cur.row) - LH * 1.1; }
+    else if (cur && t > d.tAct + d.tDel) { let len = 0; for (let i = Math.max(0, cur.row - 2); i <= Math.min(d.L - 1, cur.row + 2); i++) len = Math.max(len, i === cur.row ? cur.col : i < cur.row || !d.typeRange || i > d.typeRange[1] ? d.pg.lines[i].length : 0); tx = Math.min(d.x + d.w - 10, textX(d) + (len + 3) * CW + 10); ty = rowY(d, cur.row); }
     else { const r = d.hi ? d.hi[0] : 0; tx = d.x + d.w - 18; ty = rowY(d, r); }
     const k = Math.min(1, dt * (t < 1.25 ? 3 : 6)); sp.x += (tx - sp.x) * k; sp.y += (ty - sp.y) * k;
   } else if (!d.onPage) { const k = Math.min(1, dt * 4), tx = d.x + d.w - 18, ty = rowY(d, d.hi ? d.hi[0] : 0); if (t > .6) { sp.x += (tx - sp.x) * k * sm(.6, .9, t); sp.y += (ty - sp.y) * k * sm(.6, .9, t); } }
@@ -1742,21 +1790,23 @@ function render(rdt) {
   // le plan lointain
   c.save(); c.translate(cam.x * FAR_K, cam.y * FAR_K); c.lineCap = 'round';
   c.strokeStyle = 'rgba(190,180,255,.025)'; c.lineWidth = 2.2; c.stroke(FAR); c.strokeStyle = 'rgba(205,198,255,.05)'; c.lineWidth = .5; c.stroke(FAR); c.restore();
-  pool(c, CX, CY, Math.max(W, H) * .6, 'rgba(90,50,180,.12)');
-  COMM.forEach((cm, i) => { pool(c, cm.cx, cm.cy, 230, hexA(cm.col, .055)); c.fillStyle = hexA(cm.col, .3); c.fill(G.cdust[i]); }); c.fillStyle = 'rgba(255,255,255,.35)'; c.fill(G.dustC);
+  c.drawImage(bgCache.cv, bgCache.x0, bgCache.y0, bgCache.w, bgCache.h);
   // profondeur de champ : ce qui est loin du centre de la vue s'estompe
   const viewR = Math.max(cssW, cssH) / (2 * vs * cam.z);
-  nodes.forEach(n => { n.dof = clamp((Math.hypot(n.x - cam.x, n.y - cam.y) / viewR - .6) / .7, 0, 1); });
-  const zones = AGENTS.filter(ag => ag.hang < 4).map(ag => ({ x: ag.sp.x, y: ag.sp.y, r: ag.sp.m.R + 48 }));
+  for (const n of nodes) n.dof = clamp((Math.hypot(n.x - cam.x, n.y - cam.y) / viewR - .6) / .7, 0, 1);
+  const zones = AGENTS.filter(ag => ag.hang < 4).map(ag => ({ x: ag.sp.x, y: ag.sp.y, r: ag.sp.m.R + 16 }));
   if (!zones.length) zones.push({ x: S0.x, y: S0.y, r: 1 });
   waves.forEach(w => { const age = simT - w.t0; if (age > 1.6) return; const z = zones.reduce((b, q) => Math.hypot(q.x - w.x, q.y - w.y) < Math.hypot(b.x - w.x, b.y - w.y) ? q : b); z.r = Math.max(z.r, Math.hypot(w.x - z.x, w.y - z.y) + age * w.v + 30); });
   pulses.forEach(p => { if (p.head && zones.every(z => Math.hypot(p.head.x - z.x, p.head.y - z.y) > z.r + 30)) zones.push({ x: p.head.x, y: p.head.y, r: 26 }); });
   // fusionne les zones qui se chevauchent, pour ne pas dessiner deux fois la même soie
   for (let i = 0; i < zones.length; i++) for (let j = i + 1; j < zones.length; j++) { const a = zones[i], b = zones[j], d = Math.hypot(a.x - b.x, a.y - b.y); if (d < a.r + b.r) { const r = (d + a.r + b.r) / 2, k = d ? (r - a.r) / d : 0; zones[i] = { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, r }; zones.splice(j, 1); i = -1; break; } }
   const dyn = buildDyn(zones, stageEnv.depth);
+  const sc = vs * cam.z * dpr, hw = cssW / (2 * vs * cam.z), hh = cssH / (2 * vs * cam.z), WC = webCacheFor(sc, cam.x - hw, cam.y - hh, cam.x + hw, cam.y + hh);
   c.save(); const out = new Path2D(); out.rect(-5000, -5000, 11000, 11000); zones.forEach(z => { out.moveTo(z.x + z.r, z.y); out.arc(z.x, z.y, z.r, 0, Math.PI * 2); }); c.clip(out, 'evenodd');
-  drawWebSet(c, G, null); c.restore();
+  c.drawImage(WC.cv, WC.x0, WC.y0, WC.x1 - WC.x0, WC.y1 - WC.y0); drawWebOverlay(c, null); c.restore();
   c.save(); const inn = new Path2D(); zones.forEach(z => { inn.moveTo(z.x + z.r, z.y); inn.arc(z.x, z.y, z.r, 0, Math.PI * 2); }); c.clip(inn);
+  // la poussière d'étoiles est dans l'image du fond : dans la zone de l'araignée, on la redessine
+  COMM.forEach((cm, i) => { c.fillStyle = hexA(cm.col, .3); c.fill(G.cdust[i]); }); c.fillStyle = 'rgba(255,255,255,.35)'; c.fill(G.dustC);
   drawWebSet(c, dyn.G, dyn.edges);
   AGENTS.forEach(ag => { if (ag.hang > 4) return; const R = ag.sp.m.R + 40, lit = c.createRadialGradient(ag.sp.x, ag.sp.y, 0, ag.sp.x, ag.sp.y, R); lit.addColorStop(0, 'rgba(255,255,255,.5)'); lit.addColorStop(.6, 'rgba(255,255,255,.18)'); lit.addColorStop(1, 'rgba(255,255,255,0)'); c.strokeStyle = lit; c.lineWidth = .36; c.stroke(dyn.G.orb); c.stroke(dyn.G.hub); c.stroke(dyn.G.anch); });
   c.restore();
@@ -1773,8 +1823,10 @@ function render(rdt) {
   });
   const targets = new Set(AGENTS.map(a => a.target).filter(Boolean)), env = { now: simT, acts: AGENTS.map(a => a.A), targets, depth: stageEnv.depth };
   if (selNode) { glow(c, '#ffffff', 8); c.strokeStyle = 'rgba(255,255,255,.95)'; c.lineWidth = .6; edges.forEach((e, i) => { if (!cutEdge(i) && (e.a === selNode.id || e.b === selNode.id)) c.stroke(e.paths.core || e.paths.core_c || e.paths.dep || e.paths.dep_c); }); noglow(c); }
+  // seulement ce qui est à l'écran (avec une marge) : sur un gros projet, c'est l'essentiel du travail économisé
+  const cx0 = cam.x - hw - 40, cx1 = cam.x + hw + 40, cy0 = cam.y - hh - 40, cy1 = cam.y + hh + 60;
   nodes.forEach(n => {
-    if (n.gone) return;
+    if (n.gone || n.x < cx0 || n.x > cx1 || n.y < cy0 || n.y > cy1) return;
     const y = n.y - stageEnv.depth(n.x, n.y) * TILT, col = COMM[n.comm].col;
     if (n.kind === 'file') { if (n.fallT === undefined) { c.fillStyle = hexA(col, .2 * (1 - .5 * (n.dof || 0))); dot(c, { x: n.x, y }, 7 * cocoonScale(n)); } cocoon(c, n, '#ffffff', env); }
     else if (n.kind === 'term') {
@@ -1786,7 +1838,7 @@ function render(rdt) {
       const r = n.kind === 'concept' ? 2.4 : n.kind === 'sym' ? 1.3 + Math.min(1.5, adj[n.id].length * .16) : .75, hot = targets.has(n.id) || simT - n.pulse < 1.2;
       if (hot) glow(c, col, 14); else if (n.kind !== 'leaf') { c.fillStyle = hexA(col, .22); dot(c, { x: n.x, y }, r * 2.4); }
       if (n.kind === 'leaf') { c.fillStyle = hexA(col, .8); dot(c, { x: n.x, y }, r); }
-      else { const g = c.createRadialGradient(n.x - r * .3, y - r * .3, 0, n.x, y, r); g.addColorStop(0, '#ffffff'); g.addColorStop(.55, col); g.addColorStop(1, hexA(col, .6)); c.fillStyle = g; dot(c, { x: n.x, y }, r); }
+      else { c.fillStyle = col; dot(c, { x: n.x, y }, r); c.fillStyle = 'rgba(255,255,255,.75)'; dot(c, { x: n.x - r * .3, y: y - r * .3 }, r * .38); }
       noglow(c);
       if (n.kind === 'concept') { c.strokeStyle = hexA(col, .8); c.lineWidth = .35; c.beginPath(); c.arc(n.x, y, r + 1.6, 0, Math.PI * 2); c.stroke(); }
     }
@@ -1803,9 +1855,9 @@ function render(rdt) {
     if (ag.hang > .5) { const s0 = P3(spinneret(P)); c.strokeStyle = 'rgba(255,255,255,.78)'; c.lineWidth = .28; c.beginPath(); c.moveTo(s0.x, s0.y); c.lineTo(s0.x, s0.y - 900); c.stroke(); }
     if (A && A.tool === 'WebSearch') drawBalloon(c, P, simT - A.t0, simT, A.dur);
     c._px = vs * cam.z * dpr;
-    if (ag.mood) { const t = simT - ag.mood.t0, D = ag.mood.dur, w = sm(0, .25, t) * (1 - sm(D - .4, D, t)); if (w > .01) c.filter = ag.mood.ok ? `sepia(${w.toFixed(2)}) saturate(${(1 + 3.5 * w).toFixed(2)}) hue-rotate(${(75 * w).toFixed(0)}deg) brightness(${(1 + .2 * w).toFixed(2)})` : `sepia(${w.toFixed(2)}) saturate(${(1 + 5 * w).toFixed(2)}) hue-rotate(${(-48 * w).toFixed(0)}deg)`; }
-    drawSpider(c, P, ag.style, { t: simT, sp, acting: !!A, dpr });
-    c.filter = 'none';
+    let tw = 0; if (ag.mood) { const t = simT - ag.mood.t0, D = ag.mood.dur; tw = sm(0, .25, t) * (1 - sm(D - .4, D, t)); }
+    if (tw > .01) drawTinted(c, P, ag.style, { t: simT, sp, acting: !!A, dpr }, ag.mood.ok ? '#7dff6a' : '#ff3c64', tw);
+    else drawSpider(c, P, ag.style, { t: simT, sp, acting: !!A, dpr });
     P.legs.forEach(L => { if (L.stepping || L.F.z > L.H.z * .2 + .5 || ag.hang > 4) return; glow(c, '#ffffff', 5); c.fillStyle = 'rgba(255,255,255,.75)'; dot(c, P3(L.F), .32); }); noglow(c);
     if (A && (A.tool === 'Edit' || A.tool === 'Write' || A.tool === 'Repair') && A.n) {
       const t = simT - A.t0, n = A.n;
@@ -1856,21 +1908,38 @@ function render(rdt) {
   c.textBaseline = 'middle';
   // zoom sémantique : de loin les communautés, puis les dossiers, puis les fichiers
   if (pxu < 1.15) COMM.forEach(cm => { const p = toScreen(cm.cx, cm.cy); c.font = '700 12px "Chakra Petch", sans-serif'; c.textAlign = 'center'; c.fillStyle = hexA(cm.col, .95); c.fillText(cm.name, p.x, p.y); });
+  // les étiquettes : d'abord ce qui compte (fichier en cours, terminal, dossiers, fichiers), jamais l'une sur l'autre,
+  // et pas plus de 70 à l'écran ; sur un gros projet, la toile reste lisible
+  const cand = [];
   nodes.forEach(n => {
     if (n.kind === 'leaf' || n.gone || n.fallT !== undefined) return;
     const active = targets.has(n.id) || n === selNode || n === hoverNode;
-    if (!(active || n.kind === 'term' || (n.isDir && pxu > .75) || (n.kind === 'file' && pxu > 1.15) || (n.kind !== 'file' && !n.isDir && pxu > 1.8))) return;
+    if (!(active || n.kind === 'term' || (n.isDir && pxu > .75) || (n.kind === 'file' && pxu > 1.15) || (n.kind !== 'file' && !n.isDir && pxu > 1.8 && (n.kind === 'concept' || adj[n.id].length >= 4)))) return;
     const p = toScreen(n.x, n.y); if (p.x < -80 || p.x > cssW + 80 || p.y < -20 || p.y > cssH + 20) return;
     if (pageHides(n.x, n.y)) return;
+    const pri = active ? 0 : n.kind === 'term' ? 1 : n.isDir ? 2 : n.kind === 'file' ? ((n.heat || 0) > .01 || n.visited ? 3 : 4) : n.kind === 'concept' ? 5 : 6;
+    cand.push({ n, p, active, pri, d: Math.hypot(p.x - cssW / 2, p.y - cssH / 2) });
+  });
+  cand.sort((a, b) => a.pri - b.pri || a.d - b.d);
+  const taken = new Set(); let count = 0;
+  for (const { n, p, active } of cand) {
+    if (count >= 70 && !active) break;
     const col = COMM[n.comm].col, dof = active ? 0 : (n.dof || 0), cold = n.kind === 'file' && !active && !((n.heat || 0) > .01) && !n.visited;
     const fs = (n.isDir ? 12 : n.kind === 'concept' ? 11 : n.kind === 'file' ? 10.5 : 10) * (1 - .25 * dof);
     c.font = n.isDir ? `700 ${fs.toFixed(1)}px "Chakra Petch", sans-serif` : n.kind === 'concept' ? `italic 600 ${fs.toFixed(1)}px "Chakra Petch", sans-serif` : `${fs.toFixed(1)}px "JetBrains Mono", monospace`;
+    const off = 4 * pxu * (n.kind === 'file' ? cocoonScale(n) : 1) + 6, lx = p.x + (n.kind === 'term' ? 0 : off), ly = p.y + (n.kind === 'term' ? off + 6 : 0);
+    // une grille de cases à l'écran : une case déjà prise, on n'écrit pas par-dessus
+    const w = Math.min(160, n.label.length * fs * .6), gx0 = Math.floor((n.kind === 'term' ? lx - w / 2 : lx) / 40), gx1 = Math.floor((n.kind === 'term' ? lx + w / 2 : lx + w) / 40), gy = Math.floor(ly / 14);
+    let free = true; for (let gx = gx0; gx <= gx1 && free; gx++) if (taken.has(gx + ',' + gy)) free = false;
+    if (!free && !active) continue;
+    for (let gx = gx0; gx <= gx1; gx++) taken.add(gx + ',' + gy);
+    count++;
     c.globalAlpha = (1 - .6 * dof) * (cold ? .5 : 1);
     c.fillStyle = active ? '#ffffff' : n.mod ? '#ff9cf0' : n.kind === 'term' ? '#9dff8a' : n.kind === 'file' ? 'rgba(240,236,255,.85)' : hexA(col, n.kind === 'concept' ? .95 : .78);
-    const off = 4 * pxu * (n.kind === 'file' ? cocoonScale(n) : 1) + 6; c.textAlign = n.kind === 'term' ? 'center' : 'left';
-    c.fillText(n.label, p.x + (n.kind === 'term' ? 0 : off), p.y + (n.kind === 'term' ? off + 6 : 0));
+    c.textAlign = n.kind === 'term' ? 'center' : 'left';
+    c.fillText(n.label, lx, ly);
     c.globalAlpha = 1;
-  });
+  }
   AGENTS.forEach(ag => {
     if ((ag === sel && cam.mode === 'follow') || (dive && dive.ag === ag)) return;
     const p = toScreen(ag.sp.x, ag.sp.y - ag.sp.m.bodyZ - ag.hang * TILT), txt = ag.name, tool = ag.A ? ag.A.tool : ag.walk ? 'marche' : ag.hangAnim ? 'fil' : '…';
@@ -2124,6 +2193,7 @@ function addLiveNode(d) {
     e.pts = []; for (let i = 0; i <= 10; i++) e.pts.push({ x: lerp(a.x, b.x, i / 10), y: lerp(a.y, b.y, i / 10) + Math.sin(Math.PI * i / 10) * 3 });
     addPiece('core', e.pts, ei, .72); addPiece('front', e.pts, ei);
   }
+  webCache.dirty = true;
   refreshHeat();
 }
 window.__araigneeLive = data => {
@@ -2133,6 +2203,8 @@ window.__araigneeLive = data => {
     if (last && last.summary && Date.now() - (last.summary.at || 0) < 10 * 60e3) showRecap(last.summary);
     return;
   }
+  // le plugin a redémarré avec un compteur plus petit : on repart de son état actuel
+  if (data.seq < liveSeq - 1000) { liveSeq = data.seq; return; }
   (data.events || []).forEach(ev => {
     if (ev.seq <= liveSeq) return;
     liveSeq = ev.seq;
@@ -2148,6 +2220,8 @@ window.__araigneeLive = data => {
     while (ag.queue.length > 6) { const j = ag.queue.findIndex(q => !['Mood', 'Delete', 'Repair', 'Leave'].includes(q.tool)); if (j < 0) break; ag.queue.splice(j, 1); }
   });
 };
+// le plugin peut être en train d'écrire le fichier quand la page le lit : la lecture suivante sera bonne
+window.addEventListener('error', e => { if (e.filename && /live-[^/]*\.js/.test(e.filename)) e.preventDefault(); }, true);
 function poll() { if (!SID) return; const sc = document.createElement('script'); sc.src = 'live-' + SID + '.js?t=' + Date.now(); sc.onload = sc.onerror = () => sc.remove(); document.head.append(sc); }
 setInterval(poll, 700); poll();
 

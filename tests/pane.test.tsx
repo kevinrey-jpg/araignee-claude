@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import * as E from '../hooks/engine'
 
 const PANE = {
   plugin: 'araignee',
@@ -173,4 +174,17 @@ test("un agent qui modifie un fichier ouvre une petite page avec les vraies lign
   expect(src).toContain('agent · modification')
   expect(src).toContain('return items.reduce(add, 0)')
   await ui.unmount()
+})
+
+test('sur un très gros projet, chaque animation reste sous la taille que le panneau accepte', async () => {
+  const nodes: any[] = [], links: any[] = []
+  for (let i = 0; i < 900; i++) { const c = i % 14, isF = i % 4 === 0; nodes.push({ id: isF ? `pkg${c}/m${i}.py` : `sym${i}`, label: isF ? `m${i}.py` : `fn_${i}`, type: isF ? 'file' : 'function', community: c, source_file: isF ? `pkg${c}/m${i}.py` : undefined }) }
+  for (let i = 1; i < 900; i++) { links.push({ source: nodes[i].id, target: nodes[(i * 7 + 3) % i].id }); if (i % 3 === 0) links.push({ source: nodes[i].id, target: nodes[(i * 13) % 900].id }) }
+  const W: any = E.createWorld(E.graphFromGraphify({ nodes, links }), 'fusion')
+  W.aspect = .7
+  const files = W.g.nodes.filter((n: any) => n.kind === 'file').map((n: any) => n.path)
+  const evs = [{ tool: 'Read', path: files[5], label: 'Read', lines: ['a'] }, { tool: 'Edit', path: files[90], label: 'Edit', lines: ['- a', '+ b'] }, { tool: 'Grep', targets: files.slice(0, 5), label: 'g', lines: ['✓'] }, { tool: 'Bash', label: '$ x', lines: ['$'] }, { tool: 'Mood', ok: false, label: 'x', lines: ['✗'] }, { tool: 'Repair', label: 'r', lines: ['r'] }, { tool: 'Write', path: 'pkg3/neuf.py', label: 'w', lines: ['+ x'], actor: 'agent:1', page: { start: 1, lines: ['a', 'b'], hi: [0, 1], kind: 'write' } }, { tool: 'Leave', actor: 'agent:1', label: 'l', lines: [] }]
+  for (const ev of evs) expect(E.makeClip(W, ev).svg.length).toBeLessThan(131072)
+  expect(E.sleepClip(W).svg.length).toBeLessThan(131072)
+  expect(E.idleClip(W).svg.length).toBeLessThan(131072)
 })
