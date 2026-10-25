@@ -38,6 +38,15 @@ Le bouton **Agrandir** du panneau (ou `/araignee-grand`) ouvre la toile par-dess
 
 Si le calage n'est pas parfait, règle les marges en pixels : `/araignee-marges 300 44` (gauche, haut).
 
+### La sphère nébuleuse
+
+Par défaut, la toile est une sphère qui tourne : chaque fichier, dossier, fonction ou idée est une petite nébuleuse (deux nuages colorés qui dérivent, quelques étoiles au cœur), à la couleur de sa communauté. La boule tourne doucement et se tourne vers ce que fait l'araignée ; l'araignée roule avec elle et marche sur les fils.
+
+- **La foudre** : à chaque action de Claude (au plus toutes les 5 secondes), et toutes les 7 à 11 secondes au repos, un éclair part de l'endroit où se trouve l'araignée et suit les fils dans tout le réseau. Chaque nébuleuse atteinte s'illumine.
+- **À la souris** (grande toile) : faire glisser fait tourner la boule, avec de l'élan ; la molette zoome.
+- **À plat, comme avant** : bouton **Toile** de la grande toile, et `/araignee-toile` pour le panneau.
+- **L'apparence** de l'araignée est la même dans le panneau et dans la grande toile : la changer d'un côté la change de l'autre.
+
 ### Une toile vivante
 
 - **La mémoire** : chaque fichier lu ou modifié épaissit et fait briller sa soie. Elle est gardée d'une discussion à l'autre et pâlit doucement au fil des jours. Les fichiers jamais touchés restent dans l'ombre : on voit d'un coup d'œil les zones chaudes du projet.
@@ -62,7 +71,8 @@ Les sous-agents de Claude et les tâches en arrière-plan ont chacun leur bébé
 
 Quand un sous-agent ou une tâche de fond travaille sur un fichier, la grande toile plonge dedans : le cocon s'ouvre en page de soie, la caméra entre dans la page, et un bébé araignée miniature marche sur les vraies lignes.
 
-- **Lecture** : un faisceau balaie les lignes une à une, et chaque ligne lue s'allume.
+- **Lecture** : l'araignée marche sur les mots, ligne après ligne. Sous ses pattes les lettres brillent, ce qu'elle a lu reste allumé, et quelques lettres s'envolent jusqu'à elle. Quand rien d'autre n'attend, elle prend le temps de lire ; sinon elle parcourt la page en vitesse.
+- **Terminal** : les commandes lancées en arrière-plan sont confiées au bébé de la tâche de fond. Quand Claude lit leur sortie, il ouvre une page de terminal (en vert) et la parcourt de la même façon.
 - **Modification** : l'araignée va à l'endroit exact du changement. Les lignes retirées se barrent et leurs lettres tombent, puis les nouvelles se tissent lettre par lettre au bout d'un fil de soie, avant un éclat vert.
 - **Nouveau fichier** : la page se remplit ligne après ligne.
 

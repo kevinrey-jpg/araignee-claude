@@ -85,9 +85,23 @@ function OpenRequest([string]$title) {
   if (-not $full.StartsWith([System.IO.Path]::GetFullPath($Root), [System.StringComparison]::OrdinalIgnoreCase)) { return }
   if (Test-Path -LiteralPath $full -PathType Leaf) { Invoke-Item -LiteralPath $full }
 }
+# une apparence choisie dans la grande toile : la page met « #skin:<id>:<n> » dans son titre,
+# on l'écrit dans skin-<session>.txt, à côté de la page, et le plugin la reprend dans le panneau
+$skinFile = ''
+try { $lp = ([Uri]$Url).LocalPath; $skinFile = Join-Path (Split-Path -Parent $lp) (((Split-Path -Leaf $lp) -replace '^araignee-', 'skin-') -replace '\.html$', '.txt') } catch { $skinFile = '' }
+$skinSeen = ''
+function SkinRequest([string]$title) {
+  if (-not $skinFile -or $title -notmatch '#skin:([a-z0-9]+):(\d+)') { return }
+  $id = $Matches[1]; $k = $id + ':' + $Matches[2]
+  if ($k -eq $script:skinSeen) { return }
+  $script:skinSeen = $k
+  try { [System.IO.File]::WriteAllText($skinFile, $id) } catch { }
+}
 while ([AraigneeWin]::IsWindow($win)) {
   if (-not [AraigneeWin]::IsWindow($claude)) { break }
-  OpenRequest ([AraigneeWin]::Text($win))
+  $ttl = [AraigneeWin]::Text($win)
+  OpenRequest $ttl
+  SkinRequest $ttl
   # la toile ne se montre que quand Claude (ou elle-même) est au premier plan
   $fg = [AraigneeWin]::GetForegroundWindow()
   $show = (-not [AraigneeWin]::IsIconic($claude)) -and ($fg -eq $claude -or $fg -eq $win)

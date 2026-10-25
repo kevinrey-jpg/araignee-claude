@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface } from 'claude-code'
 
 import type { Clip, Status, Recap } from '../types'
-import { applyMemory, createWorld, graphFromGraphify, graphFromTree, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
+import { applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
 
 const PANE = 'araignee'
 // Changer l'étiquette quand la forme d'une valeur change : elle survit aux rechargements.
@@ -17,9 +17,9 @@ const TOOLS: Record<string, string> = { Read: 'Read', Edit: 'Edit', MultiEdit: '
 const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', '.venv', 'venv', '__pycache__', '.cache', 'coverage', 'target', '.idea', '.vscode', 'graphify-out'])
 
 // actor : 'main' (Claude), 'agent:<id>' (un sous-agent) ou 'bg' (une tâche de fond) ; les deux derniers sont des bébés araignées
-type Ev = { tool: string; toolName: string; path?: string; targets?: string[]; label: string; lines: string[]; actor?: string; ok?: boolean; big?: boolean; pace?: number; page?: Page }
+type Ev = { tool: string; toolName: string; path?: string; targets?: string[]; label: string; lines: string[]; actor?: string; ok?: boolean; big?: boolean; pace?: number; page?: Page; cmd?: string; bgOut?: boolean }
 // une page de texte pour la plongée : les vraies lignes lues ou écrites, la zone modifiée (hi, dans la page) et les lignes retirées
-type Page = { start: number; lines: string[]; hi?: [number, number]; del?: string[]; kind: 'read' | 'edit' | 'write' }
+type Page = { start: number; lines: string[]; hi?: [number, number]; del?: string[]; kind: 'read' | 'edit' | 'write' | 'term' }
 // le monde de l'araignée vit dans le module : un rechargement le reconstruit
 let world: any = null
 let loading: Promise<void> | null = null
@@ -29,6 +29,7 @@ let queue: Ev[] = []
 let playing = false
 let playUntil = 0
 let guarding = false
+let lastIdleAt = 0
 // la fenêtre du navigateur : quand le panneau ne peut pas s'afficher, la toile vit dans une page locale
 let viewerDir = ''
 let sid = ''
@@ -93,7 +94,17 @@ function diffPage(prev: string | undefined, now: string): Page | undefined {
   if (p === A.length && p === B.length) return undefined
   return windowPage(now, p, Math.max(p, B.length - 1 - q), A.slice(p, A.length - q), 'edit')
 }
+// la sortie d'une commande : la page du terminal, que l'araignée parcourt
+function termPage(cmd: string, text: string | undefined): Page | undefined {
+  const out = (text || '').split('\n').map(l => l.replace(/^\s*\d+[\t→]/, '')).map(clipLine)
+  while (out.length && !out[out.length - 1]!.trim()) out.pop()
+  if (!out.some(l => l.trim())) return undefined
+  return { start: 1, lines: [cmd ? '$ ' + clipLine(cmd) : '$ …', ...out.slice(0, PAGE_ROWS - 1)], kind: 'term' }
+}
+// la sortie d'une tâche de fond est un fichier .output hors du projet : Claude la lit comme une page
+const isTaskOutput = (p: unknown) => typeof p === 'string' && /(^|[\\/])tasks[\\/][^\\/]+\.output$|\.output$/i.test(p)
 async function pageFor($: EngineInterface, ev: Ev, e: any, ran: any): Promise<Page | undefined> {
+  if (ev.tool === 'Bash') return termPage(ev.cmd || '', ran && typeof ran.text === 'string' ? ran.text : undefined)
   if (!ev.path) return undefined
   if (ev.tool === 'Read') return readPage(ran && typeof ran.text === 'string' ? ran.text : '')
   if (ev.tool === 'Write') { const txt = String(e.content ?? ''); keepSnapshot(ev.path, txt); const n = Math.min(PAGE_ROWS, txt.split('\n').length); return { start: 1, lines: txt.split('\n').slice(0, PAGE_ROWS).map(clipLine), hi: [0, n - 1], kind: 'write' } }
@@ -109,7 +120,9 @@ async function pageFor($: EngineInterface, ev: Ev, e: any, ran: any): Promise<Pa
   return undefined
 }
 
+let rebuild = false
 async function ensureWorld($: EngineInterface) {
+  if (rebuild && !playing) { rebuild = false; world = null; loading = null }
   if (world) return
   if (!loading) loading = (async () => {
     cwd = await $.session.cwd()
@@ -138,6 +151,9 @@ async function ensureWorld($: EngineInterface) {
     }
     const saved = await $.store.get('skin')
     world = createWorld(graph, typeof saved === 'string' ? saved : 'fusion')
+    // la toile en sphère qui tourne (sauf si on a choisi la toile à plat)
+    if ((await $.store.get('toile').catch(() => undefined)) !== 'classique') { try { sphereInit(world) } catch (err) { $.ui.log(`araignee sphère : ${String(err)}`) } }
+    guard($)
     await $.state.set({ plugin: 'araignee', key: 'skin' }, world.skin)
     memKey = 'mem-' + hashStr(norm(cwd).toLowerCase())
     const m = await $.store.get(memKey).catch(() => undefined)
@@ -194,6 +210,7 @@ function guard($: EngineInterface) {
   $.clock.every(3000, () => {
     if (playing && Date.now() > playUntil + 5000) playing = false
     if (!playing && queue.length) void pump($)
+    else if (!playing && world && world.sph && !world.sleeping && Date.now() - lastIdleAt > 8800 && Date.now() - lastEventAt > 2500) { lastIdleAt = Date.now(); try { void showClip($, idleClip(world)) } catch { /* rien à montrer */ } }
   })
 }
 async function pump($: EngineInterface) {
@@ -202,16 +219,26 @@ async function pump($: EngineInterface) {
   let ev = queue.shift()
   // un départ pour un bébé qui n'est jamais arrivé : rien à jouer
   while (ev && ev.tool === 'Leave' && world && !hasActor(world, ev.actor || '')) ev = queue.shift()
-  if (!ev) { if (world) { await showClip($, idleClip(world)); scheduleSleep($) } return }
+  if (!ev) { if (world) { lastIdleAt = Date.now(); await showClip($, idleClip(world)); scheduleSleep($) } return }
+  if (rebuild) await ensureWorld($).catch(() => undefined)
   playing = true; playUntil = Date.now() + 15000
   try {
     await ensureWorld($)
     await update($, statusAtom, () => ({ tool: ev.toolName, path: ev.label, source }))
-    const clip = makeClip(world, ev)
-    await showClip($, clip)
-    playSounds($, clip.sounds || [])
-    const ms = Math.max(500, clip.dur * 1000 + 150); playUntil = Date.now() + ms
-    $.clock.after(ms, () => { playing = false; void pump($) })
+    const main = async () => {
+      const clip = makeClip(world, ev)
+      await showClip($, clip)
+      playSounds($, clip.sounds || [])
+      const ms = Math.max(500, clip.dur * 1000 + 150); playUntil = Date.now() + ms
+      $.clock.after(ms, () => { playing = false; void pump($) })
+    }
+    // en sphère, la boule se tourne d'abord vers la cible (un court clip à part), puis l'action se joue
+    const pre = world.sph ? turnClip(world, ev) : null
+    if (pre) {
+      await showClip($, pre)
+      const ms = Math.max(200, pre.dur * 1000); playUntil = Date.now() + ms + 15000
+      $.clock.after(ms, () => { void main().catch(err => { playing = false; $.ui.log(`araignee : ${String(err)}`); $.clock.after(300, () => { void pump($) }) }) })
+    } else await main()
   } catch (err) {
     // cet événement ne se joue pas : on passe au suivant au lieu de rester figé
     playing = false
@@ -231,7 +258,7 @@ async function viewerSetup($: EngineInterface) {
   const dir = norm(home) + '/.claude/araignee'
   sid = String((await $.session.id()) || Date.now()).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 16)
   const g = world.g
-  const data = { name: norm(cwd).split('/').pop() || 'projet', root: norm(cwd), comms: g.comms.map((c: any) => ({ name: c.name, col: c.col })), nodes: g.nodes.map(nodeData), edges: g.edges.map((e: any) => ({ a: e.a, b: e.b, kind: e.kind })) }
+  const data = { name: norm(cwd).split('/').pop() || 'projet', root: norm(cwd), skin: world.skin, comms: g.comms.map((c: any) => ({ name: c.name, col: c.col })), nodes: g.nodes.map(nodeData), edges: g.edges.map((e: any) => ({ a: e.a, b: e.b, kind: e.kind })) }
   await $.fs.write(`${dir}/graph-${sid}.js`, 'window.ARAIGNEE_GRAPH = ' + JSON.stringify(data) + ';\n')
   const html = await $.fs.read(`${$.plugin.root}/viewer/viewer.html`) as string
   await $.fs.write(`${dir}/araignee-${sid}.html`, html.replace('<!--SID-->', `<script>window.ARAIGNEE_SID = ${JSON.stringify(sid)}</script><script src="graph-${sid}.js"></script>`))
@@ -240,7 +267,7 @@ async function viewerSetup($: EngineInterface) {
 }
 async function writeLive($: EngineInterface) {
   if (!viewerDir) return
-  await $.fs.write(`${viewerDir}/live-${sid}.js`, `window.__araigneeLive && window.__araigneeLive(${JSON.stringify({ seq: liveSeq, events: liveEvents })});\n`)
+  await $.fs.write(`${viewerDir}/live-${sid}.js`, `window.__araigneeLive && window.__araigneeLive(${JSON.stringify({ seq: liveSeq, skin: world?.skin, events: liveEvents })});\n`)
 }
 async function openViewer($: EngineInterface): Promise<string> {
   await viewerSetup($)
@@ -353,7 +380,7 @@ async function startWatch($: EngineInterface) {
     } catch { /* on réessaie au prochain passage */ }
     busy = false
   }
-  $.clock.every(2500, () => { void tick() })
+  $.clock.every(2500, () => { void tick(); if (grandRun) void skinFromGrand($).catch(() => undefined) })
 }
 
 const KEEP = new Set(['Mood', 'Delete', 'Repair', 'Leave'])
@@ -390,6 +417,7 @@ async function openPane($: EngineInterface) {
 function eventFor(toolName: string, e: any, ran: any): Ev | null {
   const kind = TOOLS[toolName]
   const text: string | undefined = ran && typeof ran.text === 'string' ? ran.text : undefined
+  if (kind === 'Read' && isTaskOutput(e.file_path)) return { tool: 'Bash', toolName: 'Tâche de fond', label: 'Sortie · tâche de fond', lines: firstLines(text, 3), cmd: 'sortie de la tâche de fond', bgOut: true }
   if (kind === 'Read') { const p = rel(e.file_path || e.notebook_path); if (!p) return null; return { tool: 'Read', toolName, path: p, label: 'Read · ' + p.split('/').pop(), lines: firstLines(text, 4) } }
   if (kind === 'Edit') {
     const p = rel(e.file_path || e.notebook_path); if (!p) return null
@@ -403,7 +431,7 @@ function eventFor(toolName: string, e: any, ran: any): Ev | null {
     firstLines(text, 40).forEach(l => { const m = l.match(/^([^:\s][^:]*\.[A-Za-z0-9]+)(?::|$)/); if (m) { const p = rel(m[1]); if (p && !found.includes(p)) found.push(p) } })
     return { tool: 'Grep', toolName, targets: found.slice(0, 5), label: `${toolName} · ${String(e.pattern ?? '').slice(0, 30)}`, lines: found.length ? found.slice(0, 4).map(f => '✓ ' + f) : ['aucun fichier trouvé'] }
   }
-  if (kind === 'Bash') { const cmd = (String(e.command ?? '').split('\n')[0] ?? '').slice(0, 48); return { tool: 'Bash', toolName, label: '$ ' + cmd, lines: ['$ ' + cmd, ...firstLines(text, 2)] } }
+  if (kind === 'Bash') { const cmd = (String(e.command ?? '').split('\n')[0] ?? '').slice(0, 48); return { tool: 'Bash', toolName, label: '$ ' + cmd, lines: ['$ ' + cmd, ...firstLines(text, 2)], cmd: String(e.command ?? '').split('\n')[0] ?? '' } }
   if (kind === 'Web') { const q = String(e.query ?? e.url ?? '').slice(0, 44); return { tool: 'Web', toolName, label: toolName + ' · ' + q, lines: ['« ' + q + ' »'] } }
   return null
 }
@@ -470,6 +498,7 @@ async function openGrand($: EngineInterface): Promise<string> {
   const script = `${$.plugin.root}/scripts/grand.ps1`.replace(/\//g, '\\')
   const argv = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script, '-Url', url, '-Title', 'grand-' + sid, '-Left', String(left), '-Top', String(top), '-Root', cwd.replace(/\//g, '\\')]
   stopGrand()
+  void startWatch($).catch(() => undefined)
   const run = $.process.spawn({ argv })
   grandRun = run as any
   await update($, grandAtom, () => true)
@@ -479,6 +508,22 @@ async function openGrand($: EngineInterface): Promise<string> {
     await update($, grandAtom, () => false)
   })()
   return 'La toile s\'ouvre en grand sur la discussion. Échap ou « Réduire » pour revenir.'
+}
+// seuls les choix faits après le chargement du plugin comptent (un vieux fichier ne doit pas écraser le choix du panneau)
+let skinSeen = Date.now()
+async function skinFromGrand($: EngineInterface) {
+  if (!viewerDir || !world) return
+  const f = `${viewerDir}/skin-${sid}.txt`
+  const st: any = await $.fs.stat(f).catch(() => null)
+  if (!st || !st.mtimeMs || st.mtimeMs <= skinSeen) return
+  skinSeen = st.mtimeMs
+  const id = String(await $.fs.read(f).catch(() => '') || '').trim()
+  if (!(SKINS as any)[id] || id === world.skin) return
+  setSkin(world, id)
+  await $.state.set({ plugin: 'araignee', key: 'skin' }, id)
+  await $.store.set('skin', id)
+  if (!playing) await showClip($, idleClip(world))
+  await writeLive($).catch(() => undefined)
 }
 function stopGrand() { const r = grandRun; grandRun = null; try { void r?.return?.() } catch { /* déjà terminé */ } }
 async function closeGrand($: EngineInterface) {
@@ -495,6 +540,7 @@ export const register: Register = on => {
     $.clock.after(4000, () => { void ensureWorld($).then(() => startWatch($)).catch(() => undefined) })
     await $.command.register({ name: 'araignee-grand', description: "Agrandit l'araignée sur toute la zone de la discussion (Échap pour revenir)" })
     await $.command.register({ name: 'araignee-son', description: "Active ou coupe les petits sons de l'araignée" })
+    await $.command.register({ name: 'araignee-toile', description: "La toile du panneau : en sphère qui tourne (par défaut), ou à plat comme avant" })
     await $.command.register({ name: 'araignee-marges', description: "Règle le calage de la grande toile : /araignee-marges <gauche> <haut> (en pixels, 300 44 par défaut)" })
     return next(e)
   })
@@ -506,6 +552,14 @@ export const register: Register = on => {
 
   on('command.run', { command: 'araignee-grand' }, async $ => ({ text: await openGrand($) }))
 
+  on('command.run', { command: 'araignee-toile' }, async $ => {
+    const next = (await $.store.get('toile')) === 'classique' ? 'sphere' : 'classique'
+    await $.store.set('toile', next)
+    // la toile est reconstruite au prochain geste (ou tout de suite si rien ne se joue)
+    rebuild = true
+    if (!playing) { await ensureWorld($).catch(() => undefined); if (world) await showClip($, idleClip(world)) }
+    return { text: next === 'classique' ? 'La toile du panneau est maintenant à plat, comme avant.' : 'La toile du panneau est maintenant une sphère qui tourne.' }
+  })
   on('command.run', { command: 'araignee-son' }, async $ => ({ text: await toggleSound($) ? "Les sons de l'araignée sont activés." : "Les sons de l'araignée sont coupés." }))
 
   on('command.run', { command: 'araignee-marges' }, async ($, e) => {
@@ -583,6 +637,8 @@ export const register: Register = on => {
         const ev = eventFor(toolName, e, ran)
         if (!ev) return
         ev.actor = actor
+        // une commande lancée en arrière-plan, ou la lecture de sa sortie : c'est le bébé de la tâche de fond qui s'en charge
+        if (!agentId && (ev.bgOut || (toolName === 'Bash' && (e as any).run_in_background))) { ev.actor = 'bg'; bgLast = Date.now(); if (!ev.bgOut) ev.label = 'Fond · ' + ev.label }
         if (agent) { ev.toolName = 'Agent ' + ev.toolName; ev.label = agent + ev.label }
         if (ev.path && (ev.tool === 'Edit' || ev.tool === 'Write')) { ownWrites.set(ev.path, Date.now()); touch($, ev.path, 'e', ev.tool === 'Write' ? countLines((e as any).content) : undefined) }
         if (ev.path && ev.tool === 'Read') { const all = !(e as any).offset && !(e as any).limit, n = ran && typeof ran.text === 'string' ? ran.text.split('\n').length : 0; touch($, ev.path, 'r', all && n > 1 && n < 2000 ? n : undefined) }
@@ -676,6 +732,8 @@ export const register: Register = on => {
                 await $.state.set({ plugin: 'araignee', key: 'skin' }, value)
                 await $.store.set('skin', value)
                 if (world) { setSkin(world, value); if (!playing) await showClip($, idleClip(world)) }
+                // la grande toile prend la même apparence
+                await writeLive($).catch(() => undefined)
               })()
             }}
           />

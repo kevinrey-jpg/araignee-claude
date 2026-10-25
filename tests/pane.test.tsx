@@ -111,8 +111,8 @@ function base(on: any, read?: (path: string) => string, hold = false) {
   on('session.cwd', () => ({ value: '/proj' }))
   on('fs.read', (_: any, e: any) => ({ value: read ? read(String(e.path)) : JSON.stringify(GRAPH) }) as any)
   on('fs.list', () => ({ value: [] }))
-  on('store.get', () => ({ value: undefined }))
-  // hold : les minuteries ne partent pas, le clip en cours reste affiché
+  // hold : les minuteries ne partent pas, le clip en cours reste affiché (donc toile à plat : en sphère, la rotation passerait d'abord)
+  on('store.get', (_: any, e: any) => ({ value: hold && e.key === 'toile' ? 'classique' : undefined }))
   on('clock.after', () => (hold ? { deny: 'on garde le clip' } : { value: undefined }) as any)
 }
 const flush = async () => { for (let i = 0; i < 200; i++) await Promise.resolve() }
@@ -199,7 +199,7 @@ test("un dossier supprimé : ses fichiers sont vus comme supprimés", async ($, 
   on('fs.read', () => ({ value: JSON.stringify(GRAPH) }))
   on('fs.list', (_, e: any) => (e.path === '/proj' ? { value: gone ? [] : [{ name: 'src', kind: 'dir', size: 0, mtimeMs: 1, isLink: false }] } : gone ? { deny: 'absent' } : { value: [{ name: 'b.ts', kind: 'file', size: 10, mtimeMs: 1, isLink: false }] }) as any)
   on('fs.exists', () => ({ value: !gone }))
-  on('store.get', () => ({ value: undefined }))
+  on('store.get', (_: any, e: any) => ({ value: e.key === 'toile' ? 'classique' : undefined }))
   on('clock.after', () => ({ value: undefined }))
   let periods = 0
   on('clock.every', (_, e: any) => { if (e.ms !== 2500) return { value: undefined }; periods += 1; if (periods > 2) return { deny: 'fin du test' } as any; gone = true; return { value: undefined } })
@@ -256,4 +256,25 @@ test('des centaines d’événements inattendus : jamais d’erreur, jamais une 
     expect(c.svg).not.toContain('NaN')
   }
   expect(E.idleClip(W).svg.length).toBeLessThan(131072)
+})
+
+test('en sphère : la boule se tourne vers la cible, puis l’action se joue, la foudre part de l’araignée', () => {
+  const g: any = E.graphFromTree(['src/a.ts', 'src/b.ts', 'src/c.ts', 'docs/d.md', 'docs/e.md', 'lib/f.lua', 'lib/g.lua', 'README.md'], 'proj')
+  const W: any = E.createWorld(g, 'fusion')
+  W.aspect = .63
+  E.sphereInit(W)
+  expect(W.g.nodes.every((n: any) => n.p3 && Number.isFinite(n.x) && Number.isFinite(n.y))).toBe(true)
+  for (const p of ['docs/e.md', 'lib/g.lua', 'src/a.ts']) {
+    const ev = { tool: 'Read', path: p, label: 'Read', lines: ['x'] }
+    const pre: any = E.turnClip(W, ev), c: any = E.makeClip(W, ev)
+    if (pre) { expect(pre.svg.length).toBeLessThan(131072); expect(pre.svg).not.toContain('NaN') }
+    expect(c.svg.length).toBeLessThan(131072)
+    expect(c.svg).not.toContain('NaN')
+    expect(c.svg).toContain('href="#nb')
+  }
+  // au repos, la foudre repart de l’araignée
+  W.sph.lastBolt = 0
+  const idle: any = E.idleClip(W)
+  expect(idle.svg).toContain('stroke-dashoffset')
+  expect(idle.dur).toBeGreaterThan(5)
 })
