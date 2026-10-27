@@ -90,6 +90,16 @@ function OpenRequest([string]$title) {
 $skinFile = ''
 try { $lp = ([Uri]$Url).LocalPath; $skinFile = Join-Path (Split-Path -Parent $lp) (((Split-Path -Leaf $lp) -replace '^araignee-', 'skin-') -replace '\.html$', '.txt') } catch { $skinFile = '' }
 $skinSeen = ''
+$closeFile = ''
+if ($skinFile) { $closeFile = $skinFile -replace '\\skin-([^\\]+)\.txt$', '\fermer-$1.txt' }
+$closeSeen = ''
+# « Fermer » dans la grande toile : « #fermer:<n> » dans le titre, on l'écrit dans fermer-<session>.txt pour le plugin
+function CloseRequest([string]$title) {
+  if (-not $closeFile -or $title -notmatch '#fermer:(\d+)') { return }
+  if ($Matches[1] -eq $script:closeSeen) { return }
+  $script:closeSeen = $Matches[1]
+  try { [System.IO.File]::WriteAllText($closeFile, 'fermer') } catch { }
+}
 function SkinRequest([string]$title) {
   if (-not $skinFile -or $title -notmatch '#skin:([a-z0-9]+):(\d+)') { return }
   $id = $Matches[1]; $k = $id + ':' + $Matches[2]
@@ -102,6 +112,7 @@ while ([AraigneeWin]::IsWindow($win)) {
   $ttl = [AraigneeWin]::Text($win)
   OpenRequest $ttl
   SkinRequest $ttl
+  CloseRequest $ttl
   # la toile ne se montre que quand Claude (ou elle-même) est au premier plan
   $fg = [AraigneeWin]::GetForegroundWindow()
   $show = (-not [AraigneeWin]::IsIconic($claude)) -and ($fg -eq $claude -or $fg -eq $win)

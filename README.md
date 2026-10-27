@@ -28,9 +28,24 @@ claude plugin install araignee --marketplace kevinrey-jpg/Araignee-Claude
 
 Dans l'application de bureau, où `/plugin` ne s'exécute pas : clique sur **+** à côté de la zone de message, puis **Plugins**, **Ajouter une marketplace** avec `kevinrey-jpg/Araignee-Claude`, puis **Ajouter le plugin**.
 
+### Mettre à jour
+
+La mise à jour automatique des marketplaces GitHub est coupée par défaut. Pour avoir la dernière version, dans un terminal (PowerShell) :
+
+```
+claude plugin marketplace update araignee-claude
+claude plugin update araignee@araignee-claude
+```
+
+puis redémarre Claude (ou `/reload-plugins` dans chaque discussion). Pour que ça se fasse tout seul ensuite : `/plugin` dans un terminal Claude Code, **Marketplaces**, `araignee-claude`, **Enable auto-update**.
+
 ## Utilisation
 
 Rien à faire : à la première action de Claude dans une discussion, l'araignée s'affiche. Dans le panneau de Claude quand l'application en propose un, sinon dans une page de ton navigateur (fichiers dans `~/.claude/araignee/`). La commande `/araignee` la rouvre à tout moment, et `/araignee-plein-ecran` ouvre la toile en grand dans le navigateur, dans sa version haute qualité (F11 pour le plein écran).
+
+### Fermer l'araignée
+
+Le bouton **Fermer** (dans le panneau, le bandeau ou la grande toile) ou `/araignee-fermer` la ferme complètement dans cette discussion : plus de panneau, plus de bandeau, plus de grande toile, et elle ne se rouvre plus toute seule. `/araignee` la rouvre.
 
 ### En grand sur la discussion (Windows)
 

@@ -278,3 +278,34 @@ test('en sphère : la boule se tourne vers la cible, puis l’action se joue, la
   expect(idle.svg).toContain('stroke-dashoffset')
   expect(idle.dur).toBeGreaterThan(5)
 })
+
+test("fermée avec /araignee-fermer, l'araignée ne se rouvre pas toute seule ; /araignee la rouvre", async ($, on) => {
+  let opens = 0, closes = 0
+  on('command.register', () => ({ value: { command: 'araignee' } }))
+  on('ui.open', () => { opens++; return { value: { isPlaced: true } } })
+  on('ui.panes', () => ({ value: [] }))
+  on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/proj' }))
+  on('session.id', () => ({ value: 'sess-test' }))
+  on('fs.read', () => ({ value: JSON.stringify(GRAPH) }))
+  on('fs.list', () => ({ value: [] }))
+  on('store.get', () => ({ value: undefined }))
+  on('clock.after', () => ({ deny: 'pas de minuterie ici' }) as any)
+  on('ui.close', () => { closes++; return { value: undefined } })
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  on('store.set', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const r: any = await $.command.run({ command: 'araignee-fermer', args: '' } as any)
+  expect(String(r?.text ?? '')).toContain('fermée')
+  expect(closes).toBe(1)
+  const before = opens
+  await $.tool.call({ tool: 'Read', file_path: '/proj/src/b.ts' })
+  await flush()
+  expect(opens).toBe(before)
+  // fermée, le bandeau passe son tour (next) : il ne dessine pas l'araignée
+  let band = ''
+  try { const ui = await $.ui.mount({ ...PANE, component: 'AbovePrompt', props: {}, surface: 'desktop' } as any); band = (await ui.find({ type: 'Svg' })) ? 'svg' : 'vide'; await ui.unmount() } catch (err) { band = /no implementation for ui.render/.test(String(err)) ? 'laissé' : String(err) }
+  expect(['vide', 'laissé']).toContain(band)
+  await $.command.run({ command: 'araignee', args: '' } as any)
+  expect(opens).toBe(before + 1)
+})

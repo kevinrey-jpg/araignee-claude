@@ -5,6 +5,6 @@ export type Recap = { title: string; duration: string; said: string; rows: { too
 
 declare module 'claude-code' {
   interface PluginState {
-    araignee: { clip: Shaped<Clip>; status: Shaped<Status>; skin: string; recap: Shaped<Recap>; grand: boolean; sound: boolean }
+    araignee: { clip: Shaped<Clip>; status: Shaped<Status>; skin: string; recap: Shaped<Recap>; grand: boolean; sound: boolean; ferme: boolean }
   }
 }

@@ -12,6 +12,8 @@ const skinAtom = atom({ plugin: 'araignee', key: 'skin' } as const, 'fusion')
 const recapAtom = atom({ plugin: 'araignee', key: 'recap' } as const, { title: '', duration: '', said: '', rows: [], at: 0 } as Recap, { shape: 'recap-1' })
 const grandAtom = atom({ plugin: 'araignee', key: 'grand' } as const, false)
 const soundAtom = atom({ plugin: 'araignee', key: 'sound' } as const, false)
+// fermée par l'utilisateur : ni panneau, ni bandeau, ni grande toile dans cette discussion, jusqu'à /araignee
+const fermeAtom = atom({ plugin: 'araignee', key: 'ferme' } as const, false)
 
 const TOOLS: Record<string, string> = { Read: 'Read', Edit: 'Edit', MultiEdit: 'Edit', NotebookEdit: 'Edit', Write: 'Write', Grep: 'Grep', Glob: 'Grep', Bash: 'Bash', WebSearch: 'Web', WebFetch: 'Web' }
 const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', '.venv', 'venv', '__pycache__', '.cache', 'coverage', 'target', '.idea', '.vscode', 'graphify-out'])
@@ -280,6 +282,7 @@ async function openViewer($: EngineInterface): Promise<string> {
 async function showOnce($: EngineInterface) {
   if (shown) return
   shown = true
+  if (await read($, fermeAtom) || await $.store.get('ferme-' + String(await $.session.id()))) { await update($, fermeAtom, () => true); return }
   const key = 'shown-' + String(await $.session.id())
   const opened: any = await $.ui.open({ id: PANE, title: 'Araignée' })
   if (opened.isPlaced) return
@@ -380,7 +383,7 @@ async function startWatch($: EngineInterface) {
     } catch { /* on réessaie au prochain passage */ }
     busy = false
   }
-  $.clock.every(2500, () => { void tick(); if (grandRun) void skinFromGrand($).catch(() => undefined) })
+  $.clock.every(2500, () => { void tick(); if (grandRun) { void skinFromGrand($).catch(() => undefined); void fermerFromGrand($).catch(() => undefined) } })
 }
 
 const KEEP = new Set(['Mood', 'Delete', 'Repair', 'Leave'])
@@ -506,6 +509,8 @@ async function openGrand($: EngineInterface): Promise<string> {
     try { for await (const piece of run) if (/introuvable/.test(piece.text)) $.ui.toast(`Araignée : ${piece.text.trim()}`) } catch (err) { $.ui.log(`araignee grand : ${String(err)}`) }
     if (grandRun === (run as any)) grandRun = null
     await update($, grandAtom, () => false)
+    // la fenêtre vient de se fermer : était-ce le bouton « Fermer » ?
+    await fermerFromGrand($).catch(() => undefined)
   })()
   return 'La toile s\'ouvre en grand sur la discussion. Échap ou « Réduire » pour revenir.'
 }
@@ -525,7 +530,26 @@ async function skinFromGrand($: EngineInterface) {
   if (!playing) await showClip($, idleClip(world))
   await writeLive($).catch(() => undefined)
 }
+// « Fermer » dans la grande toile : le script Windows écrit fermer-<session>.txt, on ferme tout ici aussi
+let fermerSeen = Date.now()
+async function fermerFromGrand($: EngineInterface) {
+  if (!viewerDir) return
+  const st: any = await $.fs.stat(`${viewerDir}/fermer-${sid}.txt`).catch(() => null)
+  if (!st || !st.mtimeMs || st.mtimeMs <= fermerSeen) return
+  fermerSeen = st.mtimeMs
+  await closeAll($)
+}
 function stopGrand() { const r = grandRun; grandRun = null; try { void r?.return?.() } catch { /* déjà terminé */ } }
+async function closeAll($: EngineInterface) {
+  await update($, fermeAtom, () => true)
+  await $.store.set('ferme-' + String(await $.session.id()), true)
+  if (grandRun) await closeGrand($).catch(() => undefined)
+  await $.ui.close({ id: PANE }).catch(() => undefined)
+}
+async function reopen($: EngineInterface) {
+  await update($, fermeAtom, () => false)
+  await $.store.set('ferme-' + String(await $.session.id()), false)
+}
 async function closeGrand($: EngineInterface) {
   await pushRaw($, { close: true })
   $.clock.after(1500, () => stopGrand())
@@ -539,6 +563,7 @@ export const register: Register = on => {
     // la sentinelle démarre avec la discussion : même si Claude attend, les tâches de fond se voient
     $.clock.after(4000, () => { void ensureWorld($).then(() => startWatch($)).catch(() => undefined) })
     await $.command.register({ name: 'araignee-grand', description: "Agrandit l'araignée sur toute la zone de la discussion (Échap pour revenir)" })
+    await $.command.register({ name: 'araignee-fermer', description: "Ferme complètement l'araignée dans cette discussion (panneau, bandeau et grande toile) ; /araignee la rouvre" })
     await $.command.register({ name: 'araignee-son', description: "Active ou coupe les petits sons de l'araignée" })
     await $.command.register({ name: 'araignee-toile', description: "La toile du panneau : en sphère qui tourne (par défaut), ou à plat comme avant" })
     await $.command.register({ name: 'araignee-marges', description: "Règle le calage de la grande toile : /araignee-marges <gauche> <haut> (en pixels, 300 44 par défaut)" })
@@ -589,7 +614,12 @@ export const register: Register = on => {
     return done
   })
 
+  on('command.run', { command: 'araignee-fermer' }, async $ => {
+    await closeAll($)
+    return { text: "L'araignée est fermée pour cette discussion. /araignee la rouvre." }
+  })
   on('command.run', { command: 'araignee' }, async $ => {
+    await reopen($)
     const opened: any = await $.ui.open({ id: PANE, title: 'Araignée' })
     await ensureWorld($)
     if (!playing) await showClip($, idleClip(world))
@@ -602,6 +632,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const els = $.ui.resolve(e) as any
     if (e.surface === 'terminal' || !els.Svg) return next(e)
+    if (await read($, fermeAtom)) return next(e)
     const placed = (await $.ui.panes()).some(p => p.id === PANE && p.isPlaced)
     const clip = await read($, clipAtom)
     if (placed || !clip.svg) return next(e)
@@ -617,6 +648,7 @@ export const register: Register = on => {
           {Button && (grand
             ? <Button key="reduire" onPress={() => { void closeGrand($) }}>Réduire</Button>
             : <Button key="agrandir" variant="primary" onPress={() => { void openGrand($).then(t => $.ui.toast(t)) }}>Agrandir</Button>)}
+          {Button && <Button key="fermer" onPress={() => { void closeAll($).then(() => $.ui.toast("Araignée fermée. /araignee la rouvre.")) }}>Fermer</Button>}
         </Box>
         <Svg source={clip.svg} alt={`L'araignée : ${st.tool} ${st.path}`} width={480} height={304} isInteractive />
       </Box>
@@ -705,6 +737,7 @@ export const register: Register = on => {
             ? <Button key="reduire" onPress={() => { void closeGrand($) }}>Réduire</Button>
             : <Button key="agrandir" variant="primary" onPress={() => { void openGrand($).then(t => $.ui.toast(t)) }}>Agrandir</Button>)}
           {Button && <Button key="son" onPress={() => { void toggleSound($) }}>{sound ? 'Son : oui' : 'Son : non'}</Button>}
+          {Button && <Button key="fermer" onPress={() => { void closeAll($).then(() => $.ui.toast("Araignée fermée. /araignee la rouvre.")) }}>Fermer</Button>}
         </Box>
         {clip.svg
           ? <Svg source={svg} alt={`L'araignée : ${st.tool} ${st.path}`} isInteractive />

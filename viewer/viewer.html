@@ -162,6 +162,7 @@ html.grand .window.max { inset: 0; border: 0; border-radius: 0; box-shadow: none
           <button id="b-toile" title="La toile en sphère qui tourne, ou à plat comme avant" aria-pressed="true">Toile : sphère</button>
           <button id="b-sound" title="Les petits sons de l'araignée" aria-pressed="false">♪ Son : non</button>
           <button id="b-max" title="Agrandir le panneau" aria-pressed="false">Agrandir</button>
+          <button id="b-close" title="Fermer complètement l'araignée dans cette discussion (/araignee la rouvre)" hidden>✕ Fermer</button>
         </span>
       </div>
       <div class="viewport" id="vp"><canvas id="stage" aria-label="Toile des fichiers du projet avec l'araignée"></canvas><section class="recap" id="recap" aria-live="polite"></section><div class="tip" id="tip" hidden></div><div class="toast" id="toast" role="status" hidden></div></div>
@@ -2558,6 +2559,10 @@ if (GRAND) {
   document.documentElement.classList.add('grand'); document.title += ' · grand-' + SID;
   bMax.textContent = 'Réduire'; bMax.title = 'Revenir à la discussion (Échap)';
   bMax.addEventListener('click', e => { e.stopImmediatePropagation(); window.close(); }, { capture: true });
+  // « Fermer » : la page le signale dans son titre (le script Windows prévient le plugin), puis se ferme
+  const bClose = document.getElementById('b-close'); bClose.hidden = false;
+  let fermerN = 0;
+  bClose.addEventListener('click', () => { fermerN++; document.title = titleBase() + skinTok + ' #fermer:' + fermerN; toast('Fermeture de l\'araignée…'); setTimeout(() => window.close(), 900); });
 }
 if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) setPaused(true);
 AGENTS.forEach((ag, k) => later(ag, .5 + k * .9));
