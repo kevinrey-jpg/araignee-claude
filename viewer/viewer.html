@@ -1435,10 +1435,10 @@ function drawBolt(c) {
       const h = { x: lerp(from.x, to.x, head), y: lerp(from.y, to.y, head) }, tl = { x: lerp(from.x, to.x, tailU), y: lerp(from.y, to.y, tailU) }, dd = clamp(lerp(from.zd, to.zd, head), .25, 1);
       const life = head < 1 ? 1 : Math.exp(-age / (fade * .45));
       const g = c.createLinearGradient(tl.x, tl.y, h.x, h.y); g.addColorStop(0, 'rgba(159,232,255,0)'); g.addColorStop(1, `rgba(159,232,255,${(.8 * life * dd).toFixed(3)})`);
-      c.strokeStyle = g; c.lineWidth = 1.7 * RS; c.beginPath(); c.moveTo(tl.x, tl.y); c.lineTo(h.x, h.y); c.stroke();
+      c.strokeStyle = g; c.lineWidth = .8 * RS; c.beginPath(); c.moveTo(tl.x, tl.y); c.lineTo(h.x, h.y); c.stroke();
       if (head < 1) {
-        c.strokeStyle = `rgba(235,250,255,${(.95 * dd).toFixed(2)})`; c.lineWidth = .9 * RS; c.beginPath(); zigLine(c, tl, h, 7 * RS, flick, 7); c.stroke();
-        const r = 6.5 * RS, gr = c.createRadialGradient(h.x, h.y, 0, h.x, h.y, r); gr.addColorStop(0, `rgba(255,255,255,${(.95 * dd).toFixed(2)})`); gr.addColorStop(.35, `rgba(159,232,255,${(.6 * dd).toFixed(2)})`); gr.addColorStop(1, 'rgba(159,232,255,0)'); c.fillStyle = gr; c.beginPath(); c.arc(h.x, h.y, r, 0, Math.PI * 2); c.fill();
+        c.strokeStyle = `rgba(235,250,255,${(.95 * dd).toFixed(2)})`; c.lineWidth = .45 * RS; c.beginPath(); zigLine(c, tl, h, 4 * RS, flick, 7); c.stroke();
+        const r = 4 * RS, gr = c.createRadialGradient(h.x, h.y, 0, h.x, h.y, r); gr.addColorStop(0, `rgba(255,255,255,${(.95 * dd).toFixed(2)})`); gr.addColorStop(.35, `rgba(159,232,255,${(.6 * dd).toFixed(2)})`); gr.addColorStop(1, 'rgba(159,232,255,0)'); c.fillStyle = gr; c.beginPath(); c.arc(h.x, h.y, r, 0, Math.PI * 2); c.fill();
       }
     }
   });
@@ -1464,9 +1464,23 @@ function nebSprites(ci) {
     b2: mk(NEB_R * 1.8, (g, R) => halo(g, R, c2, .32)),
     // le cœur : un seul point net (le nœud lui-même), dans un petit anneau de sa couleur ; aucune étoile décorative
     st: mk(NEB_R * .7, (g, R) => { halo(g, R, col, .7); halo(g, NEB_R * .32, '#ffffff', .95); g.fillStyle = '#ffffff'; g.beginPath(); g.arc(0, 0, NEB_R * .13, 0, Math.PI * 2); g.fill(); }),
+    s8: mk(NEB_R * 1.1, (g, R) => starPaint(g, R, col, 8)),
+    s4: mk(NEB_R * 1.1, (g, R) => starPaint(g, R, col, 4)),
   };
   NEB.set(ci, s); return s;
 }
+// une étoile : un cœur blanc, un petit halo de sa couleur, et ses branches de lumière (les diagonales plus courtes)
+function starPaint(g, R, col, n) {
+  const halo2 = (r, cc, a) => { const gr = g.createRadialGradient(0, 0, 0, 0, 0, r); gr.addColorStop(0, hexA(cc, a)); gr.addColorStop(.35, hexA(cc, a * .3)); gr.addColorStop(1, hexA(cc, 0)); g.fillStyle = gr; g.beginPath(); g.arc(0, 0, r, 0, Math.PI * 2); g.fill(); };
+  halo2(R * .5, col, .65);
+  for (let k = 0; k < n; k++) {
+    const an = k / n * Math.PI * 2 - Math.PI / 2, L = R * (n === 8 && k % 2 ? .55 : .98), w = R * (n === 8 ? .055 : .07), dx = Math.cos(an), dy = Math.sin(an);
+    const gr = g.createLinearGradient(0, 0, dx * L, dy * L); gr.addColorStop(0, 'rgba(255,255,255,.95)'); gr.addColorStop(.3, hexA(mix(col, '#ffffff', .35), .85)); gr.addColorStop(1, hexA(col, 0));
+    g.fillStyle = gr; g.beginPath(); g.moveTo(-dy * w, dx * w); g.lineTo(dx * L, dy * L); g.lineTo(dy * w, -dx * w); g.closePath(); g.fill();
+  }
+  halo2(R * .2, '#ffffff', .95); g.fillStyle = '#fff'; g.beginPath(); g.arc(0, 0, R * .09, 0, Math.PI * 2); g.fill();
+}
+const mix = (a, b, k) => { const A = hexRgb(a), B = hexRgb(b); return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * k).toString(16).padStart(2, '0')).join(''); };
 function putS(c, s, x, y, scale, a, rot) {
   if (a <= .004) return; c.globalAlpha = Math.min(1, a); const R = s.R * scale;
   if (rot) { c.save(); c.translate(x, y); c.rotate(rot); c.drawImage(s.cv, -R, -R, R * 2, R * 2); c.restore(); } else c.drawImage(s.cv, x - R, y - R, R * 2, R * 2);
@@ -1476,9 +1490,11 @@ function nebula(c, x, y, r, n, alpha, lite, low) {
   const S = nebSprites(n.comm), ph = (hash(n.id) % 1000) / 1000 * Math.PI * 2, k = r / NEB_R, L = low || c;
   // loin ou minuscule à l'écran : un seul nuage et son cœur, bien moins de pixels à remplir
   // le nuage reste discret (il colore, il n'éblouit pas) ; le point du cœur est toujours net et lisible
-  if (lite) { putS(L, S.b1, x, y, k * .7, .22 * alpha); putS(c, S.st, x, y, k * .85, Math.min(1, alpha * 1.15)); L.globalAlpha = 1; c.globalAlpha = 1; return; }
-  for (let j = 0; j < 2; j++) { const a = simT * .25 + ph + j * 3.1; putS(L, j ? S.b2 : S.b1, x + Math.cos(a) * r * .3, y + Math.sin(a * 1.3) * r * .25, k * .8, .26 * alpha); }
-  putS(c, S.st, x, y, k, Math.min(1, (.9 + .1 * Math.sin(simT * 1.9 + ph)) * alpha * 1.15));
+  // les dossiers : huit branches qui tournent lentement ; les fichiers : quatre branches qui scintillent
+  const dir = n.isDir || n.kind === 'concept', star = dir ? S.s8 : S.s4, tw = .82 + .18 * Math.sin(simT * (1.6 + ph % 1.1) + ph), sc = k * (dir ? .9 : .62) * tw, rot = dir ? simT * .12 + ph : 0;
+  if (lite) { putS(L, S.b1, x, y, k * .7, .18 * alpha); putS(c, star, x, y, sc * .85, Math.min(1, alpha * 1.15), rot); L.globalAlpha = 1; c.globalAlpha = 1; return; }
+  putS(L, S.b1, x, y, k * .75, .22 * alpha);
+  putS(c, star, x, y, sc, Math.min(1, alpha * 1.15), rot);
   L.globalAlpha = 1; c.globalAlpha = 1;
 }
 const nebLayer = { cv: document.createElement('canvas') };
@@ -1503,11 +1519,19 @@ function drawSphereStage(c, targets) {
   edges.forEach((e, i) => {
     if (cutEdge(i)) return; const a = byId[e.a], b = byId[e.b]; if (a.gone || b.gone) return;
     const d = (a.zd + b.zd) / 2, lvl = Math.min(5, Math.floor(d * 6)), same = a.comm === b.comm, hot = e.trail > .01 || (e.h || 0) > .12, spoke = !hot && Math.max(adj[e.a].length, adj[e.b].length) > (S3.hubDeg || 40), key = (hot ? 'h' : spoke ? 's' : same ? a.comm : 'w') + ':' + lvl;
-    let g = groups.get(key); if (!g) groups.set(key, g = { P: new Path2D(), lvl, col: hot ? '#ffffff' : same ? COMM[a.comm].col : '#ffffff', hot, same, spoke });
+    const cc = (adj[e.a].length >= adj[e.b].length ? b : a).comm, ck = hot ? 'h' + cc : spoke ? 's' + cc : cc;
+    let g = groups.get(ck + ':' + lvl); if (!g) groups.set(ck + ':' + lvl, g = { P: new Path2D(), lvl, col: COMM[cc] ? COMM[cc].col : '#c9c2e6', hot, same, spoke });
     g.P.moveTo(a.x, a.y); g.P.lineTo(b.x, b.y);
   });
-  c.save(); c.globalCompositeOperation = 'lighter'; c.lineCap = 'round';
-  groups.forEach(g => { const d = (g.lvl + .5) / 6; c.strokeStyle = hexA(g.col, ((g.hot ? .22 + d * .5 : g.same ? .14 + d * .5 : .07 + d * .28) * (g.hot ? 1 : EDGE_DENS) * (g.spoke ? .5 : 1)).toFixed(3)); c.lineWidth = (g.hot ? 1.1 : .85) * RS; c.stroke(g.P); });
+  // des fils pleins et colorés, tressés très fin : une lueur, le fil, et de petits bourrelets réguliers qui glissent
+  // le long du trait (la torsade de la soie) ; l'arrière de la boule plus sombre, l'avant éclatant
+  c.save(); c.lineCap = 'round'; c.lineJoin = 'round';
+  [...groups.values()].sort((p, q) => p.lvl - q.lvl).forEach((g, gi) => {
+    const d = (g.lvl + .5) / 6, a0 = (.3 + .7 * d) * (g.spoke ? .55 : 1) * (g.hot ? 1 : EDGE_DENS * .5 + .5), w = (g.hot ? .55 : .42) * RS, bright = mix(g.col, '#ffffff', g.hot ? .45 : .18);
+    c.globalCompositeOperation = 'lighter'; c.strokeStyle = hexA(g.col, (.1 * a0).toFixed(3)); c.lineWidth = w * 3.2; c.stroke(g.P);
+    c.globalCompositeOperation = 'source-over'; c.strokeStyle = hexA(bright, a0.toFixed(3)); c.lineWidth = w; c.stroke(g.P);
+    if (d > .3) { c.setLineDash([w * .35, w * 2.4]); c.lineDashOffset = -simT * w * 1.8 - gi * w; c.strokeStyle = hexA(mix(g.col, '#ffffff', .55), (a0 * .75).toFixed(3)); c.lineWidth = w * 1.4; c.stroke(g.P); c.setLineDash([]); }
+  });
   if (selNode) { c.strokeStyle = 'rgba(255,255,255,.9)'; c.lineWidth = 1.2 * RS; c.beginPath(); adj[selNode.id].forEach(v => { const o = byId[v]; if (!o.gone) { c.moveTo(selNode.x, selNode.y); c.lineTo(o.x, o.y); } }); c.stroke(); }
   c.restore();
   const boost = drawBolt(c) || new Map();
