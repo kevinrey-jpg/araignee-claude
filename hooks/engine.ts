@@ -695,6 +695,8 @@ const FPS = 20, MAX_CHARS = 125000
 const ACT_DUR = { Read: 2.6, Edit: 3.3, Write: 3.3, Grep: 1.9, Bash: 2.6, Web: 3.4, Delete: 1.9, Repair: 2.8 }
 export function makeClip(W, ev) {
   const g = W.g, S = SKINS[W.skin], a = actorFor(W, ev), sp = a.sp, m = sp.m, pace = clamp(ev.pace || 1, .6, 2)
+  // la caméra suit l'araignée qui travaille (un agent qui arrive compris)
+  if (ev.tool !== 'Leave' && ev.tool !== 'Mood') W.camId = a.id
   let target = null, targets = [], edge = null, at = null
   if (ev.tool === 'Bash') target = g.byId['::terminal']
   else if (ev.tool === 'Repair') {
@@ -807,7 +809,7 @@ export function makeClip(W, ev) {
   X.total = frames.length / FPS
   X.edgeNear = [...edgeNear].filter(i => !g.edges[i].broken && i !== X.repairEdge && !(X.snapEdges || []).includes(i)).slice(0, 10)
   X.others = Object.values(W.actors).filter(o => o !== a).map(o => ({ a: o, P: o.sp.pose(W.t, optsFor(o, null, 0, W.env.depth)) }))
-  if (ev.tool === 'Leave' && a.id !== 'main') delete W.actors[a.id]
+  if (ev.tool === 'Leave' && a.id !== 'main') { delete W.actors[a.id]; if (W.camId === a.id) W.camId = null }
   return renderClip(W, ev, frames, X)
 }
 // l'araignée remonte au centre de la toile, se suspend à un fil et dort
@@ -836,7 +838,7 @@ export function idleClip(W) {
   if (W.sph && !W.sleeping) {
     const to = { yaw: W.sph.yaw + .2, pitch: clamp(.28 + Math.sin(Date.now() / 23000) * .14, -.6, .6) }, turn = turnPlan(W, to, 4)
     applyPlace(W, turn.B); ride(W, turn.A); buildGeometry(W.g); W.sph.yaw = to.yaw; W.sph.pitch = to.pitch
-    stepPhysics(W, 1 / 60); W.cam = { x: a.sp.x, y: a.sp.y - 8 }
+    stepPhysics(W, 1 / 60); const ca = camActor(W); W.cam = { x: ca.sp.x, y: ca.sp.y - 8 }
     frames.push({ P: a.sp.pose(W.t, optsFor(a, null, 0, W.env.depth)), cam: { ...W.cam }, o: {}, tAct: -1, hang: a.hang })
     const X = { total: 8, walkDur: 0, act: { tool: 'idle' }, target: null, targets: [], plucks: [], edgeNear: [], S: SKINS[W.skin], actor: a, sounds: [], sleep: false, turn, drift: true, others: Object.values(W.actors).filter(o => o !== a).map(o => ({ a: o, P: o.sp.pose(W.t, optsFor(o, null, 0, W.env.depth)) })) }
     if (Date.now() - W.sph.lastBolt > 5000) { X.bolt = boltPlan(W, W.g.byId[a.cur]); X.boltT = 4.3; if (X.bolt) W.sph.lastBolt = Date.now() + 4300 }
@@ -941,9 +943,16 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
   return o.join('')
 }
 
+// la caméra du panneau : le zoom choisi reste (il ne revient jamais tout seul) ; en caméra libre, elle ne bouge plus
+export const ZOOM_MIN = .35, ZOOM_MAX = 3
+export function setZoom(W, z) { W.zoom = clamp(Number(z) || 1, ZOOM_MIN, ZOOM_MAX); return W.zoom }
+export function setFollow(W, on) { W.free = on ? null : { x: W.cam.x, y: W.cam.y }; if (on) W.camId = null }
+// l'araignée que la caméra suit au repos : la dernière qui a travaillé, si elle est encore là
+const camActor = W => (W.camId && W.actors[W.camId]) || W.actors.main
 export function renderClip(W, ev, frames, X) {
-  // la vue épouse la forme du panneau (hauteur / largeur), à surface à peu près constante
-  const asp = clamp(W.aspect || .63, .3, 3), VIEW_W = Math.sqrt(64000 / asp), VIEW_H = VIEW_W * asp
+  if (W.free) frames = frames.map(f => ({ ...f, cam: { x: W.free.x, y: W.free.y } }))
+  // la vue épouse la forme du panneau (hauteur / largeur), à surface à peu près constante, au zoom choisi
+  const asp = clamp(W.aspect || .63, .3, 3), VIEW_W = Math.sqrt(64000 / asp) / clamp(W.zoom || 1, ZOOM_MIN, ZOOM_MAX), VIEW_H = VIEW_W * asp
   const g = W.g, S = X.S, n = frames.length, T = Math.max(.1, X.total), dur = T.toFixed(2) + 's', now = Date.now(), lod = X.lod || 0
   X.sym = new Set()
   const anim = (attr, values) => `<animate attributeName="${attr}" values="${vals(values)}" dur="${dur}" fill="freeze" calcMode="linear"/>`
@@ -957,7 +966,7 @@ export function renderClip(W, ev, frames, X) {
   const out = []
   const f0 = frames[0] ? frames[0].cam : W.cam
   out.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${f1(f0.x - VIEW_W / 2)} ${f1(f0.y - VIEW_H / 2)} ${VIEW_W} ${VIEW_H}" width="1000" height="${Math.round(1000 * asp)}" preserveAspectRatio="xMidYMid slice" style="background:#06040c">`)
-  if (n > 1) out.push(anim('viewBox', frames.map(f => `${f1(f.cam.x - VIEW_W / 2)} ${f1(f.cam.y - VIEW_H / 2)} ${VIEW_W} ${VIEW_H}`)))
+  if (n > 1 && !W.free) out.push(anim('viewBox', frames.map(f => `${f1(f.cam.x - VIEW_W / 2)} ${f1(f.cam.y - VIEW_H / 2)} ${VIEW_W} ${VIEW_H}`)))
   const driftOff = X.drift && X.turn && lod < 2 ? (() => { const id = X.actor.cur, A = X.turn.A.get(id), M = X.turn.M.get(id), B = X.turn.B.get(id); return A && M && B ? [A, M, B, B].map(p => ({ x: p.x - B.x, y: p.y - B.y })) : null })() : null
   if (driftOff) out.push(`<animate attributeName="viewBox" values="${driftOff.map(d => `${f1(f0.x + d.x - VIEW_W / 2)} ${f1(f0.y + d.y - VIEW_H / 2)} ${VIEW_W} ${VIEW_H}`).join(';')}" keyTimes="0;${kt(X.turn.T / 2)};${kt(X.turn.T)};1" dur="${dur}" fill="freeze"/>`)
   let defs = `<filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation=".8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter><filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="1.6"/></filter>${skinDefs('sk', S)}`

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface } from 'claude-code'
 
 import type { Clip, Status, Recap } from '../types'
-import { applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, importsOf, readsImports, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
+import { setZoom, setFollow, applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, importsOf, readsImports, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
 
 const PANE = 'araignee'
 // Changer l'étiquette quand la forme d'une valeur change : elle survit aux rechargements.
@@ -163,6 +163,8 @@ async function ensureWorld($: EngineInterface) {
     world = createWorld(graph, typeof saved === 'string' ? saved : 'fusion')
     // la toile en sphère qui tourne (sauf si on a choisi la toile à plat)
     if ((await $.store.get('toile').catch(() => undefined)) !== 'classique') { try { sphereInit(world) } catch (err) { $.ui.log(`araignee sphère : ${String(err)}`) } }
+    // le zoom choisi dans le panneau est gardé d'une session à l'autre
+    const z = await $.store.get('zoom').catch(() => undefined); if (typeof z === 'number') setZoom(world, z)
     guard($)
     await $.state.set({ plugin: 'araignee', key: 'skin' }, world.skin)
     memKey = 'mem-' + hashStr(norm(cwd).toLowerCase())
@@ -208,6 +210,13 @@ function scheduleSleep($: EngineInterface) {
       $.clock.after(ms, () => { playing = false; void pump($) })
     } catch { playing = false }
   })
+}
+// les boutons de caméra du panneau : le zoom reste tel quel ; « suivre » bascule entre suivre l'araignée active et rester sur place
+async function camera($: EngineInterface, what: 'plus' | 'moins' | 'suivre') {
+  await ensureWorld($).catch(() => undefined); if (!world) return
+  if (what === 'suivre') setFollow(world, !!world.free)
+  else { const z = setZoom(world, (world.zoom || 1) * (what === 'plus' ? 1.3 : 1 / 1.3)); await $.store.set('zoom', z).catch(() => undefined) }
+  if (!playing) await showClip($, idleClip(world))
 }
 async function showClip($: EngineInterface, clip: { svg: string }) {
   await update($, clipAtom, old => ({ svg: clip.svg, seq: (old?.seq || 0) + 1 }))
@@ -748,6 +757,13 @@ export const register: Register = on => {
           {Button && <Button key="son" onPress={() => { void toggleSound($) }}>{sound ? 'Son : oui' : 'Son : non'}</Button>}
           {Button && <Button key="fermer" onPress={() => { void closeAll($).then(() => $.ui.toast("Araignée fermée. /araignee la rouvre.")) }}>Fermer</Button>}
         </Box>
+        {Button && world && (
+          <Box flexDirection="row" gap={1}>
+            <Button key="zoom-moins" onPress={() => { void camera($, 'moins') }}>Zoom −</Button>
+            <Button key="zoom-plus" onPress={() => { void camera($, 'plus') }}>Zoom +</Button>
+            <Button key="suivre" variant={world.free ? undefined : 'primary'} onPress={() => { void camera($, 'suivre') }}>{world.free ? 'Caméra : libre' : "Caméra : suit l'araignée"}</Button>
+          </Box>
+        )}
         {clip.svg
           ? <Svg source={svg} alt={`L'araignée : ${st.tool} ${st.path}`} isInteractive />
           : <Text dimColor>La toile se prépare au premier geste de Claude.</Text>}

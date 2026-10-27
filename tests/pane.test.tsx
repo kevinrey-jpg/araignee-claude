@@ -279,6 +279,29 @@ test('en sphère : la boule se tourne vers la cible, puis l’action se joue, la
   expect(idle.dur).toBeGreaterThan(5)
 })
 
+test("la caméra du panneau : le zoom reste, elle suit l'agent qui travaille, et en mode libre elle ne bouge plus", () => {
+  const g: any = E.graphFromTree(['src/a.ts', 'src/b.ts', 'src/c.ts', 'docs/d.md', 'docs/e.md', 'lib/f.lua'], 'proj', [['src/a.ts', 'src/b.ts']])
+  const W: any = E.createWorld(g, 'fusion')
+  W.aspect = .63
+  E.sphereInit(W)
+  const vb = (svg: string) => +svg.match(/viewBox="[-\d.]+ [-\d.]+ ([\d.]+)/)![1]
+  const w1 = vb(E.idleClip(W).svg)
+  E.setZoom(W, 2)
+  expect(Math.abs(vb(E.idleClip(W).svg) - w1 / 2)).toBeLessThan(1)
+  expect(Math.abs(vb(E.idleClip(W).svg) - w1 / 2)).toBeLessThan(1)
+  // un agent se met au travail : la caméra le suit, même au repos ensuite
+  E.makeClip(W, { tool: 'Read', path: 'docs/e.md', label: 'Read', lines: ['x'], actor: 'agent:z' })
+  expect(W.camId).toBe('agent:z')
+  // libre : la vue reste au même endroit, quoi que fasse l'araignée
+  E.setFollow(W, false)
+  const box = (svg: string) => svg.match(/viewBox="([^"]+)"/)![1]
+  const b0 = box(E.idleClip(W).svg), c: any = E.makeClip(W, { tool: 'Read', path: 'lib/f.lua', label: 'Read', lines: ['x'] })
+  expect(box(c.svg)).toBe(b0)
+  expect(c.svg).not.toContain('attributeName="viewBox"')
+  E.setFollow(W, true)
+  expect(W.free).toBe(null)
+})
+
 test("fermée avec /araignee-fermer, l'araignée ne se rouvre pas toute seule ; /araignee la rouvre", async ($, on) => {
   let opens = 0, closes = 0
   on('command.register', () => ({ value: { command: 'araignee' } }))

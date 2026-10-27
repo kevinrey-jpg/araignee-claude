@@ -96,6 +96,13 @@ Quand un sous-agent ou une tâche de fond travaille sur un fichier, la grande to
 
 Le bouton **Plongée** de la grande toile choisit qui plonge : les agents seulement (par défaut), tout le monde (Claude aussi), ou personne. Dans le petit panneau, les bébés araignées ouvrent une petite page avec les mêmes lignes.
 
+### La caméra
+
+La caméra suit l'araignée active : celle qui travaille, y compris un agent ou une tâche de fond qui arrive. Le zoom que tu choisis reste tel quel : il ne revient jamais tout seul à la vue normale.
+
+- **Grande toile** : la molette zoome et dézoome. Un clic sur une araignée fait que la caméra la suit ; un clic dans le vide laisse la caméra sur place (elle ne suit plus personne) ; le bouton **Caméra** en haut bascule entre les deux.
+- **Panneau** : les boutons **Zoom −** et **Zoom +**, et **Caméra : suit l'araignée / libre** (le panneau ne reçoit pas les clics sur l'image). Le zoom du panneau est gardé d'une discussion à l'autre.
+
 ### Survoler et cliquer
 
 Dans la grande toile, survoler un cocon montre son chemin, sa taille, son langage et la dernière fois que Claude l'a touché. Un clic ouvre le fichier avec son application habituelle (dans la page du navigateur, il copie son chemin).

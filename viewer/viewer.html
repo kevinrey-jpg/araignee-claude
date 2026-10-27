@@ -158,6 +158,7 @@ html.grand .window.max { inset: 0; border: 0; border-radius: 0; box-shadow: none
         <span class="status"><span class="chip" id="st-tool" style="color:#7df9ff">prête</span><span class="path" id="st-path">araignee-claude/</span></span>
         <span class="win-btns">
           <button id="b-min" title="Réduire le panneau" aria-pressed="false">Réduire</button>
+          <button id="b-cam" aria-pressed="true" title="Clic sur une araignée : la caméra la suit. Clic dans le vide : la caméra reste sur place. La molette zoome, et le zoom reste.">Caméra : suit</button>
           <button id="b-dive" title="Quand un agent travaille sur un fichier, la toile plonge dans la page" aria-pressed="true">Plongée : agents</button>
           <button id="b-toile" title="La toile en sphère qui tourne, ou à plat comme avant" aria-pressed="true">Toile : sphère</button>
           <button id="b-sound" title="Les petits sons de l'araignée" aria-pressed="false">♪ Son : non</button>
@@ -168,7 +169,6 @@ html.grand .window.max { inset: 0; border: 0; border-radius: 0; box-shadow: none
       <div class="viewport" id="vp"><canvas id="stage" aria-label="Toile des fichiers du projet avec l'araignée"></canvas><section class="recap" id="recap" aria-live="polite"></section><div class="tip" id="tip" hidden></div><div class="toast" id="toast" role="status" hidden></div></div>
       <div class="controls">
         <button id="b-play" aria-pressed="false">Pause</button>
-        <button id="b-cam" aria-pressed="true" title="La caméra suit l'araignée de près">Caméra : suivre</button>
         <span class="label">Vitesse</span>
         <button data-speed="0.5" aria-pressed="false">×0,5</button>
         <button data-speed="1" aria-pressed="true">×1</button>
@@ -1275,7 +1275,10 @@ function webCacheFor(s, vx0, vy0, vx1, vy1, zooming) {
 const ALL = [...HYBRIDS, ...STYLES];
 const cv = document.getElementById('stage'), ctx = cv.getContext('2d'), vp = document.getElementById('vp'), win = document.getElementById('win');
 let dpr = 1, vs = 1, cssW = 1, cssH = 1;
-const cam = { x: CX, y: CY, z: 1, mode: 'follow', user: 0, ux: 0, uy: 0, uz: 1 };
+// la caméra : « follow » suit l'araignée active (celle qui travaille, un agent qui arrive compris) ; « free » reste sur place.
+// uz est le zoom choisi à la molette : il ne revient jamais tout seul
+const cam = { x: CX, y: CY, z: 1, mode: 'follow', user: 0, ux: 0, uy: 0, uz: 1, fx: CX, fy: CY, switchT: -99 };
+try { const z = +localStorage.getItem('araignee-zoom'); if (z > 0) cam.uz = Math.min(5, Math.max(.25, z)); } catch (e) {}
 function applyT(c) { const s = vs * cam.z * dpr; c.setTransform(s, 0, 0, s, (cssW / 2 - cam.x * vs * cam.z) * dpr, (cssH / 2 - cam.y * vs * cam.z) * dpr); c._px = s; }
 const toScreen = (x, y) => ({ x: cssW / 2 + (x - cam.x) * vs * cam.z, y: cssH / 2 + (y - cam.y) * vs * cam.z });
 function fit() {
@@ -1393,7 +1396,7 @@ function sphereFrame(dt, simDt) {
   const ag = sel, foc = (ag && (byId[ag.target] || byId[ag.cur])) || null, busy = ag && (ag.A || ag.walk);
   if (S3.user <= 0) {
     S3.yaw += simDt * .05;
-    if (foc && foc.p3 && busy) {
+    if (foc && foc.p3 && busy && cam.mode === 'follow') {
       const p = foc.p3, ty = Math.atan2(-p.x, p.z), cyw = Math.cos(S3.yaw), syw = Math.sin(S3.yaw), zr = -p.x * syw + p.z * cyw, tp = clamp(Math.atan2(p.y, Math.max(1, zr)), -.65, .65);
       S3.yaw += wrap(ty - S3.yaw) * Math.min(1, simDt * .45); S3.pitch += (tp - S3.pitch) * Math.min(1, simDt * .35);
     } else S3.pitch += (.28 - S3.pitch) * Math.min(1, simDt * .2);
@@ -1611,10 +1614,10 @@ function agentFor(actor, ev) {
   let ag = AGENTS.find(a => a.id === actor); if (ag) return ag;
   const near = (ev && typeof ev.t === 'string' && byId[ev.t]) || (ev && Array.isArray(ev.t) && byId[ev.t[0]]) || byId[AGENTS[0].cur] || nodes[0];
   ag = makeAgent(actor, AGENTS[0].style, true, near, actor === 'bg' ? 'tâche de fond' : 'agent');
-  AGENTS.push(ag); later(ag, .05);
+  ag.bornT = simT; AGENTS.push(ag); later(ag, .05);
   return ag;
 }
-function removeAgent(ag) { ag.gone = true; const i = AGENTS.indexOf(ag); if (i > 0) AGENTS.splice(i, 1); if (sel === ag) select(AGENTS[0]); }
+function removeAgent(ag) { ag.gone = true; const i = AGENTS.indexOf(ag); if (i > 0) AGENTS.splice(i, 1); if (sel === ag) { select(AGENTS[0]); paintCam(); } }
 const short = id => id.split('/').slice(1).join('/') || id;
 function goTo(ag, id, cb, stop) {
   ag.target = id; const path = bfs(ag.cur, id);
@@ -1680,6 +1683,7 @@ function pickRepair() {
 }
 function finishRepair(r) { const e = edges[r.i]; if (!e) return; if (e.broken && e.broken.kind === 'stub') e.hidden = true; e.broken = null; e.repairing = false; e.repairT0 = undefined; rebuildStatic(); }
 function startAction(ag, ev) {
+  if (!['Mood', 'Leave'].includes(ev.tool)) camActive(ag);
   if (SPH && !['Mood', 'Leave', 'Delete'].includes(ev.tool)) bolt(byId[ag.cur]);
   const n = ev.t && !Array.isArray(ev.t) ? byId[ev.t] : null, col = TOOL_COLOR[ev.tool] || '#ffffff', sp = ag.sp, pk = 1 / Math.sqrt(ag.pace || 1);
   const A = ag.A = { tool: ev.tool, ev, n, t0: simT, dur: 2.7, acc: 0, k: 0 };
@@ -2109,9 +2113,11 @@ function render(rdt) {
   let tx = CX, ty = CY, tz = 1;
   if (SPH) {
     tx = CX; ty = CY; tz = Math.min(cssW, cssH) / (vs * 2.35 * S3.R);
-    if (cam.mode === 'follow' && (sel.A || sel.walk) && !dive) { tx = lerp(CX, S0.x, .35); ty = lerp(CY, S0.y, .35); tz *= 1.3; }
-    if (dive) { const t = simT - dive.t0, k = sm(0, .8, t) * (1 - sm(dive.tEnd, dive.dur - .1, t)); if (k > .01) { const px = dive.x + dive.w / 2, py = dive.y + dive.h / 2, pz = Math.min(cssW * .88 / (vs * (dive.w + 30)), cssH * .84 / (vs * (Math.max(dive.h, 22 + 14 * LH + 8) + 30))); tx = lerp(tx, px, k); ty = lerp(ty, py, k); tz = lerp(tz, pz, k); } }
-  } else if (cam.mode === 'follow') {
+    if (cam.mode === 'free') { tx = cam.fx; ty = cam.fy; tz = cam.fz || tz; }
+    else { tx = S0.x; ty = S0.y; tz *= 1.5; }
+    if (dive && cam.mode === 'follow') { const t = simT - dive.t0, k = sm(0, .8, t) * (1 - sm(dive.tEnd, dive.dur - .1, t)); if (k > .01) { const px = dive.x + dive.w / 2, py = dive.y + dive.h / 2, pz = Math.min(cssW * .88 / (vs * (dive.w + 30)), cssH * .84 / (vs * (Math.max(dive.h, 22 + 14 * LH + 8) + 30))); tx = lerp(tx, px, k); ty = lerp(ty, py, k); tz = lerp(tz, pz, k); } }
+  } else if (cam.mode === 'free') { tx = cam.fx; ty = cam.fy; tz = cam.fz || tz; }
+  else {
     tx = S0.x; ty = S0.y - 6 - (sel.hang || 0) * TILT * .5; tz = clamp(2.2 * cssW / 960, 1.25, 2.6) / vs;
     // un bébé araignée au travail : la caméra recule pour garder tout le monde dans le cadre
     const busy = AGENTS.filter(a => a !== sel && (a.A || a.walk || a.hangAnim));
@@ -2125,7 +2131,8 @@ function render(rdt) {
     if (sel.A && sel.A.tool === 'Delete' && sel.A.n) { tx = (tx + sel.A.n.x) / 2; ty = (ty + sel.A.n.y) / 2; tz = Math.min(tz, cssW * .6 / (vs * Math.max(60, Math.abs(S0.x - sel.A.n.x))), cssH * .6 / (vs * Math.max(50, Math.abs(S0.y - sel.A.n.y)))); }
     tz *= 1 + Math.sin(simT * .23) * .015;
   }
-  if (cam.user > 0) cam.user -= rdt; else { cam.ux *= .96; cam.uy *= .96; cam.uz += (1 - cam.uz) * .04; }
+  // un glissement de la vue revient doucement sur l'araignée suivie ; le zoom, lui, reste
+  if (cam.user > 0) cam.user -= rdt; else if (cam.mode === 'follow') { cam.ux *= .96; cam.uy *= .96; }
   tx += cam.ux; ty += cam.uy; tz *= cam.uz;
   const kk = Math.min(1, rdt * 3); cam.x += (tx - cam.x) * kk; cam.y += (ty - cam.y) * kk; cam.z += (tz - cam.z) * kk;
 
@@ -2368,7 +2375,20 @@ toileBtn.textContent = SPH ? 'Toile : sphère' : 'Toile : à plat'; toileBtn.set
 toileBtn.addEventListener('click', () => { try { localStorage.setItem('araignee-toile', SPH ? 'classique' : 'sphere'); } catch (e) {} location.replace(location.href.replace(/([?&])toile=classique&?/, '$1')); });
 function setPaused(v) { paused = v; playBtn.textContent = v ? 'Lecture' : 'Pause'; playBtn.setAttribute('aria-pressed', String(v)); }
 playBtn.addEventListener('click', () => setPaused(!paused));
-camBtn.addEventListener('click', () => { cam.mode = cam.mode === 'follow' ? 'overview' : 'follow'; cam.ux = cam.uy = 0; cam.uz = 1; camBtn.textContent = cam.mode === 'follow' ? 'Caméra : suivre' : 'Caméra : toute la toile'; camBtn.setAttribute('aria-pressed', String(cam.mode === 'follow')); });
+camBtn.addEventListener('click', () => { if (cam.mode === 'follow') camFree(); else camFollow(sel); });
+// suivre une araignée, ou laisser la caméra sur place (sans saut : on part de ce qu'on voit)
+function paintCam() { const camBtn = document.getElementById('b-cam'); if (!camBtn) return; camBtn.textContent = cam.mode === 'follow' ? 'Caméra : suit ' + (sel === AGENTS[0] ? "l'araignée" : sel.name) : 'Caméra : libre'; camBtn.setAttribute('aria-pressed', String(cam.mode === 'follow')); }
+function camFree() { cam.mode = 'free'; cam.fx = cam.x - cam.ux; cam.fy = cam.y - cam.uy; cam.fz = cam.z / cam.uz; paintCam(); }
+function camFollow(ag) { if (ag && ag !== sel) select(ag); cam.mode = 'follow'; cam.ux = cam.uy = 0; cam.switchT = simT; paintCam(); }
+// l'araignée active : en mode suivi, la caméra passe à celle qui se met au travail (sans sauter sans cesse
+// entre deux agents : on change si l'araignée suivie ne fait rien, si c'est un nouvel agent, ou après 4 s)
+function camActive(ag) {
+  if (cam.mode !== 'follow' || !ag || ag === sel || ag.gone) return;
+  if (!(sel.A || sel.walk) || simT - (ag.bornT || -99) < 3 || simT - cam.switchT > 4) camFollow(ag);
+}
+paintCam();
+// l'araignée sous le pointeur (à l'écran)
+function agentAt(ev) { const r = cv.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top; let best = null, bd = 26; AGENTS.forEach(a => { if (a.gone) return; const p = toScreen(a.sp.x, a.sp.y - (a.hang || 0) * (SPH ? 0 : TILT)), d = Math.hypot(p.x - mx, p.y - my); if (d < bd) { bd = d; best = a; } }); return best; }
 document.querySelectorAll('[data-speed]').forEach(b => b.addEventListener('click', () => { speed = +b.dataset.speed; document.querySelectorAll('[data-speed]').forEach(o => o.setAttribute('aria-pressed', String(o === b))); }));
 document.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', () => {
   const t = b.dataset.act, p = sel.p, f = () => p.files[Math.floor(Math.random() * p.files.length)];
@@ -2387,11 +2407,15 @@ cv.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, u
 cv.addEventListener('pointermove', e => { if (!drag) return; if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 4) drag.moved = true; const s = vs * cam.z;
   if (SPH) { const dx = e.clientX - drag.lx, dy = e.clientY - drag.ly, now = performance.now(), dt = Math.max(8, now - drag.lt); drag.lx = e.clientX; drag.ly = e.clientY; drag.lt = now; if (!drag.moved) return; S3.yaw += dx * .006; S3.pitch = clamp(S3.pitch + dy * .005, -1.2, 1.2); S3.vyaw = clamp(dx * .006 / dt * 1000, -3, 3); S3.vpitch = clamp(dy * .005 / dt * 1000, -2, 2); S3.user = 5; return; } cam.ux = drag.ux - (e.clientX - drag.x) / s; cam.uy = drag.uy - (e.clientY - drag.y) / s; cam.user = 4; });
 cv.addEventListener('pointerup', e => {
-  if (drag && !drag.moved) { const best = nodeAt(e); showNode(best); if (best && best.kind === 'file') openFile(best); }
+  if (drag && !drag.moved) {
+    const ag = agentAt(e);
+    if (ag) camFollow(ag);
+    else { const best = nodeAt(e); showNode(best); if (best && best.kind === 'file') openFile(best); else if (!best) camFree(); }
+  }
   drag = null; cv.style.cursor = 'grab';
 });
 cv.addEventListener('pointercancel', () => { drag = null; cv.style.cursor = 'grab'; });
-cv.addEventListener('wheel', e => { e.preventDefault(); cam.uz = clamp(cam.uz * Math.exp(-e.deltaY * .0015), .3, 4); cam.user = 4; }, { passive: false });
+cv.addEventListener('wheel', e => { e.preventDefault(); cam.uz = clamp(cam.uz * Math.exp(-e.deltaY * .0015), .25, 5); try { localStorage.setItem('araignee-zoom', cam.uz.toFixed(3)); } catch (err) {} }, { passive: false });
 
 /* ---------- galerie : les 13 araignées, chacune sur sa petite toile ---------- */
 const minis = [];
@@ -2612,7 +2636,7 @@ if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) setPaused(tru
 AGENTS.forEach((ag, k) => later(ag, .5 + k * .9));
 requestAnimationFrame(frame);
 requestAnimationFrame(miniLoop);
-window.__araignee = { ecran: id => byId[id] && toScreen(byId[id].x, byId[id].y), sphere: () => ({ on: SPH, yaw: S3.yaw, pitch: S3.pitch, R: S3.R, p3: nodes.map(n => n.p3 && [Math.round(n.p3.x), Math.round(n.p3.y), Math.round(n.p3.z), adj[n.id].length]) }), etat: () => ({ simT, apparence: AGENTS[0].style.id, toile: SPH ? 'sphère' : 'à plat', erreurs: errCount, recus: recvCount, plonge: !!dive, araignees: AGENTS.map(a => ({ id: a.id, action: a.A ? a.A.tool : null, marche: !!a.walk, fil: !!a.hangAnim, file: a.queue.length, dort: a.sleeping })) }) };
+window.__araignee = { ecran: id => byId[id] && toScreen(byId[id].x, byId[id].y), sphere: () => ({ on: SPH, yaw: S3.yaw, pitch: S3.pitch, R: S3.R, p3: nodes.map(n => n.p3 && [Math.round(n.p3.x), Math.round(n.p3.y), Math.round(n.p3.z), adj[n.id].length]) }), camera: () => ({ mode: cam.mode, suit: sel.id, z: +cam.z.toFixed(3), zoom: +cam.uz.toFixed(3), x: Math.round(cam.x), y: Math.round(cam.y), araignee: AGENTS.map(a => ({ id: a.id, ...toScreen(a.sp.x, a.sp.y) })) }), etat: () => ({ simT, apparence: AGENTS[0].style.id, toile: SPH ? 'sphère' : 'à plat', erreurs: errCount, recus: recvCount, plonge: !!dive, araignees: AGENTS.map(a => ({ id: a.id, action: a.A ? a.A.tool : null, marche: !!a.walk, fil: !!a.hangAnim, file: a.queue.length, dort: a.sleeping })) }) };
 })();
 </script>
 
