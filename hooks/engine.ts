@@ -453,7 +453,7 @@ function sphereLayout(g) {
   const rk = new Map([...nodes].sort((p, q) => Math.hypot(p.x2 - cx, p.y2 - cy) - Math.hypot(q.x2 - cx, q.y2 - cy)).map((o, k) => [o.id, (k + .5) / n]))
   const U = nodes.map(o => { const th = Math.acos(1 - 2 * rk.get(o.id)), ph = Math.atan2(o.y2 - cy, o.x2 - cx) + (hash(o.id) % 100) * .0004; return { x: Math.sin(th) * Math.cos(ph), y: -Math.cos(th), z: Math.sin(th) * Math.sin(ph) } })
   // un moyeu (relié à une bonne partie du projet) tirerait tout de son côté : il va au cœur de la boule, sans tirer
-  const hubDeg = Math.max(14, n * .06), isHub = o => g.adj[o.id].length > hubDeg; g.hubDeg = hubDeg
+  const hubDeg = Math.max(40, n * .15), isHub = o => g.adj[o.id].length > hubDeg; g.hubDeg = hubDeg
   const idx = new Map(nodes.map((o, i) => [o.id, i])), EE = g.edges.filter(e => !isHub(g.byId[e.a]) && !isHub(g.byId[e.b])).map(e => [idx.get(e.a), idx.get(e.b)])
   const iters = n > 900 ? 35 : n > 500 ? 60 : 110, q = .27 / Math.max(20, n), cap = .06 * Math.sqrt(166 / Math.max(166, n)), ks = .05 * clamp(2.2 * n / Math.max(1, 2 * EE.length), .15, 1)
   const F = U.map(() => ({ x: 0, y: 0, z: 0 }))
@@ -781,15 +781,15 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
   const groups = new Map(), at = (P, id) => P.get(id) || g.byId[id]
   g.edges.forEach((e, i) => {
     if (e.hidden || e.broken) return; const a = g.byId[e.a], b = g.byId[e.b]; if (a.gone || b.gone || !(drawn.has(a) || drawn.has(b))) return
-    const d = ((a.zd || 0) + (b.zd || 0)) / 2, lvl = Math.min(3, Math.floor(d * 4)), hot = !!e.trail || (e.h || 0) > .12, spoke = !hot && Math.max(g.adj[e.a].length, g.adj[e.b].length) > 14, same = a.comm === b.comm && !spoke
+    const d = ((a.zd || 0) + (b.zd || 0)) / 2, lvl = Math.min(3, Math.floor(d * 4)), hot = !!e.trail || (e.h || 0) > .12, spoke = !hot && Math.max(g.adj[e.a].length, g.adj[e.b].length) > (g.hubDeg || 40), same = a.comm === b.comm
     const key = (hot ? 'h' : spoke ? 's' : same ? a.comm : 'w') + ':' + lvl
     let gr = groups.get(key); if (!gr) groups.set(key, gr = { lvl, hot, spoke, same, col: hot || !same ? '#ffffff' : g.comms[a.comm].col, dB: '', dA: '', dM: '' })
     const seg = (p, q) => `M${Math.round(p.x)} ${Math.round(p.y)}L${Math.round(q.x)} ${Math.round(q.y)}`
     gr.dB += seg(a, b); if (tr) { gr.dA += seg(at(tr.A, e.a), at(tr.A, e.b)); gr.dM += seg(at(tr.M, e.a), at(tr.M, e.b)) }
   })
   groups.forEach(gr => {
-    const d = (gr.lvl + .5) / 4, op = (gr.hot ? .12 + d * .35 : gr.same ? .06 + d * .32 : .04 + d * .16) * (gr.hot ? 1 : S.edens) * (gr.spoke ? .35 : 1)
-    o.push(`<path d="${tr ? 'M0 0' : gr.dB}" fill="none" stroke="${gr.col}" stroke-opacity="${op.toFixed(3)}" stroke-width="${f1((gr.hot ? .5 : .38) * RS)}">${tr ? `<animate attributeName="d" values="${gr.dA};${gr.dM};${gr.dB}" ${TD} fill="freeze"/>` : ''}</path>`)
+    const d = (gr.lvl + .5) / 4, op = Math.min(1, (gr.hot ? .22 + d * .5 : gr.same ? .14 + d * .5 : .07 + d * .28) * (gr.hot ? 1 : Math.max(.5, S.edens)) * (gr.spoke ? .5 : 1))
+    o.push(`<path d="${tr ? 'M0 0' : gr.dB}" fill="none" stroke="${gr.col}" stroke-opacity="${op.toFixed(3)}" stroke-width="${f1((gr.hot ? .34 : .3) * Math.min(RS, 3))}">${tr ? `<animate attributeName="d" values="${gr.dA};${gr.dM};${gr.dB}" ${TD} fill="freeze"/>` : ''}</path>`)
   })
   const named = new Set(list.filter(n => n.label && n.kind !== 'leaf' && (n.zd || 0) > .55 && (n.kind === 'dir' || n.kind === 'file' || n.kind === 'term' || n === X.target)).sort((p, q) => Math.hypot(p.x - cEnd.x, p.y - cEnd.y) - Math.hypot(q.x - cEnd.x, q.y - cEnd.y)).slice(0, lod >= 3 ? 8 : 22))
   if (X.target) named.add(X.target)
@@ -801,7 +801,7 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
     else {
       used.add(n.comm)
       const r = nebR(g, n) * RS * k * .62 * (isT ? 1.25 : 1), touched = (n.heat || 0) > .01 || n.visited || n.mod, op = Math.min(1, (.28 + .72 * zd) * (touched ? 1 : .72) * S.dens + (isT ? .3 : 0))
-      body = `<use href="#nb${n.comm}" transform="translate(${Math.round(n.x)} ${Math.round(n.y)})rotate(${hash(n.id) % 360})scale(${(r / 10).toFixed(2)})" opacity="${op.toFixed(2)}"/>`
+      body = `<use href="#nb${n.comm}" transform="translate(${Math.round(n.x)} ${Math.round(n.y)})rotate(${hash(n.id) % 360})scale(${(r / 16).toFixed(2)})" opacity="${op.toFixed(2)}"/>`
       if (isT) body += `<circle cx="${f1(n.x)}" cy="${f1(n.y)}" r="${f1(r * .55)}" fill="none" stroke="#fff" stroke-width=".5" opacity=".7"><animate attributeName="r" values="${f1(r * .45)};${f1(r * .7)};${f1(r * .45)}" dur="1.6s" repeatCount="indefinite"/></circle>`
       if (n.fallT !== undefined || (X.falling === n)) body = `<g>${body}<animate attributeName="opacity" values="1;1;0" keyTimes="0;${kt((X.snapT || 0) + .2)};${kt((X.snapT || 0) + 1.2)}" dur="${dur}" fill="freeze"/></g>`
     }
@@ -812,11 +812,10 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
   // les modèles de nébuleuses : trois nuages qui dérivent, quelques étoiles au cœur
   let defs = `<radialGradient id="nw"><stop offset="0" stop-color="#fff" stop-opacity=".95"/><stop offset=".35" stop-color="#e6f6ff" stop-opacity=".35"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient><radialGradient id="nhalo"><stop offset="0" stop-color="#5ee6ff" stop-opacity=".07"/><stop offset=".7" stop-color="#b46cff" stop-opacity=".04"/><stop offset="1" stop-color="#000" stop-opacity="0"/></radialGradient>`
   used.forEach(c => {
-    const col = g.comms[c] ? g.comms[c].col : NEB_HUES[c % NEB_HUES.length], c2 = NEB_HUES[(c + 3) % NEB_HUES.length], Rn = rng(c * 17 + 3)
+    const col = g.comms[c] ? g.comms[c].col : NEB_HUES[c % NEB_HUES.length], c2 = NEB_HUES[(c + 3) % NEB_HUES.length]
     const grad = (id, cc, a) => `<radialGradient id="${id}"><stop offset="0" stop-color="${cc}" stop-opacity="${a}"/><stop offset=".3" stop-color="${cc}" stop-opacity="${(a * .32).toFixed(2)}"/><stop offset="1" stop-color="${cc}" stop-opacity="0"/></radialGradient>`
     const drift = (vals, d) => `<animateTransform attributeName="transform" type="translate" values="${vals}" dur="${d}s" repeatCount="indefinite"/>`
-    let dots = ''; for (let k = 0; k < 5; k++) { const a = Rn() * Math.PI * 2, d = Rn() * 6; dots += `<circle cx="${f1(Math.cos(a) * d)}" cy="${f1(Math.sin(a) * d)}" r="${f1(.5 + Rn() * .6)}"/>` }
-    defs += grad('ng' + c, col, .5) + grad('nh' + c, c2, .38) + `<g id="nb${c}"><circle r="22" fill="url(#ng${c})">${drift('-4 -2;3 3;-4 -2', 7 + c % 3)}</circle><circle r="18" fill="url(#nh${c})">${drift('3 -3;-3 2;3 -3', 9)}</circle><circle r="20" fill="url(#ng${c})" opacity=".8">${drift('0 4;2 -4;0 4', 11)}</circle><circle r="7" fill="url(#nw)"/><g fill="#fff">${dots}</g></g>`
+    defs += grad('ng' + c, col, .5) + grad('nh' + c, c2, .38) + `<g id="nb${c}"><g opacity=".38"><circle r="18" fill="url(#ng${c})">${drift('-3 -2;2 2;-3 -2', 7 + c % 3)}</circle><circle r="15" fill="url(#nh${c})">${drift('2 -2;-2 2;2 -2', 9)}</circle></g><circle r="3" fill="${col}" opacity=".45"/><circle r="1.9" fill="url(#nw)"/><circle r="1" fill="#fff"/></g>`
   })
   o.push(`<defs>${defs}</defs>`, nodes)
   if (X.bolt) o.push(boltSVG(W, X.bolt, X.boltT, Math.max(.1, X.total), inB, lod))
