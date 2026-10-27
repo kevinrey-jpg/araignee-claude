@@ -270,7 +270,7 @@ test('en sphère : la boule se tourne vers la cible, puis l’action se joue, la
     if (pre) { expect(pre.svg.length).toBeLessThan(131072); expect(pre.svg).not.toContain('NaN') }
     expect(c.svg.length).toBeLessThan(131072)
     expect(c.svg).not.toContain('NaN')
-    expect(c.svg).toContain('href="#nb')
+    expect(c.svg).toMatch(/href="#s[48]/)
   }
   // au repos, la foudre repart de l’araignée
   W.sph.lastBolt = 0

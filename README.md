@@ -55,7 +55,10 @@ Si le calage n'est pas parfait, règle les marges en pixels : `/araignee-marges 
 
 ### La sphère nébuleuse
 
-Par défaut, la toile est une sphère qui tourne : chaque fichier, dossier, fonction ou idée est une petite nébuleuse (deux nuages colorés qui dérivent, quelques étoiles au cœur), à la couleur de sa communauté. La boule tourne doucement et se tourne vers ce que fait l'araignée ; l'araignée roule avec elle et marche sur les fils.
+Par défaut, la toile est une sphère qui tourne, comme une carte Graphify : une boule pleine et désordonnée, calculée par une petite simulation physique (les fichiers se repoussent, les fils les rapprochent). Chaque dossier est une étoile à huit branches qui tourne lentement, chaque fichier une étoile à quatre branches qui scintille, dans un léger nuage à la couleur de sa communauté. La boule tourne doucement et se tourne vers ce que fait l'araignée ; l'araignée roule avec elle et marche sur les fils.
+
+- **De vraies relations** : sans Graphify, l'araignée lit les imports de ton code (Python, JavaScript/TypeScript, Lua) et les liens de tes fichiers Markdown ; chaque fil relie deux fichiers qui dépendent vraiment l'un de l'autre, en plus des fils dossier → fichier.
+- **Les fils** : pleins, colorés et finement tressés, ils ondulent comme des câbles posés (un, deux ou trois virages, dans tous les sens) et brillent moins que les étoiles. La même boule, aux mêmes places, dans le panneau et dans la grande toile.
 
 - **La foudre** : à chaque action de Claude (au plus toutes les 5 secondes), et toutes les 7 à 11 secondes au repos, un éclair part de l'endroit où se trouve l'araignée et suit les fils dans tout le réseau. Chaque nébuleuse atteinte s'illumine.
 - **À la souris** (grande toile) : faire glisser fait tourner la boule, avec de l'élan ; la molette zoome.

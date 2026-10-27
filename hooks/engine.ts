@@ -121,6 +121,22 @@ function layout(g) {
   g.nodes.forEach(n => { const c = g.comms[n.comm]; n.ang = Math.atan2(n.y - c.cy, n.x - c.cx) })
 }
 const SEGC = 24
+// les fils de la boule ondulent comme des câbles posés : un, deux ou trois virages, dans tous les sens
+// (les mêmes que dans la grande vue), avec à peine de poids ; l'araignée marche sur ces courbes
+function wavePt(e, a, b, u) {
+  if (!e.wv) { const R = rng(hash(e.a + '|' + e.b)), k = R() < .45 ? 1 : R() < .7 ? 2 : 3; e.wv = { k, amp: (R() < .5 ? -1 : 1) * (.05 + R() * .07) / Math.sqrt(k), ph: R() * 6.28, k2: k + 1 + Math.floor(R() * 2), a2: (R() - .5) * .05 } }
+  const W = e.wv, dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || .01, env = Math.sin(Math.PI * u)
+  const off = env * L * (W.amp * Math.sin(Math.PI * W.k * u + (W.k > 1 ? W.ph * .3 : 0)) + W.a2 * Math.sin(Math.PI * W.k2 * u + W.ph))
+  return { x: a.x + dx * u - dy / L * off, y: a.y + dy * u + dx / L * off + env * Math.min(L * .03, 6) }
+}
+// dans le panneau, un fil est une seule courbe de Bézier qui passe par la vague au tiers et aux deux tiers
+// (un ou deux virages) : bien plus court à écrire, et l'araignée marche exactement sur la courbe dessinée
+function waveCubic(e, a, b) {
+  const w1 = wavePt(e, a, b, 1 / 3), w2 = wavePt(e, a, b, 2 / 3), A = { x: 27 * w1.x - 8 * a.x - b.x, y: 27 * w1.y - 8 * a.y - b.y }, B = { x: 27 * w2.x - a.x - 8 * b.x, y: 27 * w2.y - a.y - 8 * b.y }
+  return [{ x: (2 * A.x - B.x) / 18, y: (2 * A.y - B.y) / 18 }, { x: (2 * B.x - A.x) / 18, y: (2 * B.y - A.y) / 18 }]
+}
+function cubicAt(a, c1, c2, b, u) { const v = 1 - u; return { x: v * v * v * a.x + 3 * v * v * u * c1.x + 3 * v * u * u * c2.x + u * u * u * b.x, y: v * v * v * a.y + 3 * v * v * u * c1.y + 3 * v * u * u * c2.y + u * u * u * b.y } }
+const mixHex = (a, b, k) => { const A = [1, 3, 5].map(i => parseInt(a.slice(i, i + 2), 16)), B = [1, 3, 5].map(i => parseInt(b.slice(i, i + 2), 16)); return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * k).toString(16).padStart(2, '0')).join('') }
 function buildGeometry(g) {
   g.grid = new Map()
   g.edges.forEach(e => {
@@ -128,7 +144,8 @@ function buildGeometry(g) {
     const sag = g.straight ? 0 : L * (e.kind === 'dep' ? .1 : .045) * (hash(e.a + e.b) % 2 ? 1 : -1)
     e.c = { x: (a.x + b.x) / 2 + nx * sag * 2, y: (a.y + b.y) / 2 + ny * sag * 2 }
     e.pts = []; const N = Math.max(6, Math.round(L / 6))
-    for (let i = 0; i <= N; i++) { const u = i / N; e.pts.push({ x: (1 - u) * (1 - u) * a.x + 2 * u * (1 - u) * e.c.x + u * u * b.x, y: (1 - u) * (1 - u) * a.y + 2 * u * (1 - u) * e.c.y + u * u * b.y }) }
+    if (g.straight) { const [c1, c2] = waveCubic(e, a, b); for (let i = 0; i <= N; i++) e.pts.push(cubicAt(a, c1, c2, b, i / N)) }
+    else for (let i = 0; i <= N; i++) { const u = i / N; e.pts.push({ x: (1 - u) * (1 - u) * a.x + 2 * u * (1 - u) * e.c.x + u * u * b.x, y: (1 - u) * (1 - u) * a.y + 2 * u * (1 - u) * e.c.y + u * u * b.y }) }
     for (let i = 1; i < e.pts.length; i++) addSeg(g, e.pts[i - 1], e.pts[i], e.kind === 'tree' ? .75 : .85)
   })
 }
@@ -853,21 +870,39 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
   const cEnd = frames.length ? frames[frames.length - 1].cam : W.cam, capN = lod >= 3 ? 60 : lod >= 1 ? 90 : tr ? 100 : 160
   let cand = g.nodes.filter(n => (!n.gone || X.falling === n) && (inB(n) || inA(n)))
   if (cand.length > capN) cand = cand.map(n => ({ n, s: (n.zd || 0) * 2 - Math.hypot(n.x - cEnd.x, n.y - cEnd.y) / 160 + (n === X.target || n.kind === 'term' ? 9 : 0) })).sort((p, q) => q.s - p.s).slice(0, capN).map(o => o.n)
-  const used = new Set(), list = cand.sort((p, q) => (p.zd || 0) - (q.zd || 0)), drawn = new Set(list)
-  // les fils : par profondeur et par couleur, en quelques tracés
+  const used = new Set(), used8 = new Set(), list = cand.sort((p, q) => (p.zd || 0) - (q.zd || 0)), drawn = new Set(list)
+  // les fils : pleins, colorés, tressés très fin (de petits bourrelets qui glissent le long du trait), ondulés ;
+  // groupés par profondeur et par couleur ; chaque tracé est défini une fois et repris pour le fil et pour la torsade
   const groups = new Map(), at = (P, id) => P.get(id) || g.byId[id]
-  g.edges.forEach((e, i) => {
+  // une courbe par fil, en coordonnées relatives (des nombres courts : le clip du panneau a une taille limitée)
+  const wd = (e, p, q) => { const [c1, c2] = waveCubic(e, p, q), x = Math.round(p.x), y = Math.round(p.y); return `M${x} ${y}c${Math.round(c1.x) - x} ${Math.round(c1.y) - y} ${Math.round(c2.x) - x} ${Math.round(c2.y) - y} ${Math.round(q.x) - x} ${Math.round(q.y) - y}` }
+  const wl0 = []
+  g.edges.forEach(e => {
     if (e.hidden || e.broken) return; const a = g.byId[e.a], b = g.byId[e.b]; if (a.gone || b.gone || !(drawn.has(a) || drawn.has(b))) return
-    const d = ((a.zd || 0) + (b.zd || 0)) / 2, lvl = Math.min(3, Math.floor(d * 4)), hot = !!e.trail || (e.h || 0) > .12, spoke = !hot && Math.max(g.adj[e.a].length, g.adj[e.b].length) > (g.hubDeg || 40), same = a.comm === b.comm
-    const key = (hot ? 'h' : spoke ? 's' : same ? a.comm : 'w') + ':' + lvl
-    let gr = groups.get(key); if (!gr) groups.set(key, gr = { lvl, hot, spoke, same, col: hot || !same ? '#ffffff' : g.comms[a.comm].col, dB: '', dA: '', dM: '' })
-    const seg = (p, q) => `M${Math.round(p.x)} ${Math.round(p.y)}L${Math.round(q.x)} ${Math.round(q.y)}`
-    gr.dB += seg(a, b); if (tr) { gr.dA += seg(at(tr.A, e.a), at(tr.A, e.b)); gr.dM += seg(at(tr.M, e.a), at(tr.M, e.b)) }
+    // hors du cadre pendant tout le clip : inutile de l'écrire
+    if (!tr && (Math.max(a.x, b.x) < box[0] || Math.min(a.x, b.x) > box[2] || Math.max(a.y, b.y) < box[1] || Math.min(a.y, b.y) > box[3])) return
+    const d = ((a.zd || 0) + (b.zd || 0)) / 2, lvl = Math.min(3, Math.floor(d * 4)), hot = !!e.trail || (e.h || 0) > .12, spoke = !hot && Math.max(g.adj[e.a].length, g.adj[e.b].length) > (g.hubDeg || 40), dep = e.kind === 'dep' && !hot
+    // clip trop lourd : les fils du fond de la boule (les plus sombres) partent avant qu'on ne retire des images
+    if (lod >= 1 && !hot && (lvl === 0 || (lvl === 1 && e.kind === 'dep'))) return
+    wl0.push({ e, a, b, lvl, hot, spoke, dep, s: (hot ? 9 : 0) + (a === X.target || b === X.target || e.a === X.actor.cur || e.b === X.actor.cur ? 5 : 0) + d * 2 - Math.hypot((a.x + b.x) / 2 - cEnd.x, (a.y + b.y) / 2 - cEnd.y) / 120 })
   })
-  groups.forEach(gr => {
-    const d = (gr.lvl + .5) / 4, op = Math.min(1, (gr.hot ? .22 + d * .5 : gr.same ? .14 + d * .5 : .07 + d * .28) * (gr.hot ? 1 : Math.max(.5, S.edens)) * (gr.spoke ? .5 : 1))
-    o.push(`<path d="${tr ? 'M0 0' : gr.dB}" fill="none" stroke="${gr.col}" stroke-opacity="${op.toFixed(3)}" stroke-width="${f1((gr.hot ? .34 : .3) * Math.min(RS, 3))}">${tr ? `<animate attributeName="d" values="${gr.dA};${gr.dM};${gr.dB}" ${TD} fill="freeze"/>` : ''}</path>`)
+  // encore trop lourd : on garde les fils chauds, ceux de l'araignée et de sa cible, puis les plus proches et les plus en avant
+  const wcap = lod >= 5 ? 70 : lod >= 3 ? 110 : lod >= 1 ? 160 : Infinity
+  ;(wl0.length > wcap ? wl0.sort((p, q) => q.s - p.s).slice(0, wcap) : wl0).forEach(({ e, a, b, lvl, hot, spoke, dep }) => {
+    const cc = (g.adj[e.a].length >= g.adj[e.b].length ? b : a).comm, key = (hot ? 'h' : dep ? 'm' : spoke ? 's' : '') + cc + ':' + lvl
+    let gr = groups.get(key); if (!gr) groups.set(key, gr = { lvl, hot, spoke, dep, col: g.comms[cc] ? g.comms[cc].col : '#c9c2e6', dB: '', dA: '', dM: '' })
+    gr.dB += wd(e, a, b); if (tr) { gr.dA += wd(e, at(tr.A, e.a), at(tr.A, e.b)); gr.dM += wd(e, at(tr.M, e.a), at(tr.M, e.b)) }
   })
+  let wdefs = '', wi = 0
+  ;[...groups.values()].sort((p, q) => p.lvl - q.lvl).forEach(gr => {
+    const d = (gr.lvl + .5) / 4, a0 = Math.min(1, (.18 + .4 * d) * (gr.spoke ? .55 : 1) * (gr.dep ? .6 : 1) * (gr.hot ? 1.5 : Math.max(.5, S.edens) * .5 + .5)), w = (gr.hot ? .5 : gr.dep ? .26 : .38) * Math.min(RS, 3), id = 'w' + wi++
+    wdefs += `<path id="${id}" d="${tr ? 'M0 0' : gr.dB}">${tr ? `<animate attributeName="d" values="${gr.dA};${gr.dM};${gr.dB}" ${TD} fill="freeze"/>` : ''}</path>`
+    if ((gr.lvl >= 2 && lod < 1) || gr.hot) o.push(`<use href="#${id}" stroke="${gr.col}" stroke-opacity="${(.12 * a0).toFixed(3)}" stroke-width="${f1(w * 3)}"/>`)
+    o.push(`<use href="#${id}" stroke="${mixHex(gr.col, '#ffffff', gr.hot ? .4 : .1)}" stroke-opacity="${a0.toFixed(3)}" stroke-width="${(w).toFixed(2)}"/>`)
+    if (d > .3 && !gr.dep && lod < 1) o.push(`<use href="#${id}" stroke="${mixHex(gr.col, '#ffffff', .45)}" stroke-opacity="${(a0 * .7).toFixed(3)}" stroke-width="${(w * 1.4).toFixed(2)}" stroke-dasharray="${(w * .35).toFixed(2)} ${(w * 2.4).toFixed(2)}"><animate attributeName="stroke-dashoffset" values="0;${(-w * 2.75 * 4).toFixed(2)}" dur="${(4 / 1.8 * 2.75).toFixed(1)}s" repeatCount="indefinite"/></use>`)
+  })
+  // le style passe par le groupe : un tracé repris par <use> hérite de son <use>, pas de ses <defs>
+  const wl = o.splice(1); o.push(`<defs>${wdefs}</defs><g fill="none" stroke-linecap="round">${wl.join('')}</g>`)
   const named = new Set(list.filter(n => n.label && n.kind !== 'leaf' && (n.zd || 0) > .55 && (n.kind === 'dir' || n.kind === 'file' || n.kind === 'term' || n === X.target)).sort((p, q) => Math.hypot(p.x - cEnd.x, p.y - cEnd.y) - Math.hypot(q.x - cEnd.x, q.y - cEnd.y)).slice(0, lod >= 3 ? 8 : 22))
   if (X.target) named.add(X.target)
   let nodes = ''
@@ -878,7 +913,9 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
     else {
       used.add(n.comm)
       const r = nebR(g, n) * RS * k * .62 * (isT ? 1.25 : 1), touched = (n.heat || 0) > .01 || n.visited || n.mod, op = Math.min(1, (.28 + .72 * zd) * (touched ? 1 : .72) * S.dens + (isT ? .3 : 0))
-      body = `<use href="#nb${n.comm}" transform="translate(${Math.round(n.x)} ${Math.round(n.y)})rotate(${hash(n.id) % 360})scale(${(r / 16).toFixed(2)})" opacity="${op.toFixed(2)}"/>`
+      // les dossiers : une étoile à huit branches qui tourne ; les fichiers : quatre branches qui scintillent
+      const dir = n.kind === 'dir' || n.kind === 'concept'; if (dir) used8.add(n.comm)
+      body = `<use href="#${dir ? 's8' : 's4'}${n.comm}" transform="translate(${Math.round(n.x)} ${Math.round(n.y)})${dir ? `rotate(${hash(n.id) % 45})` : ''}scale(${(r * (dir ? 1.25 : .95) / 16).toFixed(2)})" opacity="${op.toFixed(2)}"/>`
       if (isT) body += `<circle cx="${f1(n.x)}" cy="${f1(n.y)}" r="${f1(r * .55)}" fill="none" stroke="#fff" stroke-width=".5" opacity=".7"><animate attributeName="r" values="${f1(r * .45)};${f1(r * .7)};${f1(r * .45)}" dur="1.6s" repeatCount="indefinite"/></circle>`
       if (n.fallT !== undefined || (X.falling === n)) body = `<g>${body}<animate attributeName="opacity" values="1;1;0" keyTimes="0;${kt((X.snapT || 0) + .2)};${kt((X.snapT || 0) + 1.2)}" dur="${dur}" fill="freeze"/></g>`
     }
@@ -886,13 +923,18 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
     const mv = tr ? mover(n.id) : ''
     nodes += mv ? `<g>${mv}${body}</g>` : body
   })
-  // les modèles de nébuleuses : trois nuages qui dérivent, quelques étoiles au cœur
+  // les modèles d'étoiles (un par communauté) : un nuage discret qui colore sans éblouir, des branches fines, un cœur net
   let defs = `<radialGradient id="nw"><stop offset="0" stop-color="#fff" stop-opacity=".95"/><stop offset=".35" stop-color="#e6f6ff" stop-opacity=".35"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient><radialGradient id="nhalo"><stop offset="0" stop-color="#5ee6ff" stop-opacity=".07"/><stop offset=".7" stop-color="#b46cff" stop-opacity=".04"/><stop offset="1" stop-color="#000" stop-opacity="0"/></radialGradient>`
+  const rays = n => { let d = ''; for (let k = 0; k < n; k++) { const an = k / n * Math.PI * 2 - Math.PI / 2, L = 16 * (n === 8 && k % 2 ? .55 : .98), w = 16 * (n === 8 ? .055 : .07), dx = Math.cos(an), dy = Math.sin(an); d += `M${f1(-dy * w)} ${f1(dx * w)}L${f1(dx * L)} ${f1(dy * L)}L${f1(dy * w)} ${f1(-dx * w)}z` } return d }
+  // les branches sont les mêmes pour toutes les couleurs : dessinées une fois
+  if (used.size) defs += `<g id="k"><circle r="3.2" fill="url(#nw)"/><circle r="1.4" fill="#fff"/></g><path id="r4" d="${rays(4)}"/>` + (used8.size ? `<path id="r8" d="${rays(8)}"/>` : '')
   used.forEach(c => {
-    const col = g.comms[c] ? g.comms[c].col : NEB_HUES[c % NEB_HUES.length], c2 = NEB_HUES[(c + 3) % NEB_HUES.length]
-    const grad = (id, cc, a) => `<radialGradient id="${id}"><stop offset="0" stop-color="${cc}" stop-opacity="${a}"/><stop offset=".3" stop-color="${cc}" stop-opacity="${(a * .32).toFixed(2)}"/><stop offset="1" stop-color="${cc}" stop-opacity="0"/></radialGradient>`
-    const drift = (vals, d) => `<animateTransform attributeName="transform" type="translate" values="${vals}" dur="${d}s" repeatCount="indefinite"/>`
-    defs += grad('ng' + c, col, .5) + grad('nh' + c, c2, .38) + `<g id="nb${c}"><g opacity=".38"><circle r="18" fill="url(#ng${c})">${drift('-3 -2;2 2;-3 -2', 7 + c % 3)}</circle><circle r="15" fill="url(#nh${c})">${drift('2 -2;-2 2;2 -2', 9)}</circle></g><circle r="3" fill="${col}" opacity=".45"/><circle r="1.9" fill="url(#nw)"/><circle r="1" fill="#fff"/></g>`
+    const col = g.comms[c] ? g.comms[c].col : NEB_HUES[c % NEB_HUES.length]
+    const grad = (id, stops) => `<radialGradient id="${id}">${stops.map(([o, cc, a]) => `<stop offset="${o}" stop-color="${cc}" stop-opacity="${a}"/>`).join('')}</radialGradient>`
+    defs += grad('ng' + c, [[0, col, .5], [.3, col, .16], [1, col, 0]]) + grad('sr' + c, [[0, '#ffffff', .95], [.3, mixHex(col, '#ffffff', .35), .85], [1, col, 0]])
+    const core = `<circle r="8" fill="url(#ng${c})" opacity=".65"/><use href="#k"/>`, cloud = `<circle r="17" fill="url(#ng${c})" opacity=".2"/>`
+    defs += `<g id="s4${c}">${cloud}<use href="#r4" fill="url(#sr${c})"><animate attributeName="opacity" values="1;.68;1" dur="${(2.2 + (c % 5) * .37).toFixed(2)}s" repeatCount="indefinite"/></use>${core}</g>`
+    if (used8.has(c)) defs += `<g id="s8${c}">${cloud}<use href="#r8" fill="url(#sr${c})"><animateTransform attributeName="transform" type="rotate" values="0;360" dur="52s" repeatCount="indefinite"/></use>${core}</g>`
   })
   o.push(`<defs>${defs}</defs>`, nodes)
   if (X.bolt) o.push(boltSVG(W, X.bolt, X.boltT, Math.max(.1, X.total), inB, lod))
