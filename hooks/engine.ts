@@ -62,7 +62,7 @@ export function graphFromGraphify(json, maxNodes = 650) {
   rawE.forEach(e => { const a = eid(e.source ?? e.from), b = eid(e.target ?? e.to); if (ids.has(a) && ids.has(b) && a !== b) edges.push({ a, b, kind: /contain|define|has|member/.test(String(e.relation || e.type || '')) ? 'tree' : 'dep' }) })
   return finishGraph(nodes, edges, comms)
 }
-export function graphFromTree(paths, projectName) {
+export function graphFromTree(paths, projectName, deps = []) {
   const nodes = [], edges = [], comms = [], seen = new Set(), commOf = {}
   const add = n => { if (!seen.has(n.id)) { seen.add(n.id); nodes.push(n) } }
   add({ id: '.', label: projectName || 'projet', kind: 'dir', comm: 0 }); comms.push({ name: projectName || 'Projet' })
@@ -74,7 +74,9 @@ export function graphFromTree(paths, projectName) {
     for (let i = 0; i < parts.length - 1; i++) { const id = parts.slice(0, i + 1).join('/') + '/'; add({ id, label: parts[i] + '/', kind: 'dir', comm: c }); edges.push({ a: parent, b: id, kind: 'tree' }); parent = id }
     add({ id: p, label: parts[parts.length - 1], kind: 'file', comm: c, path: p }); edges.push({ a: parent, b: p, kind: 'tree' })
   })
-  const uniq = new Set(), E = edges.filter(e => { const k = e.a + '|' + e.b; if (uniq.has(k)) return false; uniq.add(k); return true })
+  // les vraies relations : qui importe qui
+  for (const [a, b] of deps) if (seen.has(a) && seen.has(b) && a !== b) edges.push({ a, b, kind: 'dep' })
+  const uniq = new Set(), E = edges.filter(e => { const k = e.a + '|' + e.b, k2 = e.b + '|' + e.a; if (uniq.has(k) || uniq.has(k2)) return false; uniq.add(k); return true })
   return finishGraph(nodes, E, comms)
 }
 function finishGraph(nodes, edges, comms) {
@@ -484,11 +486,86 @@ function ride(W, before) {
     for (const L of sp.legs) for (const k of ['foot', 'from', 'to', 'placed']) if (L[k]) L[k] = { ...L[k], x: L[k].x + dx, y: L[k].y + dy }
   }
 }
+/* ---------------- les vraies relations entre fichiers : qui importe qui ---------------- */
+const CODE_EXT = /\.(py|pyw|js|jsx|mjs|cjs|ts|tsx|lua|md)$/i
+export const readsImports = p => CODE_EXT.test(p || '')
+const JS_EXT = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '/index.ts', '/index.tsx', '/index.js', '/index.jsx']
+function joinPath(dir, rel) {
+  const out = dir ? dir.split('/') : []
+  for (const part of rel.split('/')) { if (!part || part === '.') continue; if (part === '..') out.pop(); else out.push(part) }
+  return out.join('/')
+}
+// les fichiers qu'un fichier utilise, parmi ceux du projet (all : ensemble des chemins ; byBase : nom de fichier → chemins)
+export function importsOf(path, text, all, byBase) {
+  const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '', found = new Set(), src = String(text || '').slice(0, 200000)
+  const add = p => { if (p && p !== path && all.has(p)) found.add(p) }
+  // un module par son nom seul : on préfère celui qui est dans le même dossier de premier niveau
+  const byName = (name, ext) => { const list = byBase.get(name + ext) || []; if (!list.length) return; const top = path.split('/')[0]; add(list.find(p => p.split('/')[0] === top) || list[0]) }
+  if (/\.(py|pyw)$/i.test(path)) {
+    for (const m of src.matchAll(/^[ \t]*(?:from[ \t]+(\.*[\w.]*)[ \t]+import[ \t]+\(?([\w*, \t]+)|import[ \t]+([\w., \t]+))/gm)) {
+      const mods = m[3] ? m[3].split(',').map(s => s.trim().split(/\s+as\s+/)[0]) : [m[1]]
+      for (const mod of mods) {
+        if (!mod) continue
+        const dots = (mod.match(/^\.+/) || [''])[0].length, rest = mod.slice(dots).replace(/\./g, '/')
+        let base = ''
+        if (dots) { const parts = dir ? dir.split('/') : []; base = parts.slice(0, Math.max(0, parts.length - (dots - 1))).join('/') }
+        const p = rest ? (base ? base + '/' + rest : rest) : base
+        const before = found.size
+        ;[p + '.py', p + '/__init__.py'].forEach(add)
+        if (m[2]) m[2].split(',').map(s => s.trim().split(/\s+as\s+/)[0]).filter(s => s && s !== '*').forEach(nm => add((p ? p + '/' : '') + nm + '.py'))
+        if (found.size === before && !dots && rest) { [...all].filter(f => f.endsWith('/' + rest + '.py')).slice(0, 1).forEach(add); if (found.size === before) byName(rest.split('/').pop(), '.py') }
+      }
+    }
+  } else if (/\.(js|jsx|mjs|cjs|ts|tsx)$/i.test(path)) {
+    for (const m of src.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)['"]([^'"\n]+)['"]/gm)) {
+      const spec = m[1]; if (!/^(\.{1,2}\/|@\/)/.test(spec)) continue
+      const p = spec.startsWith('@/') ? joinPath('src', spec.slice(2)) : joinPath(dir, spec)
+      for (const ext of JS_EXT) if (all.has(p + ext)) { add(p + ext); break }
+    }
+  } else if (/\.lua$/i.test(path)) {
+    for (const m of src.matchAll(/require\s*\(?\s*['"]([\w./-]+)['"]/g)) { const p = m[1].replace(/\./g, '/'); const before = found.size; add(p + '.lua'); add(joinPath(dir, p) + '.lua'); if (found.size === before) byName(p.split('/').pop(), '.lua') }
+  } else if (/\.md$/i.test(path)) {
+    for (const m of src.matchAll(/\]\(([^)#\s]+)/g)) { const spec = decodeURI(m[1]); if (/^[a-z]+:/i.test(spec)) continue; add(spec.startsWith('/') ? spec.slice(1) : joinPath(dir, spec)) }
+  }
+  return [...found].slice(0, 15)
+}
+/* ---------------- une vraie boule : simulation de forces en 3D, comme Graphify ---------------- */
+// les nœuds se repoussent, les fils les attirent, une gravité garde l'ensemble rond ; puis on remplit le volume
+// (plein au centre comme sur la courbure) sans tout lisser : quelques dossiers peuvent dépasser
+function force3D(g) {
+  const N = g.nodes, n = N.length; if (!n) return
+  const idx = new Map(N.map((o, i) => [o.id, i])), s = 100 * Math.cbrt(4.19 / Math.max(8, n)), R = rng(17), C = Math.max(1, g.comms.length)
+  // départ : chaque communauté autour de sa direction, un peu de hasard
+  const dirs = g.comms.map((c, k) => { const y = 1 - 2 * (k + .5) / C, r = Math.sqrt(1 - y * y), a = k * 2.39996; return { x: Math.cos(a) * r, y, z: Math.sin(a) * r } })
+  const P = N.map(o => { const d = dirs[o.comm] || { x: 0, y: 0, z: 0 }; return { x: d.x * 50 + (R() - .5) * 60, y: d.y * 50 + (R() - .5) * 60, z: d.z * 50 + (R() - .5) * 60, vx: 0, vy: 0, vz: 0 } })
+  const E = g.edges.map(e => [idx.get(e.a), idx.get(e.b), e.kind === 'dep' ? 1.5 : 1]).filter(e => e[0] !== undefined && e[1] !== undefined)
+  const deg = N.map(o => Math.max(1, g.adj[o.id].length)), CELL = s * 2.4, iters = n > 700 ? 160 : 220
+  for (let it = 0; it < iters; it++) {
+    const cool = 1 - it / iters, grid = new Map()
+    P.forEach((p, i) => { const k = Math.floor(p.x / CELL) + ',' + Math.floor(p.y / CELL) + ',' + Math.floor(p.z / CELL); (grid.get(k) || grid.set(k, []).get(k)).push(i) })
+    P.forEach((p, i) => {
+      const cx = Math.floor(p.x / CELL), cy = Math.floor(p.y / CELL), cz = Math.floor(p.z / CELL)
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+        const arr = grid.get((cx + dx) + ',' + (cy + dy) + ',' + (cz + dz)); if (!arr) continue
+        for (const j of arr) { if (j <= i) continue; const q = P[j]; let ex = p.x - q.x, ey = p.y - q.y, ez = p.z - q.z; const d2 = ex * ex + ey * ey + ez * ez + .01; if (d2 > CELL * CELL) continue; const f = s * s * .5 / d2; ex *= f; ey *= f; ez *= f; p.vx += ex; p.vy += ey; p.vz += ez; q.vx -= ex; q.vy -= ey; q.vz -= ez }
+      }
+    })
+    for (const [i, j, w] of E) { const p = P[i], q = P[j]; let ex = q.x - p.x, ey = q.y - p.y, ez = q.z - p.z; const d = Math.hypot(ex, ey, ez) || .01, f = (d - s * w) / d * .08 / Math.sqrt(Math.min(deg[i], deg[j])); ex *= f; ey *= f; ez *= f; p.vx += ex; p.vy += ey; p.vz += ez; q.vx -= ex; q.vy -= ey; q.vz -= ez }
+    P.forEach(p => { p.vx -= p.x * .012; p.vy -= p.y * .012; p.vz -= p.z * .012; const sp = Math.hypot(p.vx, p.vy, p.vz), mx = 12 * cool + .5; if (sp > mx) { p.vx *= mx / sp; p.vy *= mx / sp; p.vz *= mx / sp } p.x += p.vx; p.y += p.vy; p.z += p.vz; p.vx *= .55; p.vy *= .55; p.vz *= .55 })
+  }
+  // la taille : 92 % des nœuds dans la boule de rayon 96 ; le remplissage : moitié rayon réel, moitié rayon « plein »
+  const rs = P.map(p => Math.hypot(p.x, p.y, p.z)), sorted = [...rs].sort((a, b) => a - b), k92 = sorted[Math.floor(n * .92)] || 1, sc = 96 / k92
+  const order = rs.map((r, i) => i).sort((a, b) => rs[a] - rs[b])
+  order.forEach((i, k) => { const p = P[i], r = rs[i] * sc, full = 98 * Math.cbrt((k + .5) / n), r2 = r * .5 + full * .5, u = rs[i] || 1; N[i].p3 = { x: p.x / u * r2, y: p.y / u * r2, z: p.z / u * r2 } })
+}
+
 export function sphereInit(W) {
   const g = W.g
   g.nodes.forEach(n => { n.x2 = n.x; n.y2 = n.y })
   g.straight = true; g.W = W
-  sphereLayout(g)
+  // une vraie boule physique ; la disposition « à aire égale » ne sert plus que si la simulation échoue
+  try { force3D(g) } catch { sphereLayout(g) }
+  if (g.nodes.some(o => !o.p3 || !Number.isFinite(o.p3.x))) sphereLayout(g)
   W.sph = { yaw: .4, pitch: .28, R: 150 + 14 * Math.sqrt(g.nodes.length), D: 330, lastBolt: 0, dens: clamp(Math.sqrt(140 / Math.max(140, g.nodes.length)), .38, 1), edens: clamp(Math.sqrt(300 / Math.max(300, g.edges.length)), .3, 1) }
   const before = new Map(g.nodes.map(n => [n.id, { x: n.x, y: n.y }]))
   applyPlace(W, placeAll(W, W.sph.yaw, W.sph.pitch)); buildGeometry(g); g.orbs = []

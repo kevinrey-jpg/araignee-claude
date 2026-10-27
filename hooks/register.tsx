@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface } from 'claude-code'
 
 import type { Clip, Status, Recap } from '../types'
-import { applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
+import { applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, importsOf, readsImports, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
 
 const PANE = 'araignee'
 // Changer l'étiquette quand la forme d'une valeur change : elle survit aux rechargements.
@@ -148,7 +148,15 @@ async function ensureWorld($: EngineInterface) {
         }
       }
       await walk('', 0)
-      graph = graphFromTree(files, project)
+      // les vraies relations : on lit les imports des fichiers de code (et les liens des .md)
+      const all = new Set(files), byBase = new Map<string, string[]>(), deps: [string, string][] = []
+      files.forEach(f => { const b = f.split('/').pop()!; byBase.set(b, [...(byBase.get(b) || []), f]) })
+      const code = files.filter(f => readsImports(f) && (sizes[f] ?? 0) < 150000).slice(0, 250)
+      for (let i = 0; i < code.length; i += 16) await Promise.all(code.slice(i, i + 16).map(async f => {
+        const txt = await $.fs.read(`${cwd}/${f}`).catch(() => null)
+        if (typeof txt === 'string') try { importsOf(f, txt, all, byBase).forEach(t => deps.push([f, t])) } catch {}
+      }))
+      graph = graphFromTree(files, project, deps)
       source = 'dossiers'
     }
     const saved = await $.store.get('skin')
@@ -250,8 +258,9 @@ async function pump($: EngineInterface) {
 }
 
 const VIEWER_TOOL: Record<string, string> = { Read: 'Read', Edit: 'Edit', MultiEdit: 'Edit', NotebookEdit: 'Edit', Write: 'Write', Grep: 'Grep', Glob: 'Glob', Bash: 'Bash', WebSearch: 'WebSearch', WebFetch: 'WebSearch', Mood: 'Mood', Delete: 'Delete', Leave: 'Leave' }
+const r1 = (v: number) => Math.round((v || 0) * 10) / 10
 const r2 = (v: number) => Math.round((v || 0) * 100) / 100
-const nodeData = (n: any) => ({ id: n.id, label: n.label, kind: n.kind, comm: n.comm, x: Math.round(n.x * 10) / 10, y: Math.round(n.y * 10) / 10, path: n.path, lines: n.lines, edits: n.edits || undefined, reads: n.reads || undefined, touched: n.touched || undefined, heat: n.heat ? r2(n.heat) : undefined })
+const nodeData = (n: any) => ({ p3: n.p3 && Number.isFinite(n.p3.x) ? { x: r1(n.p3.x), y: r1(n.p3.y), z: r1(n.p3.z) } : undefined, id: n.id, label: n.label, kind: n.kind, comm: n.comm, x: Math.round(n.x * 10) / 10, y: Math.round(n.y * 10) / 10, path: n.path, lines: n.lines, edits: n.edits || undefined, reads: n.reads || undefined, touched: n.touched || undefined, heat: n.heat ? r2(n.heat) : undefined })
 const infoOf = (n: any) => n && ({ id: n.id, lines: n.lines, edits: n.edits || 0, reads: n.reads || 0, touched: n.touched || 0, heat: r2(n.heat) })
 async function viewerSetup($: EngineInterface) {
   if (viewerDir) return

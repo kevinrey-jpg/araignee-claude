@@ -1070,7 +1070,7 @@ function addNode(id, label, kind, comm) { const n = { id, label, kind, comm, x: 
 function link(a, b, kind = 'tree') { if (a === b || !adj[a] || !adj[b] || adj[a].includes(b)) return; edges.push({ a, b, kind, trail: 0, paths: {} }); adj[a].push(b); adj[b].push(a); }
 function nodeFromData(d) {
   const isDir = d.kind === 'dir', n = addNode(d.id, d.label, isDir ? 'concept' : d.kind, Math.min(d.comm || 0, COMM.length - 1)); n.isDir = isDir; n.x = d.x; n.y = d.y; if (d.path) n.path = d.path;
-  n.lines = d.lines; n.edits = d.edits || 0; n.reads = d.reads || 0; n.touched = d.touched || 0; n.heat = d.heat || 0;
+  if (d.p3 && Number.isFinite(d.p3.x)) n.p3g = d.p3; n.lines = d.lines; n.edits = d.edits || 0; n.reads = d.reads || 0; n.touched = d.touched || 0; n.heat = d.heat || 0;
   if (n.kind === 'file') { P0.files.push(n.id); n.lang = langColor(d.path || d.label); }
   return n;
 }
@@ -1336,27 +1336,6 @@ function sphereLayout() {
   const ord = nodes.map((o, i) => i).sort((i, j) => dep[i] - dep[j]);
   ord.forEach((i, k) => { const r = isHub(nodes[i]) ? 6 + (hash(nodes[i].id) % 10) : 100 * (.3 + .66 * Math.cbrt((k + .5) / n)); nodes[i].p3 = { x: U[i].x * r, y: U[i].y * r, z: U[i].z * r }; });
 }
-// façon Graphify : les fichiers d'un dossier forment un amas compact autour de lui (en tournesol, avec de la
-// profondeur), et chacun est relié à ses deux plus proches voisins : chaque dossier devient une petite toile maillée
-function clusterize() {
-  const kids = new Map();
-  nodes.forEach(n => { if (n.isDir || n.kind === 'term' || !n.p3) return; const d = adj[n.id].map(id => byId[id]).find(o => o && o.isDir && o.p3); if (d) (kids.get(d) || kids.set(d, []).get(d)).push(n); });
-  const norm = v => { const l = Math.hypot(v.x, v.y, v.z) || 1; return { x: v.x / l, y: v.y / l, z: v.z / l }; }, cross = (a, b) => ({ x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
-  kids.forEach((list, d) => {
-    const P = d.p3, u = norm(P), t1 = norm(cross(u, Math.abs(u.y) < .9 ? { x: 0, y: 1, z: 0 } : { x: 1, y: 0, z: 0 })), t2 = cross(u, t1), spread = 4 + Math.sqrt(list.length) * 2.4;
-    list.sort((a, b) => hash(a.id) % 997 - hash(b.id) % 997).forEach((f, k) => {
-      const R = rng(hash(f.id)), rr = spread * Math.sqrt((k + .6) / list.length), an = k * 2.39996 + (R() - .5) * .7, dz = (R() - .5) * spread * .9;
-      const q = { x: P.x + (t1.x * Math.cos(an) + t2.x * Math.sin(an)) * rr + u.x * dz, y: P.y + (t1.y * Math.cos(an) + t2.y * Math.sin(an)) * rr + u.y * dz, z: P.z + (t1.z * Math.cos(an) + t2.z * Math.sin(an)) * rr + u.z * dz };
-      const l = Math.hypot(q.x, q.y, q.z); if (l > 98) { q.x *= 98 / l; q.y *= 98 / l; q.z *= 98 / l; }
-      f.p3 = q;
-    });
-    list.forEach(f => {
-      list.filter(o => o !== f).map(o => [o, Math.hypot(o.p3.x - f.p3.x, o.p3.y - f.p3.y, o.p3.z - f.p3.z)]).sort((a, b) => a[1] - b[1]).slice(0, 2).forEach(([o]) => {
-        if (adj[f.id].includes(o.id)) return; link(f.id, o.id, 'mesh'); const ei = edges.length - 1; edgeIdx[f.id + '|' + o.id] = ei; edgeIdx[o.id + '|' + f.id] = ei;
-      });
-    });
-  });
-}
 // un nouveau fichier arrive en direct : il se pose tout près du dossier qui l'accroche
 function place3(n, anchor) {
   const a = anchor && anchor.p3 ? anchor.p3 : { x: 0, y: 0, z: 0 }, R = rng(hash(n.id)), p = { x: a.x + (R() - .5) * 16, y: a.y + (R() - .5) * 16, z: a.z + (R() - .5) * 16 }, d = Math.hypot(p.x, p.y, p.z);
@@ -1382,7 +1361,9 @@ function projectAll() {
 }
 if (SPH) {
   nodes.forEach(n => { n.x2 = n.x; n.y2 = n.y; });
-  sphereLayout(); clusterize(); edges.forEach(sphereEdge); projectAll();
+  // la boule calculée par le plugin (la même que dans le panneau) ; sinon on la calcule ici
+  if (nodes.length && nodes.every(n => n.p3g)) { nodes.forEach(n => { n.p3 = { ...n.p3g }; }); S3.hubDeg = Math.max(40, nodes.length * .15); } else sphereLayout();
+  edges.forEach(sphereEdge); projectAll();
   stageEnv.snap = sphereSnap;
 }
 // en mode sphère, les pattes se posent sur les fils tels qu'on les voit
@@ -1548,7 +1529,7 @@ function drawSphereStage(c, targets) {
   edges.forEach((e, i) => {
     if (cutEdge(i)) return; const a = byId[e.a], b = byId[e.b]; if (a.gone || b.gone) return;
     const d = (a.zd + b.zd) / 2, lvl = Math.min(5, Math.floor(d * 6)), same = a.comm === b.comm, hot = e.trail > .01 || (e.h || 0) > .12, spoke = !hot && Math.max(adj[e.a].length, adj[e.b].length) > (S3.hubDeg || 40), key = (hot ? 'h' : spoke ? 's' : same ? a.comm : 'w') + ':' + lvl;
-    const cc = (adj[e.a].length >= adj[e.b].length ? b : a).comm, mesh = e.kind === 'mesh' && !hot, ck = hot ? 'h' + cc : mesh ? 'm' + cc : spoke ? 's' + cc : cc;
+    const cc = (adj[e.a].length >= adj[e.b].length ? b : a).comm, mesh = e.kind === 'dep' && !hot, ck = hot ? 'h' + cc : mesh ? 'm' + cc : spoke ? 's' + cc : cc;
     let g = groups.get(ck + ':' + lvl); if (!g) groups.set(ck + ':' + lvl, g = { P: new Path2D(), lvl, col: COMM[cc] ? COMM[cc].col : '#c9c2e6', hot, same, spoke, mesh });
     g.P.moveTo(a.x, a.y); g.P.quadraticCurveTo(e.cq.x, e.cq.y, b.x, b.y);
   });
