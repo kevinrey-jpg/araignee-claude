@@ -1342,7 +1342,7 @@ function place3(n, anchor) {
   if (d > 97) { p.x *= 97 / d; p.y *= 97 / d; p.z *= 97 / d; }
   n.p3 = p;
 }
-const SEGS = 8;
+const SEGS = 16;
 function sphereEdge(e) { e.pts2 = e.pts2 || e.pts; e.sp = Array.from({ length: SEGS + 1 }, () => ({ x: 0, y: 0 })); if (SPH) e.pts = e.sp; }
 function project3(p) {
   const cy = Math.cos(S3.yaw), sy = Math.sin(S3.yaw), cp = Math.cos(S3.pitch), spp = Math.sin(S3.pitch), RS = S3.R / 100;
@@ -1351,14 +1351,21 @@ function project3(p) {
 }
 function projectAll() {
   for (const n of nodes) { if (!n.p3) place3(n, adj[n.id].map(id => byId[id]).find(o => o && o.p3)); const q = project3(n.p3); n.ox = n.x; n.oy = n.y; n.x = q.x; n.y = q.y; n.zd = clamp((q.z / 100 + 1) / 2, 0, 1); n.k = q.k; }
-  // les fils pendent un peu sous leur poids, comme des câbles, et se balancent à peine ; l'araignée marche sur la courbe
+  // les fils ondulent comme des câbles posés : un, deux ou trois virages, dans tous les sens (pas seulement vers le bas),
+  // et se balancent à peine ; l'araignée marche sur la courbe
   for (const e of edges) {
-    if (!e.sp) sphereEdge(e); const a = byId[e.a], b = byId[e.b], P = e.sp, L = Math.hypot(b.x - a.x, b.y - a.y), ph = e.ph === undefined ? (e.ph = (hash(e.a + '|' + e.b) % 628) / 100) : e.ph;
-    const sag = Math.min(L * .11, L * .05 + L * L * .0002), cq = e.cq || (e.cq = { x: 0, y: 0 });
-    cq.x = (a.x + b.x) / 2 + Math.sin(simT * .5 + ph) * L * .02; cq.y = (a.y + b.y) / 2 + sag * 2;
-    for (let j = 0; j <= SEGS; j++) { const u = j / SEGS, v = 1 - u; P[j].x = v * v * a.x + 2 * u * v * cq.x + u * u * b.x; P[j].y = v * v * a.y + 2 * u * v * cq.y + u * u * b.y; }
+    if (!e.sp) sphereEdge(e); const a = byId[e.a], b = byId[e.b], P = e.sp, dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || .01;
+    if (!e.wv) { const R = rng(hash(e.a + '|' + e.b)), k = R() < .45 ? 1 : R() < .7 ? 2 : 3; e.wv = { k, amp: (R() < .5 ? -1 : 1) * (.05 + R() * .07) / Math.sqrt(k), ph: R() * 6.28, k2: k + 1 + Math.floor(R() * 2), a2: (R() - .5) * .05 }; }
+    const W = e.wv, nx = -dy / L, ny = dx / L, sw = Math.sin(simT * .45 + W.ph) * .25, sag = Math.min(L * .03, 6 * S3.R / 100);
+    for (let j = 0; j <= SEGS; j++) {
+      const u = j / SEGS, env = Math.sin(Math.PI * u), off = env * L * (W.amp * (1 + sw) * Math.sin(Math.PI * W.k * u + (W.k > 1 ? W.ph * .3 : 0)) + W.a2 * Math.sin(Math.PI * W.k2 * u + W.ph));
+      P[j].x = a.x + dx * u + nx * off; P[j].y = a.y + dy * u + ny * off + env * sag;
+    }
   }
 }
+// un fil se dessine en courbe lisse à travers ses points
+function wirePath(c, P) { c.moveTo(P[0].x, P[0].y); for (let i = 1; i < P.length - 1; i++) c.quadraticCurveTo(P[i].x, P[i].y, (P[i].x + P[i + 1].x) / 2, (P[i].y + P[i + 1].y) / 2); c.lineTo(P[P.length - 1].x, P[P.length - 1].y); }
+function wireAt(P, u) { const f = clamp(u, 0, 1) * (P.length - 1), i = Math.min(P.length - 2, Math.floor(f)), t = f - i; return { x: lerp(P[i].x, P[i + 1].x, t), y: lerp(P[i].y, P[i + 1].y, t) }; }
 if (SPH) {
   nodes.forEach(n => { n.x2 = n.x; n.y2 = n.y; });
   // la boule calculée par le plugin (la même que dans le panneau) ; sinon on la calcule ici
@@ -1372,8 +1379,8 @@ function sphereSnap(p, r) {
   for (let i = 0; i < edges.length; i++) {
     const e = edges[i]; if (e.broken || e.hidden) continue; const a = byId[e.a], b = byId[e.b];
     if (a.gone || b.gone || (a.zd < .3 && b.zd < .3)) continue;
-    const cy = e.cq ? Math.max(a.y, b.y, e.cq.y) : Math.max(a.y, b.y);
-    if (Math.min(a.x, b.x) - r > p.x || Math.max(a.x, b.x) + r < p.x || Math.min(a.y, b.y) - r > p.y || cy + r < p.y) continue;
+    const pad = r + (e.sp ? Math.hypot(b.x - a.x, b.y - a.y) * .2 + 8 : 0);
+    if (Math.min(a.x, b.x) - pad > p.x || Math.max(a.x, b.x) + pad < p.x || Math.min(a.y, b.y) - pad > p.y || Math.max(a.y, b.y) + pad < p.y) continue;
     const P = e.sp || [a, b]; for (let k = 1; k < P.length; k++) { const q = closestOnSeg(p, [P[k - 1].x, P[k - 1].y, P[k].x, P[k].y]), d = Math.hypot(q.x - p.x, q.y - p.y); if (d < bs) { bs = d; best = q; } }
   }
   return best;
@@ -1441,7 +1448,7 @@ function drawBolt(c) {
     for (const [t0, from, to] of (ta <= tb ? [[ta, a, b]] : [[tb, b, a]])) {
       if (!(tau > t0)) continue;
       const head = clamp((tau - t0) / len, 0, 1), tailU = clamp((tau - t0 - trail) / len, 0, 1), age = tau - t0 - len; if (age > fade) continue;
-      const qp = u => { const w = from === a ? u : 1 - u, v = 1 - w; return { x: v * v * a.x + 2 * w * v * e.cq.x + w * w * b.x, y: v * v * a.y + 2 * w * v * e.cq.y + w * w * b.y }; };
+      const qp = u => wireAt(e.sp, from === a ? u : 1 - u);
       const h = qp(head), tl = qp(tailU), dd = clamp(lerp(from.zd, to.zd, head), .25, 1);
       const life = head < 1 ? 1 : Math.exp(-age / (fade * .45));
       const g = c.createLinearGradient(tl.x, tl.y, h.x, h.y); g.addColorStop(0, 'rgba(159,232,255,0)'); g.addColorStop(1, `rgba(159,232,255,${(.8 * life * dd).toFixed(3)})`);
@@ -1531,7 +1538,7 @@ function drawSphereStage(c, targets) {
     const d = (a.zd + b.zd) / 2, lvl = Math.min(5, Math.floor(d * 6)), same = a.comm === b.comm, hot = e.trail > .01 || (e.h || 0) > .12, spoke = !hot && Math.max(adj[e.a].length, adj[e.b].length) > (S3.hubDeg || 40), key = (hot ? 'h' : spoke ? 's' : same ? a.comm : 'w') + ':' + lvl;
     const cc = (adj[e.a].length >= adj[e.b].length ? b : a).comm, mesh = e.kind === 'dep' && !hot, ck = hot ? 'h' + cc : mesh ? 'm' + cc : spoke ? 's' + cc : cc;
     let g = groups.get(ck + ':' + lvl); if (!g) groups.set(ck + ':' + lvl, g = { P: new Path2D(), lvl, col: COMM[cc] ? COMM[cc].col : '#c9c2e6', hot, same, spoke, mesh });
-    g.P.moveTo(a.x, a.y); g.P.quadraticCurveTo(e.cq.x, e.cq.y, b.x, b.y);
+    wirePath(g.P, e.sp);
   });
   // des fils pleins et colorés, tressés très fin : une lueur, le fil, et de petits bourrelets réguliers qui glissent
   // le long du trait (la torsade de la soie) ; l'arrière de la boule plus sombre, l'avant éclatant
@@ -1542,7 +1549,7 @@ function drawSphereStage(c, targets) {
     c.globalCompositeOperation = 'source-over'; c.strokeStyle = hexA(bright, a0.toFixed(3)); c.lineWidth = w; c.stroke(g.P);
     if (d > .3 && !g.mesh) { c.setLineDash([w * .35, w * 2.4]); c.lineDashOffset = -simT * w * 1.8 - gi * w; c.strokeStyle = hexA(mix(g.col, '#ffffff', .45), (a0 * .7).toFixed(3)); c.lineWidth = w * 1.4; c.stroke(g.P); c.setLineDash([]); }
   });
-  if (selNode) { c.strokeStyle = 'rgba(255,255,255,.9)'; c.lineWidth = 1.2 * RS; c.beginPath(); adj[selNode.id].forEach(v => { const o = byId[v], e = edges[edgeIdx[selNode.id + '|' + v]]; if (!o.gone) { c.moveTo(selNode.x, selNode.y); if (e && e.cq) c.quadraticCurveTo(e.cq.x, e.cq.y, o.x, o.y); else c.lineTo(o.x, o.y); } }); c.stroke(); }
+  if (selNode) { c.strokeStyle = 'rgba(255,255,255,.9)'; c.lineWidth = 1.2 * RS; c.beginPath(); adj[selNode.id].forEach(v => { const o = byId[v], e = edges[edgeIdx[selNode.id + '|' + v]]; if (!o.gone) { if (e && e.sp) wirePath(c, e.sp); else { c.moveTo(selNode.x, selNode.y); c.lineTo(o.x, o.y); } } }); c.stroke(); }
   c.restore();
   const boost = drawBolt(c) || new Map();
   // les nébuleuses, de l'arrière vers l'avant
