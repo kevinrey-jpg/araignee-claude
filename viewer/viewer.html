@@ -1409,14 +1409,6 @@ function sphereFrame(dt, simDt) {
     const sp = a.sp; sp.x += dx; sp.y += dy;
     for (const L of sp.legs) for (const k of ['foot', 'from', 'to', 'placed']) if (L[k]) { L[k] = { ...L[k], x: L[k].x + dx, y: L[k].y + dy }; }
   }
-  // au repos, chaque araignée revient se poser sur son dossier (son étoile sous elle) : elle y reste accrochée
-  // pendant que la boule tourne, au lieu de flotter à côté ; ses pattes suivent d'elles-mêmes
-  if (simDt > 0) for (const a of AGENTS) {
-    if (a.A || a.walk || a.hangAnim || a.gone || (dive && dive.ag === a)) continue;
-    const n = byId[a.cur]; if (!n || n.gone) continue;
-    const k = 1 - Math.exp(-simDt * 2.2), sp = a.sp, ex = n.x - sp.x, ey = n.y - sp.y;
-    if (Math.abs(ex) + Math.abs(ey) > .05) { sp.x += ex * k; sp.y += ey * k; }
-  }
   // la foudre au repos : de temps en temps, depuis l'araignée
   const main = AGENTS[0];
   if (simDt > 0 && !main.sleeping && !S3.bolt && simT > S3.nextIdle && simT - S3.lastBolt > 6) bolt(byId[main.cur]);
@@ -1798,6 +1790,8 @@ function stepAgent(ag, dt) {
   const sp = ag.sp, px = sp.x, py = sp.y, w = ag.walk, maxS = 150 * (sp.m.speed || 1) * (ag.pace || 1);
   if (ag.hangAnim) { const h = ag.hangAnim, u = clamp((simT - h.t0) / h.dur, 0, 1); ag.hang = lerp(h.from, h.to, ease(u)); if (u >= 1) { ag.hangAnim = null; h.cb && h.cb(); } }
   if (w) {
+    // on retire l'écart de la dernière image : la marche repart du vrai chemin
+    if (ag.wOff) { sp.x -= ag.wOff.x; sp.y -= ag.wOff.y; }
     const remain = w.end - w.done, target = maxS * clamp(remain / 28, .18, 1);
     ag.wspd += (target - ag.wspd) * Math.min(1, dt * 5);
     let rem = Math.min(ag.wspd * dt, Math.max(0, remain));
@@ -1806,7 +1800,14 @@ function stepAgent(ag, dt) {
       if (rem < left) { w.u += rem; w.done += rem; rem = 0; sp.x = lerp(a.x, b.x, w.u / len); sp.y = lerp(a.y, b.y, w.u / len); }
       else { rem -= left; w.done += left; w.seg++; w.u = 0; sp.x = b.x; sp.y = b.y; while (w.marks.length && w.marks[0].i <= w.seg) { const mk = w.marks.shift(); markTrail(mk.from, mk.to); ag.cur = mk.to; } }
     }
-    if (w.done >= w.end - .01 || w.seg >= w.pts.length - 1) { w.marks.forEach(mk => { markTrail(mk.from, mk.to); ag.cur = mk.to; }); ag.walk = null; ag.wspd = 0; w.cb(); }
+    if (w.done >= w.end - .01 || w.seg >= w.pts.length - 1) { w.marks.forEach(mk => { markTrail(mk.from, mk.to); ag.cur = mk.to; }); ag.walk = null; ag.wspd = 0; ag.wOff = null; w.cb(); }
+    // deux araignées qui se croisent s'écartent un peu au lieu de se traverser (moins près de l'arrivée)
+    else {
+      const o0 = ag.wOff || (ag.wOff = { x: 0, y: 0 }), want = { x: 0, y: 0 };
+      for (const o of AGENTS) { if (o === ag || o.gone) continue; const dx = sp.x - o.sp.x, dy = sp.y - o.sp.y, d = Math.hypot(dx, dy) || .01, r = (legSpan(ag) + legSpan(o)) * .4; if (d < r) { want.x += dx / d * (r - d) * .7; want.y += dy / d * (r - d) * .7; } }
+      const m = Math.hypot(want.x, want.y), cap = 14 * clamp((w.end - w.done) / 30, 0, 1); if (m > cap) { want.x *= cap / m; want.y *= cap / m; }
+      o0.x += (want.x - o0.x) * Math.min(1, dt * 6); o0.y += (want.y - o0.y) * Math.min(1, dt * 6); sp.x += o0.x; sp.y += o0.y;
+    }
   }
   updateDive(ag, dt);
   updateAction(ag, dt);
@@ -1815,9 +1816,53 @@ function stepAgent(ag, dt) {
   if (ag.mood && simT - ag.mood.t0 > ag.mood.dur) ag.mood = null;
   if (ag.sleeping && ag.hang > 20 && !ag.hangAnim) { ag.zAcc = (ag.zAcc || 0) + dt; if (ag.zAcc > 1.1) { ag.zAcc = 0; parts.push({ k: 'z', ag, t0: simT, dur: 3, s: 3 + Math.random() * 2 }); } }
 }
+/* ---------- plusieurs araignées sur un même dossier : chacune sa place ---------- */
+// la première arrivée prend le centre de l'étoile ; les suivantes se posent chacune sur un fil différent qui part
+// du dossier, à une petite distance, tête vers l'étoile (comme de vraies araignées sur leur toile) ; sans fil libre,
+// elles se placent en couronne. Une place gardée ne change pas tant que l'araignée reste sur ce dossier.
+const legSpan = ag => Math.max(...ag.sp.m.legs);
+function restSpot(ag, n) {
+  const here = AGENTS.filter(o => !o.gone && o.cur === n.id && !o.walk && !o.hangAnim && !(dive && dive.ag === o));
+  if (ag.arrNode !== n.id) { ag.arrNode = n.id; ag.arrT = simT; ag.slotWire = null; ag.slotAng = null; }
+  const first = here.reduce((b, o) => !b || (o.arrT ?? 0) < (b.arrT ?? 0) || ((o.arrT ?? 0) === (b.arrT ?? 0) && o.k < b.k) ? o : b, null);
+  if (!first || first === ag) return { x: n.x, y: n.y, center: true, alone: here.length < 2 };
+  const D = (legSpan(first) + legSpan(ag)) * .55;
+  const ok = v => { const i = edgeIdx[n.id + '|' + v]; return i !== undefined && !cutEdge(i) && byId[v] && !byId[v].gone; };
+  // le point du fil à la bonne distance (les fils ondulent : on mesure le long du fil)
+  const onWire = v => {
+    const e = edges[edgeIdx[n.id + '|' + v]], P = e.a === n.id ? e.pts : [...e.pts].reverse();
+    let tot = 0; const L = P.reduce((s, p, k) => k ? s + dist(P[k - 1], p) : 0, 0), want = Math.min(D, L * .6);
+    for (let k = 1; k < P.length; k++) { const d = dist(P[k - 1], P[k]); if (tot + d >= want) { const u = (want - tot) / (d || 1); return { x: lerp(P[k - 1].x, P[k].x, u), y: lerp(P[k - 1].y, P[k].y, u) }; } tot += d; }
+    return { x: P[P.length - 1].x, y: P[P.length - 1].y };
+  };
+  if (ag.slotWire === null && ag.slotAng === null) {
+    // le fil libre le plus loin des autres araignées du dossier
+    const others = here.filter(o => o !== ag).map(o => o === first ? n : o.slotWire && ok(o.slotWire) ? onWire(o.slotWire) : o.sp), free = adj[n.id].filter(v => ok(v) && !here.some(o => o !== ag && o.slotWire === v));
+    const room = v => { const q = onWire(v); return Math.min(...others.map(o => dist(o, q))); };
+    const best = free.map(v => [v, room(v)]).sort((p, q) => q[1] - p[1])[0];
+    if (best && best[1] > (legSpan(ag)) * .9) ag.slotWire = best[0];
+    else ag.slotAng = here.filter(o => o !== first).indexOf(ag) * 2.4;
+  }
+  if (ag.slotWire && ok(ag.slotWire)) return onWire(ag.slotWire);
+  const a = (ag.slotAng ?? 0) + .7; return { x: n.x + Math.cos(a) * D, y: n.y + Math.sin(a) * D };
+}
+function restSpots(dt) {
+  if (!(dt > 0)) return;
+  for (const ag of AGENTS) {
+    if (!ag.walk && ag.wOff) ag.wOff = null;
+    if (ag.walk || ag.hangAnim || ag.gone || (dive && dive.ag === ag)) { if (ag.faced) { ag.sp.hTarget = null; ag.faced = false; } continue; }
+    const n = byId[ag.cur]; if (!n || n.gone) continue;
+    const q = restSpot(ag, n); if (!SPH && q.alone) continue;
+    // elle glisse jusqu'à sa place, ses pattes suivent d'elles-mêmes ; au repos, tête vers l'étoile
+    const k = 1 - Math.exp(-dt * 2.2), sp = ag.sp, ex = q.x - sp.x, ey = q.y - sp.y;
+    if (Math.abs(ex) + Math.abs(ey) > .05) { sp.x += ex * k; sp.y += ey * k; }
+    if (!q.center && !ag.A && Math.hypot(ex, ey) < 4) { sp.hTarget = Math.atan2(n.y - sp.y, n.x - sp.x); ag.faced = true; }
+  }
+}
 function step(dt) {
   simT += dt;
   for (let k = timers.length - 1; k >= 0; k--) if (timers[k].at <= simT) { const f = timers[k].fn; timers.splice(k, 1); try { f(); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : minuterie', e); } }
+  try { restSpots(dt); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : places', e); }
   [...AGENTS].forEach(ag => {
     try { stepAgent(ag, dt); }
     catch (e) {

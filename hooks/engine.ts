@@ -397,6 +397,34 @@ export function createWorld(graph, skinId) {
 }
 export function setSkin(W, id) { if (!SKINS[id]) return; W.skin = id; Object.values(W.actors).forEach(a => a.sp.setMorph(a.baby ? babyMorph(SKINS[id].m) : SKINS[id].m)) }
 export const hasActor = (W, id) => !!W.actors[id]
+/* ---------------- plusieurs araignées sur un même dossier : chacune sa place ---------------- */
+// la première arrivée garde le centre de l'étoile ; les suivantes se posent chacune sur un fil différent qui part du
+// dossier, à une petite distance, tête vers l'étoile ; sans fil libre, en couronne (comme dans la grande toile)
+const legSpan = a => Math.max(...a.sp.m.legs)
+function arrive(W, a) { if (a.arrNode !== a.cur) { a.arrNode = a.cur; a.arrT = (W.arrSeq = (W.arrSeq || 0) + 1); a.slotWire = null; a.slotAng = null } }
+function restSpot(W, a) {
+  const g = W.g, n = g.byId[a.cur]; if (!n) return null
+  arrive(W, a)
+  const here = Object.values(W.actors).filter(o => o.cur === n.id && (o.hang < 1 || o === a))
+  const first = here.reduce((b, o) => !b || (o.arrT || 0) < (b.arrT || 0) ? o : b, null)
+  if (!first || first === a || !here.includes(a)) return { x: n.x, y: n.y, center: true }
+  const D = (legSpan(first) + legSpan(a)) * .55
+  const ok = v => { const i = g.edgeIdx[n.id + '|' + v], e = g.edges[i]; return i !== undefined && e && !e.broken && !e.hidden && g.byId[v] && !g.byId[v].gone }
+  const onWire = v => {
+    const e = g.edges[g.edgeIdx[n.id + '|' + v]], P = e.a === n.id ? e.pts : [...e.pts].reverse()
+    let tot = 0; const L = P.reduce((s, p, k) => k ? s + dist(P[k - 1], p) : 0, 0), want = Math.min(D, L * .6)
+    for (let k = 1; k < P.length; k++) { const d = dist(P[k - 1], P[k]); if (tot + d >= want) return lerp2(P[k - 1], P[k], (want - tot) / (d || 1)); tot += d }
+    return { x: P[P.length - 1].x, y: P[P.length - 1].y }
+  }
+  if (a.slotWire == null && a.slotAng == null) {
+    const others = here.filter(o => o !== a).map(o => o === first ? n : o.slotWire && ok(o.slotWire) ? onWire(o.slotWire) : o.sp)
+    const free = g.adj[n.id].filter(v => ok(v) && !here.some(o => o !== a && o.slotWire === v))
+    const best = free.map(v => { const q = onWire(v); return [v, Math.min(...others.map(o => dist(o, q)))] }).sort((p, q) => q[1] - p[1])[0]
+    if (best && best[1] > legSpan(a) * .9) a.slotWire = best[0]; else a.slotAng = here.filter(o => o !== first).indexOf(a) * 2.4
+  }
+  const q = a.slotWire && ok(a.slotWire) ? onWire(a.slotWire) : { x: n.x + Math.cos((a.slotAng || 0) + .7) * D, y: n.y + Math.sin((a.slotAng || 0) + .7) * D }
+  return { ...q, face: Math.atan2(n.y - q.y, n.x - q.x) }
+}
 function actorFor(W, ev) {
   const id = ev.actor || 'main'
   if (W.actors[id]) return W.actors[id]
@@ -404,6 +432,7 @@ function actorFor(W, ev) {
   const g = W.g, near = (ev.path && nodeForPath(g, ev.path)) || (ev.tool === 'Bash' ? g.byId['::terminal'] : null) || g.byId[W.actors.main.cur] || hubNode(g)
   const a = { id, baby: true, sp: new Spider(babyMorph(SKINS[W.skin].m), near.x, near.y, Object.keys(W.actors).length * 2.4, W.env), cur: near.id, hang: 70 }
   W.actors[id] = a
+  const q = restSpot(W, a); if (q && !q.center) { a.sp.x = q.x; a.sp.y = q.y; a.sp.h = q.face; a.sp.setMorph(a.sp.m) }
   return a
 }
 
@@ -763,6 +792,15 @@ export function makeClip(W, ev) {
     sp.vx = sp.vy = 0
     for (let k = 0; k < 15; k++) { stepPhysics(W, DT); if (step++ % rec === 0) recFrame(-1) }
   }
+  // le dossier est déjà pris : elle va se poser sur son propre fil, tête vers l'étoile
+  if (walkTo && walkTo.id === a.cur) {
+    const q = restSpot(W, a)
+    if (q && !q.center && dist(q, sp) > 2) {
+      const x0 = sp.x, y0 = sp.y, T = .45
+      for (let t = 0; t < T; t += DT) { const u = ease(Math.min(1, (t + DT) / T)), px = sp.x, py = sp.y; sp.x = lerp(x0, q.x, u); sp.y = lerp(y0, q.y, u); sp.h += wrap(q.face - sp.h) * Math.min(1, DT * 8); sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT; stepPhysics(W, DT); if (step++ % rec === 0) recFrame(-1) }
+      sp.vx = sp.vy = 0; for (let k = 0; k < 9; k++) { stepPhysics(W, DT); if (step++ % rec === 0) recFrame(-1) }
+    }
+  }
   const actStart = frames.length / FPS
   // action
   const X = { walkDur: actStart, act, target, targets, plucks: [], S, actor: a, edge, sounds, pace }
@@ -840,7 +878,7 @@ export function idleClip(W) {
     applyPlace(W, turn.B); ride(W, turn.A); buildGeometry(W.g); W.sph.yaw = to.yaw; W.sph.pitch = to.pitch
     // l'araignée revient se poser sur son dossier (elle y reste accrochée pendant que la boule tourne) : on la pose,
     // et le clip la fait glisser depuis l'endroit où elle était
-    const home = W.g.byId[a.cur], settle = home && Math.hypot(home.x - a.sp.x, home.y - a.sp.y) > .5 ? { x: home.x - a.sp.x, y: home.y - a.sp.y } : null
+    const home = restSpot(W, a), settle = home && Math.hypot(home.x - a.sp.x, home.y - a.sp.y) > .5 ? { x: home.x - a.sp.x, y: home.y - a.sp.y } : null
     if (settle) { const sp = a.sp; sp.x += settle.x; sp.y += settle.y; for (const L of sp.legs) for (const k of ['foot', 'from', 'to', 'placed']) if (L[k]) L[k] = { ...L[k], x: L[k].x + settle.x, y: L[k].y + settle.y } }
     stepPhysics(W, 1 / 60); const ca = camActor(W); W.cam = { x: ca.sp.x, y: ca.sp.y - 8 }
     frames.push({ P: a.sp.pose(W.t, optsFor(a, null, 0, W.env.depth)), cam: { ...W.cam }, o: {}, tAct: -1, hang: a.hang })

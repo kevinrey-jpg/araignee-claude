@@ -96,6 +96,10 @@ Quand un sous-agent ou une tâche de fond travaille sur un fichier, la grande to
 
 Le bouton **Plongée** de la grande toile choisit qui plonge : les agents seulement (par défaut), tout le monde (Claude aussi), ou personne. Dans le petit panneau, les bébés araignées ouvrent une petite page avec les mêmes lignes.
 
+### Plusieurs araignées sur un même dossier
+
+La première arrivée garde le centre de l'étoile. Les suivantes se posent chacune sur un fil différent qui part du dossier, tête tournée vers l'étoile ; s'il n'y a plus de fil libre, elles se placent en couronne. Deux araignées qui se croisent en marchant s'écartent un peu au lieu de se traverser (grande toile).
+
 ### La caméra
 
 La caméra suit l'araignée active : celle qui travaille, y compris un agent ou une tâche de fond qui arrive. Le zoom que tu choisis reste tel quel : il ne revient jamais tout seul à la vue normale.
