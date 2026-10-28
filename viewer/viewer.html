@@ -1409,6 +1409,14 @@ function sphereFrame(dt, simDt) {
     const sp = a.sp; sp.x += dx; sp.y += dy;
     for (const L of sp.legs) for (const k of ['foot', 'from', 'to', 'placed']) if (L[k]) { L[k] = { ...L[k], x: L[k].x + dx, y: L[k].y + dy }; }
   }
+  // au repos, chaque araignée revient se poser sur son dossier (son étoile sous elle) : elle y reste accrochée
+  // pendant que la boule tourne, au lieu de flotter à côté ; ses pattes suivent d'elles-mêmes
+  if (simDt > 0) for (const a of AGENTS) {
+    if (a.A || a.walk || a.hangAnim || a.gone || (dive && dive.ag === a)) continue;
+    const n = byId[a.cur]; if (!n || n.gone) continue;
+    const k = 1 - Math.exp(-simDt * 2.2), sp = a.sp, ex = n.x - sp.x, ey = n.y - sp.y;
+    if (Math.abs(ex) + Math.abs(ey) > .05) { sp.x += ex * k; sp.y += ey * k; }
+  }
   // la foudre au repos : de temps en temps, depuis l'araignée
   const main = AGENTS[0];
   if (simDt > 0 && !main.sleeping && !S3.bolt && simT > S3.nextIdle && simT - S3.lastBolt > 6) bolt(byId[main.cur]);
@@ -2636,7 +2644,7 @@ if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) setPaused(tru
 AGENTS.forEach((ag, k) => later(ag, .5 + k * .9));
 requestAnimationFrame(frame);
 requestAnimationFrame(miniLoop);
-window.__araignee = { ecran: id => byId[id] && toScreen(byId[id].x, byId[id].y), sphere: () => ({ on: SPH, yaw: S3.yaw, pitch: S3.pitch, R: S3.R, p3: nodes.map(n => n.p3 && [Math.round(n.p3.x), Math.round(n.p3.y), Math.round(n.p3.z), adj[n.id].length]) }), camera: () => ({ mode: cam.mode, suit: sel.id, z: +cam.z.toFixed(3), zoom: +cam.uz.toFixed(3), x: Math.round(cam.x), y: Math.round(cam.y), araignee: AGENTS.map(a => ({ id: a.id, ...toScreen(a.sp.x, a.sp.y) })) }), etat: () => ({ simT, apparence: AGENTS[0].style.id, toile: SPH ? 'sphère' : 'à plat', erreurs: errCount, recus: recvCount, plonge: !!dive, araignees: AGENTS.map(a => ({ id: a.id, action: a.A ? a.A.tool : null, marche: !!a.walk, fil: !!a.hangAnim, file: a.queue.length, dort: a.sleeping })) }) };
+window.__araignee = { ecran: id => byId[id] && toScreen(byId[id].x, byId[id].y), sphere: () => ({ on: SPH, yaw: S3.yaw, pitch: S3.pitch, R: S3.R, p3: nodes.map(n => n.p3 && [Math.round(n.p3.x), Math.round(n.p3.y), Math.round(n.p3.z), adj[n.id].length]) }), camera: () => ({ mode: cam.mode, suit: sel.id, z: +cam.z.toFixed(3), zoom: +cam.uz.toFixed(3), x: Math.round(cam.x), y: Math.round(cam.y), araignee: AGENTS.map(a => ({ id: a.id, cur: a.cur, ...toScreen(a.sp.x, a.sp.y), noeud: byId[a.cur] && toScreen(byId[a.cur].x, byId[a.cur].y) })) }), etat: () => ({ simT, apparence: AGENTS[0].style.id, toile: SPH ? 'sphère' : 'à plat', erreurs: errCount, recus: recvCount, plonge: !!dive, araignees: AGENTS.map(a => ({ id: a.id, action: a.A ? a.A.tool : null, marche: !!a.walk, fil: !!a.hangAnim, file: a.queue.length, dort: a.sleeping })) }) };
 })();
 </script>
 

@@ -838,9 +838,13 @@ export function idleClip(W) {
   if (W.sph && !W.sleeping) {
     const to = { yaw: W.sph.yaw + .2, pitch: clamp(.28 + Math.sin(Date.now() / 23000) * .14, -.6, .6) }, turn = turnPlan(W, to, 4)
     applyPlace(W, turn.B); ride(W, turn.A); buildGeometry(W.g); W.sph.yaw = to.yaw; W.sph.pitch = to.pitch
+    // l'araignée revient se poser sur son dossier (elle y reste accrochée pendant que la boule tourne) : on la pose,
+    // et le clip la fait glisser depuis l'endroit où elle était
+    const home = W.g.byId[a.cur], settle = home && Math.hypot(home.x - a.sp.x, home.y - a.sp.y) > .5 ? { x: home.x - a.sp.x, y: home.y - a.sp.y } : null
+    if (settle) { const sp = a.sp; sp.x += settle.x; sp.y += settle.y; for (const L of sp.legs) for (const k of ['foot', 'from', 'to', 'placed']) if (L[k]) L[k] = { ...L[k], x: L[k].x + settle.x, y: L[k].y + settle.y } }
     stepPhysics(W, 1 / 60); const ca = camActor(W); W.cam = { x: ca.sp.x, y: ca.sp.y - 8 }
     frames.push({ P: a.sp.pose(W.t, optsFor(a, null, 0, W.env.depth)), cam: { ...W.cam }, o: {}, tAct: -1, hang: a.hang })
-    const X = { total: 8, walkDur: 0, act: { tool: 'idle' }, target: null, targets: [], plucks: [], edgeNear: [], S: SKINS[W.skin], actor: a, sounds: [], sleep: false, turn, drift: true, others: Object.values(W.actors).filter(o => o !== a).map(o => ({ a: o, P: o.sp.pose(W.t, optsFor(o, null, 0, W.env.depth)) })) }
+    const X = { total: 8, walkDur: 0, act: { tool: 'idle' }, target: null, targets: [], plucks: [], edgeNear: [], S: SKINS[W.skin], actor: a, sounds: [], sleep: false, turn, drift: true, settle, others: Object.values(W.actors).filter(o => o !== a).map(o => ({ a: o, P: o.sp.pose(W.t, optsFor(o, null, 0, W.env.depth)) })) }
     if (Date.now() - W.sph.lastBolt > 5000) { X.bolt = boltPlan(W, W.g.byId[a.cur]); X.boltT = 4.3; if (X.bolt) W.sph.lastBolt = Date.now() + 4300 }
     return renderClip(W, { tool: 'idle' }, frames, X)
   }
@@ -1087,7 +1091,7 @@ export function renderClip(W, ev, frames, X) {
   let sp = dragSVG(Ps, frames.map(f => f.hang || 0), dur, n) + spiderSVG(Ps, S, dur, n)
   if (X.act.tool === 'Mood') sp = `<g filter="url(#mood)">${sp}</g>`
   if (X.sleep) sp = swingWrap(Ps[Ps.length - 1], sp, T) + zzzSVG(Ps[Ps.length - 1])
-  if (driftOff) sp = `<g><animateTransform attributeName="transform" type="translate" values="${driftOff.map(d => f1(d.x) + ' ' + f1(d.y)).join(';')}" keyTimes="0;${kt(X.turn.T / 2)};${kt(X.turn.T)};1" dur="${dur}" fill="freeze"/>${sp}</g>`
+  if (driftOff) { const st = X.settle || { x: 0, y: 0 }, back = [1, .45, 0, 0]; sp = `<g><animateTransform attributeName="transform" type="translate" values="${driftOff.map((d, i) => f1(d.x - st.x * back[i]) + ' ' + f1(d.y - st.y * back[i])).join(';')}" keyTimes="0;${kt(X.turn.T / 2)};${kt(X.turn.T)};1" dur="${dur}" fill="freeze"/>${sp}</g>` }
   if (X.fadeOut !== undefined) sp = `<g>${sp}<animate attributeName="opacity" values="1;1;0" keyTimes="0;${kt(X.fadeOut)};1" dur="${dur}" fill="freeze"/></g>`
   out.push(sp)
   // carte de texte
