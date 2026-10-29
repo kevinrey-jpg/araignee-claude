@@ -60,8 +60,8 @@ Par défaut, la toile est une sphère qui tourne, comme une carte Graphify : une
 - **De vraies relations** : sans Graphify, l'araignée lit les imports de ton code (Python, JavaScript/TypeScript, Lua) et les liens de tes fichiers Markdown ; chaque fil relie deux fichiers qui dépendent vraiment l'un de l'autre, en plus des fils dossier → fichier.
 - **Les fils** : pleins, colorés et finement tressés, ils ondulent comme des câbles posés (un, deux ou trois virages, dans tous les sens) et brillent moins que les étoiles. La même boule, aux mêmes places, dans le panneau et dans la grande toile.
 
-- **La foudre** : à chaque action de Claude (au plus toutes les 5 secondes), et toutes les 7 à 11 secondes au repos, un éclair part de l'endroit où se trouve l'araignée et suit les fils dans tout le réseau. Chaque nébuleuse atteinte s'illumine.
-- **À la souris** (grande toile) : faire glisser fait tourner la boule, avec de l'élan ; la molette zoome.
+- **La foudre** : à chaque action de Claude (au plus toutes les 5 secondes), et de temps en temps au repos, un éclair part de l'endroit où se trouve l'araignée et suit les fils dans tout le réseau. Chaque nébuleuse atteinte s'illumine.
+- **À la souris** (grande toile) : faire glisser fait tourner la vue autour de l'araignée, avec de l'élan ; la molette zoome.
 - **À plat, comme avant** : bouton **Toile** de la grande toile, et `/araignee-toile` pour le panneau.
 - **L'apparence** de l'araignée est la même dans le panneau et dans la grande toile : la changer d'un côté la change de l'autre.
 
