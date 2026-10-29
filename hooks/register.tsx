@@ -218,6 +218,8 @@ async function camera($: EngineInterface, what: 'plus' | 'moins' | 'suivre') {
   else { const z = setZoom(world, (world.zoom || 1) * (what === 'plus' ? 1.3 : 1 / 1.3)); await $.store.set('zoom', z).catch(() => undefined) }
   if (!playing) await showClip($, idleClip(world))
 }
+// une seule ligne, pas trop longue (un chemin, une commande)
+const oneLine = (t: unknown) => { const s = String(t ?? '').replace(/\s+/g, ' ').trim(); return s.length > 90 ? s.slice(0, 89) + '…' : s }
 async function showClip($: EngineInterface, clip: { svg: string }) {
   await update($, clipAtom, old => ({ svg: clip.svg, seq: (old?.seq || 0) + 1 }))
 }
@@ -659,9 +661,8 @@ export const register: Register = on => {
     const { Box, Text, Svg, Button } = els
     return (
       <Box flexDirection="column">
-        <Box flexDirection="row" gap={1}>
-          <Text color={(TOOL_COLOR as any)[st.tool] || '#c89bff'} bold>{st.tool}</Text>
-          <Text dimColor>{st.path}</Text>
+        <Text wrap="truncate-end"><Text color={(TOOL_COLOR as any)[st.tool] || '#c89bff'} bold>{st.tool}</Text> <Text dimColor>{oneLine(st.path)}</Text></Text>
+        <Box flexDirection="row" flexWrap="wrap" gap={1}>
           {Button && <Button key="panneau" onPress={() => { void $.ui.open({ id: PANE, title: 'Araignée' }) }}>Panneau à droite</Button>}
           {Button && (grand
             ? <Button key="reduire" onPress={() => { void closeGrand($) }}>Réduire</Button>
@@ -748,9 +749,10 @@ export const register: Register = on => {
     const { Svg, Select, Button } = els
     return (
       <Box flexDirection="column">
-        <Box flexDirection="row" gap={1}>
-          <Text color={(TOOL_COLOR as any)[st.tool] || '#c89bff'} bold>{st.tool}</Text>
-          <Text dimColor>{st.path || 'en attente du travail de Claude'}</Text>
+        {/* l'action en cours sur sa propre ligne, coupée si elle est longue : à côté des boutons, un long chemin
+            n'avait plus qu'une lettre de large et s'étirait en une grande colonne qui cachait l'araignée */}
+        <Text wrap="truncate-end"><Text color={(TOOL_COLOR as any)[st.tool] || '#c89bff'} bold>{st.tool}</Text> <Text dimColor>{oneLine(st.path) || 'en attente du travail de Claude'}</Text></Text>
+        <Box flexDirection="row" flexWrap="wrap" gap={1}>
           {Button && (grand
             ? <Button key="reduire" onPress={() => { void closeGrand($) }}>Réduire</Button>
             : <Button key="agrandir" variant="primary" onPress={() => { void openGrand($).then(t => $.ui.toast(t)) }}>Agrandir</Button>)}
@@ -758,7 +760,7 @@ export const register: Register = on => {
           {Button && <Button key="fermer" onPress={() => { void closeAll($).then(() => $.ui.toast("Araignée fermée. /araignee la rouvre.")) }}>Fermer</Button>}
         </Box>
         {Button && world && (
-          <Box flexDirection="row" gap={1}>
+          <Box flexDirection="row" flexWrap="wrap" gap={1}>
             <Button key="zoom-moins" onPress={() => { void camera($, 'moins') }}>Zoom −</Button>
             <Button key="zoom-plus" onPress={() => { void camera($, 'plus') }}>Zoom +</Button>
             <Button key="suivre" variant={world.free ? undefined : 'primary'} onPress={() => { void camera($, 'suivre') }}>{world.free ? 'Caméra : libre' : "Caméra : suit l'araignée"}</Button>

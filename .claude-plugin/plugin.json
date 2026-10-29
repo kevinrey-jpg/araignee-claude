@@ -1,6 +1,6 @@
 {
   "name": "araignee",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Une araignée suit en direct le travail de Claude sur la toile de ton projet (graphe Graphify ou dossiers).",
   "types": "./types/index.d.ts",
   "author": {

@@ -38,7 +38,7 @@ test("une lecture de Claude fait jouer un clip SVG de l'araignée", async ($, on
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const svg: any = await ui.find({ type: 'Svg' })
   expect(String(svg?.props?.source ?? svg?.source ?? '')).toContain('<svg')
-  expect((await ui.find({ type: 'Text', text: /Read/ }))?.text).toBe('Read')
+  expect((await ui.find({ type: 'Text', text: /Read/ }))?.text).toMatch(/^Read /)
   await ui.unmount()
 
   const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
