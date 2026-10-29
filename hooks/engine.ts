@@ -383,7 +383,7 @@ function carapaceSVG(S, cl, cw) {
 
 /* ---------------- le monde : état qui survit d'un clip à l'autre ---------------- */
 // les bébés araignées (sous-agents, tâches de fond) : même apparence, en petit
-function babyMorph(m) { const k = .55, o = { ...m }; ['cl', 'cw', 'al', 'aw', 'bodyZ', 'legW', 'palp', 'R'].forEach(key => o[key] = m[key] * k); o.legs = m.legs.map(v => v * k); o.stepDur = m.stepDur * .8; o.baby = true; return o }
+function babyMorph(m) { const k = .7, o = { ...m }; ['cl', 'cw', 'al', 'aw', 'bodyZ', 'legW', 'palp', 'R'].forEach(key => o[key] = m[key] * k); o.legs = m.legs.map(v => v * k); o.stepDur = m.stepDur * .8; o.baby = true; return o }
 function hubNode(g) { return g.nodes.filter(n => (n.kind === 'file' || n.kind === 'dir') && !n.gone).sort((a, b) => g.adj[b.id].length - g.adj[a.id].length)[0] || g.nodes[0] }
 export function createWorld(graph, skinId) {
   const W = { g: graph, skin: SKINS[skinId] ? skinId : 'fusion', t: 0, loads: [], vib: [], waves: [], actors: {}, sleeping: false }
@@ -523,15 +523,43 @@ function proj3(W, p, yaw, pitch) {
 }
 function placeAll(W, yaw, pitch) { const m = new Map(); W.g.nodes.forEach(n => { if (n.p3) m.set(n.id, proj3(W, n.p3, yaw, pitch)) }); return m }
 function applyPlace(W, P) { W.g.nodes.forEach(n => { const q = P.get(n.id); if (q) { n.x = q.x; n.y = q.y; n.zd = q.zd; n.k = q.k } }) }
-// les araignées roulent avec la boule : corps et pattes suivent le nœud où elles se tiennent
-function ride(W, before) {
+// l'angle dont la toile tourne autour d'un nœud d'un placement à l'autre (ses voisins, en moindres carrés)
+function spinAt(g, id, P0, P1) {
+  const a0 = P0.get(id), a1 = P1 ? P1.get(id) : g.byId[id]; if (!a0 || !a1) return 0
+  let sc = 0, sd = 0; const nb = g.adj[id] || []
+  for (let i = 0; i < nb.length && i < 14; i++) { const o0 = P0.get(nb[i]), o1 = P1 ? P1.get(nb[i]) : g.byId[nb[i]]; if (!o0 || !o1) continue; const ux = o0.x - a0.x, uy = o0.y - a0.y, vx = o1.x - a1.x, vy = o1.y - a1.y; sc += ux * vy - uy * vx; sd += ux * vx + uy * vy }
+  return sd > 0 ? Math.atan2(sc, sd) : 0
+}
+// les araignées sont portées par la boule : corps et pattes suivent le nœud où elles se tiennent, et tournent avec
+// la toile autour d'elles (sinon elles gardent toujours le même profil, comme une image collée sur un monde qui tourne)
+function ride(W, before, after) {
   for (const a of Object.values(W.actors)) {
-    const n = W.g.byId[a.cur], b = before.get(a.cur); if (!n || !b) continue
-    const dx = n.x - b.x, dy = n.y - b.y; if (!dx && !dy) continue
-    const sp = a.sp; sp.x += dx; sp.y += dy
-    for (const L of sp.legs) for (const k of ['foot', 'from', 'to', 'placed']) if (L[k]) L[k] = { ...L[k], x: L[k].x + dx, y: L[k].y + dy }
+    const n = after ? after.get(a.cur) : W.g.byId[a.cur], b = before.get(a.cur); if (!n || !b) continue
+    const th = spinAt(W.g, a.cur, before, after), co = Math.cos(th), si = Math.sin(th)
+    if (n.x === b.x && n.y === b.y && !th) continue
+    const mv = q => { const x = q.x - b.x, y = q.y - b.y; return { ...q, x: n.x + x * co - y * si, y: n.y + x * si + y * co } }
+    const sp = a.sp, q = mv(sp); sp.x = q.x; sp.y = q.y; sp.h += th; if (sp.abd !== undefined) sp.abd += th; if (sp.hTarget != null) sp.hTarget += th
+    for (const L of sp.legs) for (const k of ['foot', 'from', 'to', 'placed']) if (L[k]) L[k] = mv(L[k])
   }
 }
+// posée sur la boule : vue de face au centre, de biais (aplatie vers le bord) quand son dossier passe sur le côté
+function tiltOf(W, n) {
+  const p = n && n.p3, S = W.sph; if (!p || !S) return null; const l = Math.hypot(p.x, p.y, p.z); if (l < 1) return null
+  const cy = Math.cos(S.yaw), sy = Math.sin(S.yaw), cp = Math.cos(S.pitch), spp = Math.sin(S.pitch)
+  const x = p.x * cy + p.z * sy, z0 = -p.x * sy + p.z * cy, y = p.y * cp - z0 * spp, z = p.y * spp + z0 * cp, sl = Math.hypot(x, y) || 1
+  const f0 = clamp(.42 + .58 * Math.max(0, z / l), .42, 1), f = 1 - (1 - f0) * Math.min(1, l / 70)
+  return f < .995 ? { f, ux: x / sl, uy: y / sl } : null
+}
+const tiltWrap = (t, c, svg) => { if (!t || !c) return svg; const k = 1 - t.f, a = 1 - k * t.ux * t.ux, b = -k * t.ux * t.uy, d = 1 - k * t.uy * t.uy; return `<g transform="matrix(${a.toFixed(3)} ${b.toFixed(3)} ${b.toFixed(3)} ${d.toFixed(3)} ${f1(c.x - a * c.x - b * c.y)} ${f1(c.y - b * c.x - d * c.y)})">${svg}</g>` }
+// pendant que la boule tourne, l'araignée (dessinée à l'arrivée) part tournée à l'envers et revient avec la toile
+const spinWrap = (W, X, id, svg, kt4, dur) => {
+  if (!X.turn) return svg; const B = X.turn.B.get(id); if (!B) return svg
+  const dA = -spinAt(W.g, id, X.turn.A, X.turn.B) * 180 / Math.PI, dM = -spinAt(W.g, id, X.turn.M, X.turn.B) * 180 / Math.PI
+  if (Math.abs(dA) < .5 && Math.abs(dM) < .5) return svg
+  const c = `${f1(B.x)} ${f1(B.y)}`, vals = `${dA.toFixed(1)} ${c};${dM.toFixed(1)} ${c};0 ${c}` + (kt4 ? `;0 ${c}` : '')
+  return `<g><animateTransform attributeName="transform" type="rotate" values="${vals}" ${kt4 ? `keyTimes="${kt4}" dur="${dur}"` : `dur="${X.turn.T.toFixed(2)}s"`} fill="freeze"/>${svg}</g>`
+}
+
 /* ---------------- les vraies relations entre fichiers : qui importe qui ---------------- */
 const CODE_EXT = /\.(py|pyw|js|jsx|mjs|cjs|ts|tsx|lua|md)$/i
 export const readsImports = p => CODE_EXT.test(p || '')
@@ -702,12 +730,11 @@ export function turnClip(W, ev) {
   if (dy < .04 && dp < .03) return null
   const turn = turnPlan(W, to, clamp(.55 + dy * .35, .6, 1.3)), frames = [], DT = 1 / 60, rec = Math.round(60 / FPS)
   W.turning = true
-  const last = new Map(Object.values(W.actors).map(o => [o.cur, turn.A.get(o.cur)]))
-  let step = 0
+  let last = turn.A, step = 0
   for (let t = 0; t < turn.T; t += DT) {
     const P = turnAt(turn, Math.min(1, (t + DT) / turn.T))
     for (const o of Object.values(W.actors)) { const q = P.get(o.cur); if (!q) continue; const n = g.byId[o.cur]; n.x = q.x; n.y = q.y }
-    ride(W, last); last.forEach((_, id) => { const q = P.get(id); if (q) last.set(id, { x: q.x, y: q.y }) })
+    ride(W, last, P); last = P
     sp.vx = sp.vy = 0; stepPhysics(W, DT)
     if (step++ % rec === 0) { W.cam.x += (sp.x - W.cam.x) * .25; W.cam.y += (sp.y - 8 - a.hang * TILT * .6 - W.cam.y) * .25; frames.push({ P: sp.pose(W.t, optsFor(a, null, 0, W.env.depth)), cam: { ...W.cam }, o: {}, tAct: -1, hang: a.hang }) }
   }
@@ -1121,6 +1148,8 @@ export function renderClip(W, ev, frames, X) {
   X.others.forEach(o => {
     let s = dragSVG([o.P], [o.a.hang], dur, 1) + spiderSVG([o.P], S, dur, 1)
     if (o.a.id === 'main' && W.sleeping) s = swingWrap(o.P, s, 0) + zzzSVG(o.P)
+    if (W.sph) s = tiltWrap(tiltOf(W, g.byId[o.a.cur]), o.P, s)
+    if (W.sph && X.turn && lod < 2) s = spinWrap(W, X, o.a.cur, s)
     if (W.sph && X.turn && lod < 2) { const A = X.turn.A.get(o.a.cur), M = X.turn.M.get(o.a.cur), B = X.turn.B.get(o.a.cur); if (A && M && B) s = `<g><animateTransform attributeName="transform" type="translate" values="${f1(A.x - B.x)} ${f1(A.y - B.y)};${f1(M.x - B.x)} ${f1(M.y - B.y)};0 0" dur="${X.turn.T.toFixed(2)}s" fill="freeze"/>${s}</g>` }
     out.push(s)
   })
@@ -1129,6 +1158,8 @@ export function renderClip(W, ev, frames, X) {
   let sp = dragSVG(Ps, frames.map(f => f.hang || 0), dur, n) + spiderSVG(Ps, S, dur, n)
   if (X.act.tool === 'Mood') sp = `<g filter="url(#mood)">${sp}</g>`
   if (X.sleep) sp = swingWrap(Ps[Ps.length - 1], sp, T) + zzzSVG(Ps[Ps.length - 1])
+  if (W.sph) sp = tiltWrap(tiltOf(W, g.byId[X.actor.cur]), Ps[Ps.length - 1], sp)
+  if (driftOff) sp = spinWrap(W, X, X.actor.cur, sp, `0;${kt(X.turn.T / 2)};${kt(X.turn.T)};1`, dur)
   if (driftOff) { const st = X.settle || { x: 0, y: 0 }, back = [1, .45, 0, 0]; sp = `<g><animateTransform attributeName="transform" type="translate" values="${driftOff.map((d, i) => f1(d.x - st.x * back[i]) + ' ' + f1(d.y - st.y * back[i])).join(';')}" keyTimes="0;${kt(X.turn.T / 2)};${kt(X.turn.T)};1" dur="${dur}" fill="freeze"/>${sp}</g>` }
   if (X.fadeOut !== undefined) sp = `<g>${sp}<animate attributeName="opacity" values="1;1;0" keyTimes="0;${kt(X.fadeOut)};1" dur="${dur}" fill="freeze"/></g>`
   out.push(sp)

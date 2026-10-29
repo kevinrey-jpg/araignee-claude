@@ -1347,6 +1347,15 @@ function place3(n, anchor) {
 }
 const SEGS = 16;
 function sphereEdge(e) { e.pts2 = e.pts2 || e.pts; e.sp = Array.from({ length: SEGS + 1 }, () => ({ x: 0, y: 0 })); if (SPH) e.pts = e.sp; }
+// l'araignée posée sur la boule : vue de face au centre, de biais (aplatie vers le bord) quand son dossier passe
+// sur le côté ; f est l'aplatissement, (ux, uy) la direction vers laquelle la surface penche à l'écran
+function tiltOf(n) {
+  const p = n.p3; if (!p) return null; const l = Math.hypot(p.x, p.y, p.z); if (l < 1) return null;
+  const cy = Math.cos(S3.yaw), sy = Math.sin(S3.yaw), cp = Math.cos(S3.pitch), spp = Math.sin(S3.pitch);
+  const x = p.x * cy + p.z * sy, z0 = -p.x * sy + p.z * cy, y = p.y * cp - z0 * spp, z = p.y * spp + z0 * cp, sl = Math.hypot(x, y) || 1;
+  const f0 = clamp(.42 + .58 * Math.max(0, z / l), .42, 1), f = 1 - (1 - f0) * Math.min(1, l / 70);
+  return { f, ux: x / sl, uy: y / sl };
+}
 function project3(p) {
   const cy = Math.cos(S3.yaw), sy = Math.sin(S3.yaw), cp = Math.cos(S3.pitch), spp = Math.sin(S3.pitch), RS = S3.R / 100;
   const x = p.x * cy + p.z * sy, z0 = -p.x * sy + p.z * cy, y = p.y * cp - z0 * spp, z = p.y * spp + z0 * cp, k = S3.D / (S3.D - z);
@@ -1402,12 +1411,19 @@ function sphereFrame(dt, simDt) {
     } else S3.pitch += (.28 - S3.pitch) * Math.min(1, simDt * .2);
   }
   projectAll();
+  // les araignées sont portées par leur dossier : elles se déplacent avec lui ET tournent avec la toile autour
+  // d'elles (l'angle dont tournent ses voisins), tête et pattes comprises ; sinon elles gardent toujours le même
+  // profil et ont l'air d'une image collée sur un monde qui tourne
   for (const a of AGENTS) {
-    if (dive && dive.ag === a && dive.onPage && !dive.back) continue;
+    if (dive && dive.ag === a && dive.onPage && !dive.back) { a.tilt = null; continue; }
     const n = byId[a.cur]; if (!n || n.ox === undefined) continue;
-    const dx = n.x - n.ox, dy = n.y - n.oy; if (!dx && !dy) continue;
-    const sp = a.sp; sp.x += dx; sp.y += dy;
-    for (const L of sp.legs) for (const k of ['foot', 'from', 'to', 'placed']) if (L[k]) { L[k] = { ...L[k], x: L[k].x + dx, y: L[k].y + dy }; }
+    a.tilt = tiltOf(n);
+    let sc = 0, sd = 0; const nb = adj[n.id]; for (let i = 0; i < nb.length && i < 14; i++) { const o = byId[nb[i]]; if (!o || o.ox === undefined) continue; const ux = o.ox - n.ox, uy = o.oy - n.oy, vx = o.x - n.x, vy = o.y - n.y; sc += ux * vy - uy * vx; sd += ux * vx + uy * vy; }
+    const th = sd > 0 ? clamp(Math.atan2(sc, sd), -.15, .15) : 0, co = Math.cos(th), si = Math.sin(th);
+    if (n.x === n.ox && n.y === n.oy && !th) continue;
+    const mv = q => { const x = q.x - n.ox, y = q.y - n.oy; return { ...q, x: n.x + x * co - y * si, y: n.y + x * si + y * co }; };
+    const sp = a.sp, b = mv(sp); sp.x = b.x; sp.y = b.y; sp.h += th; sp.abd += th; if (sp.hTarget !== null) sp.hTarget += th;
+    for (const L of sp.legs) for (const k of ['foot', 'from', 'to', 'placed']) if (L[k]) L[k] = mv(L[k]);
   }
   // la foudre au repos : de temps en temps, depuis l'araignée
   const main = AGENTS[0];
@@ -1588,7 +1604,7 @@ function drawSphereStage(c, targets) {
 
 /* ---------- l'araignée de Claude, et les bébés araignées des agents et des tâches de fond ---------- */
 const SLEEP_S = +(new URLSearchParams(location.search).get('sommeil') || 180);
-function babyMorph(m) { const k = .55, o = { ...m }; ['cl', 'cw', 'al', 'aw', 'bodyZ', 'legW', 'palp', 'R'].forEach(key => o[key] = m[key] * k); o.legs = m.legs.map(v => v * k); o.stepDur = m.stepDur * .8; o.mass = .4; o.speed = (m.speed || 1) * 1.1; o.baby = true; return o; }
+function babyMorph(m) { const k = .7, o = { ...m }; ['cl', 'cw', 'al', 'aw', 'bodyZ', 'legW', 'palp', 'R'].forEach(key => o[key] = m[key] * k); o.legs = m.legs.map(v => v * k); o.stepDur = m.stepDur * .8; o.mass = .4; o.speed = (m.speed || 1) * 1.1; o.baby = true; return o; }
 const hubId = () => [...P0.files, ...nodes.filter(n => n.isDir).map(n => n.id)].filter(id => byId[id] && !byId[id].gone).sort((a, b) => adj[b].length - adj[a].length)[0] || nodes[0].id;
 let agentCount = 0;
 function makeAgent(id, style, baby, start, name) {
@@ -2167,7 +2183,7 @@ function render(rdt) {
   if (SPH) {
     tx = CX; ty = CY; tz = Math.min(cssW, cssH) / (vs * 2.35 * S3.R);
     if (cam.mode === 'free') { tx = cam.fx; ty = cam.fy; tz = cam.fz || tz; }
-    else { tx = S0.x; ty = S0.y; tz *= 1.5; }
+    else { tx = S0.x; ty = S0.y; tz *= sel.baby ? 2 : 1.5; }
     if (dive && cam.mode === 'follow') { const t = simT - dive.t0, k = sm(0, .8, t) * (1 - sm(dive.tEnd, dive.dur - .1, t)); if (k > .01) { const px = dive.x + dive.w / 2, py = dive.y + dive.h / 2, pz = Math.min(cssW * .88 / (vs * (dive.w + 30)), cssH * .84 / (vs * (Math.max(dive.h, 22 + 14 * LH + 8) + 30))); tx = lerp(tx, px, k); ty = lerp(ty, py, k); tz = lerp(tz, pz, k); } }
   } else if (cam.mode === 'free') { tx = cam.fx; ty = cam.fy; tz = cam.fz || tz; }
   else {
@@ -2259,6 +2275,17 @@ function render(rdt) {
   const drawAgent = ag => {
     const sp = ag.sp, P = sp.pose(simT, ag.opts); ag.P = P; const A = ag.A;
     c.save();
+    // posée sur la boule : de biais quand son dossier est sur le côté
+    const tl = SPH && ag.tilt && ag.tilt.f < .995 && !(dive && dive.ag === ag && dive.onPage) ? ag.tilt : null;
+    // sur la boule pleine d'étoiles : un voile sombre sous chaque araignée, et une lueur à sa couleur, pour qu'on la
+    // voie toujours (les bébés des agents surtout, plus petits)
+    if (SPH && !(dive && dive.ag === ag && dive.onPage)) {
+      const r = Math.max(...sp.m.legs) * 1.25, gr = c.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, r);
+      gr.addColorStop(0, 'rgba(6,4,12,.62)'); gr.addColorStop(.55, ag.baby ? 'rgba(40,20,70,.35)' : 'rgba(30,16,50,.3)'); gr.addColorStop(1, 'rgba(6,4,12,0)');
+      c.fillStyle = gr; c.beginPath(); c.arc(sp.x, sp.y, r, 0, Math.PI * 2); c.fill();
+      if (ag.baby) { const k = .5 + .5 * Math.sin(simT * 2.4 + ag.k), g2 = c.createRadialGradient(sp.x, sp.y, r * .35, sp.x, sp.y, r * 1.05); g2.addColorStop(0, 'rgba(200,155,255,0)'); g2.addColorStop(.8, `rgba(200,155,255,${(.10 + .08 * k).toFixed(3)})`); g2.addColorStop(1, 'rgba(200,155,255,0)'); c.fillStyle = g2; c.beginPath(); c.arc(sp.x, sp.y, r * 1.05, 0, Math.PI * 2); c.fill(); }
+    }
+    if (tl) { const k = 1 - tl.f; c.translate(sp.x, sp.y); c.transform(1 - k * tl.ux * tl.ux, -k * tl.ux * tl.uy, -k * tl.ux * tl.uy, 1 - k * tl.uy * tl.uy, 0, 0); c.translate(-sp.x, -sp.y); }
     // endormie, elle se balance doucement au bout de son fil
     if (ag.sleeping && ag.hang > 1) { const s0 = P3(spinneret(P)), px = s0.x, py = s0.y - 600, a = Math.sin(simT * 1.75) * .012; c.translate(px, py); c.rotate(a); c.translate(-px, -py); }
     if (ag.hang > .5) { const s0 = P3(spinneret(P)); c.strokeStyle = 'rgba(255,255,255,.78)'; c.lineWidth = .28; c.beginPath(); c.moveTo(s0.x, s0.y); c.lineTo(s0.x, s0.y - 900); c.stroke(); }
@@ -2689,7 +2716,7 @@ if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) setPaused(tru
 AGENTS.forEach((ag, k) => later(ag, .5 + k * .9));
 requestAnimationFrame(frame);
 requestAnimationFrame(miniLoop);
-window.__araignee = { ecran: id => byId[id] && toScreen(byId[id].x, byId[id].y), sphere: () => ({ on: SPH, yaw: S3.yaw, pitch: S3.pitch, R: S3.R, p3: nodes.map(n => n.p3 && [Math.round(n.p3.x), Math.round(n.p3.y), Math.round(n.p3.z), adj[n.id].length]) }), camera: () => ({ mode: cam.mode, suit: sel.id, z: +cam.z.toFixed(3), zoom: +cam.uz.toFixed(3), x: Math.round(cam.x), y: Math.round(cam.y), araignee: AGENTS.map(a => ({ id: a.id, cur: a.cur, ...toScreen(a.sp.x, a.sp.y), noeud: byId[a.cur] && toScreen(byId[a.cur].x, byId[a.cur].y) })) }), etat: () => ({ simT, apparence: AGENTS[0].style.id, toile: SPH ? 'sphère' : 'à plat', erreurs: errCount, recus: recvCount, plonge: !!dive, araignees: AGENTS.map(a => ({ id: a.id, action: a.A ? a.A.tool : null, marche: !!a.walk, fil: !!a.hangAnim, file: a.queue.length, dort: a.sleeping })) }) };
+window.__araignee = { ecran: id => byId[id] && toScreen(byId[id].x, byId[id].y), sphere: () => ({ on: SPH, yaw: S3.yaw, pitch: S3.pitch, R: S3.R, p3: nodes.map(n => n.p3 && [Math.round(n.p3.x), Math.round(n.p3.y), Math.round(n.p3.z), adj[n.id].length]) }), camera: () => ({ mode: cam.mode, suit: sel.id, z: +cam.z.toFixed(3), zoom: +cam.uz.toFixed(3), x: Math.round(cam.x), y: Math.round(cam.y), araignee: AGENTS.map(a => ({ id: a.id, cur: a.cur, h: +a.sp.h.toFixed(2), f: a.tilt ? +a.tilt.f.toFixed(2) : 1, ...toScreen(a.sp.x, a.sp.y), noeud: byId[a.cur] && toScreen(byId[a.cur].x, byId[a.cur].y) })) }), etat: () => ({ simT, apparence: AGENTS[0].style.id, toile: SPH ? 'sphère' : 'à plat', erreurs: errCount, recus: recvCount, plonge: !!dive, araignees: AGENTS.map(a => ({ id: a.id, action: a.A ? a.A.tool : null, marche: !!a.walk, fil: !!a.hangAnim, file: a.queue.length, dort: a.sleeping })) }) };
 })();
 </script>
 
