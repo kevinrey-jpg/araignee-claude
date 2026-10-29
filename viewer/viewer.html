@@ -1310,7 +1310,7 @@ let SPH = !/[?&]toile=classique\b/.test(location.search);
 try { if (localStorage.getItem('araignee-toile') === 'classique') SPH = false; } catch (e) {}
 const EDGE_DENS = clamp(Math.sqrt(600 / Math.max(600, edges.length)), .5, 1);
 const NEB_DENS = clamp(Math.sqrt(140 / Math.max(140, nodes.length)), .38, 1);
-const S3 = { yaw: .4, pitch: .28, vyaw: 0, vpitch: 0, user: 0, R: 150 + 14 * Math.sqrt(nodes.length), D: 330, lastBolt: -99, nextIdle: 6, bolt: null };
+const S3 = { F: { x: 0, y: 0, z: 0 }, yaw: .4, pitch: .28, vyaw: 0, vpitch: 0, user: 0, R: 150 + 14 * Math.sqrt(nodes.length), D: 330, lastBolt: -99, nextIdle: 6, bolt: null };
 const NEB_HUES = ['#b46cff', '#5ee6ff', '#ff6be6', '#ffb347', '#8dff7a', '#ffd36b', '#ff7a8a', '#7f9dff', '#e8e2ff'];
 // des directions : la toile plate est enroulée sur la sphère (le centre en haut, le bord en bas), puis les nœuds
 // s'écartent comme des charges pendant que les fils retiennent les voisins ; les rayons remplissent la boule
@@ -1356,13 +1356,22 @@ function tiltOf(n) {
   const f0 = clamp(.42 + .58 * Math.max(0, z / l), .42, 1), f = 1 - (1 - f0) * Math.min(1, l / 70);
   return { f, ux: x / sl, uy: y / sl };
 }
+// la caméra à la troisième personne : elle vise le point F (l'araignée suivie, en 3D) et se tient toujours à la même
+// distance D de lui ; la boule ne tourne plus d'elle-même, c'est la caméra qui accompagne l'araignée, même quand elle
+// s'enfonce dans la boule. La souris fait tourner la vue autour d'elle.
 function project3(p) {
-  const cy = Math.cos(S3.yaw), sy = Math.sin(S3.yaw), cp = Math.cos(S3.pitch), spp = Math.sin(S3.pitch), RS = S3.R / 100;
-  const x = p.x * cy + p.z * sy, z0 = -p.x * sy + p.z * cy, y = p.y * cp - z0 * spp, z = p.y * spp + z0 * cp, k = S3.D / (S3.D - z);
+  const F = S3.F, cy = Math.cos(S3.yaw), sy = Math.sin(S3.yaw), cp = Math.cos(S3.pitch), spp = Math.sin(S3.pitch), RS = S3.R / 100;
+  const px = p.x - F.x, py = p.y - F.y, pz = p.z - F.z;
+  const x = px * cy + pz * sy, z0 = -px * sy + pz * cy, y = py * cp - z0 * spp, z = py * spp + z0 * cp, k = S3.D / (S3.D - Math.min(z, S3.D * .7));
   return { x: CX + x * RS * k, y: CY + y * RS * k, z, k };
 }
+// ce qui compte à l'écran : autour de l'araignée, au premier plan ; derrière elle, de plus en plus fin et sombre ;
+// entre la caméra et elle, effacé pour ne pas la cacher
+const depthOf = z => z < 0 ? clamp(1 + z / 150, .04, 1) : clamp(1 - Math.max(0, z - 45) / 110, .06, 1);
 function projectAll() {
-  for (const n of nodes) { if (!n.p3) place3(n, adj[n.id].map(id => byId[id]).find(o => o && o.p3)); const q = project3(n.p3); n.ox = n.x; n.oy = n.y; n.x = q.x; n.y = q.y; n.zd = clamp((q.z / 100 + 1) / 2, 0, 1); n.k = q.k; }
+  for (const n of nodes) { if (!n.p3) place3(n, adj[n.id].map(id => byId[id]).find(o => o && o.p3)); const q = project3(n.p3); n.ox = n.x; n.oy = n.y; n.x = q.x; n.y = q.y; n.zz = q.z; n.k = q.k;
+    // au premier plan : ce qui est près de l'araignée, son chemin et sa cible ; le reste s'estompe avec la distance
+    const F = S3.F, d3 = Math.hypot(n.p3.x - F.x, n.p3.y - F.y, n.p3.z - F.z); n.zd = S3.boost && S3.boost.has(n.id) ? Math.max(.92, depthOf(q.z)) : depthOf(q.z) * (.28 + .72 * Math.exp(-d3 / 55)); }
   // les fils ondulent comme des câbles posés : un, deux ou trois virages, dans tous les sens (pas seulement vers le bas),
   // et se balancent à peine ; l'araignée marche sur la courbe
   for (const e of edges) {
@@ -1398,18 +1407,26 @@ function sphereSnap(p, r) {
   return best;
 }
 // chaque image : la boule tourne doucement et se tourne vers ce que fait l'araignée suivie ; les araignées roulent avec elle
+// où est l'araignée dans la boule : sur son dossier, ou entre deux dossiers quand elle marche sur un fil
+function spider3D(ag) {
+  const w = ag.walk, P = n => n && n.p3;
+  if (w && w.marks0 && w.marks0.length) {
+    const f = w.seg + (w.pts[w.seg + 1] ? w.u / (dist(w.pts[w.seg], w.pts[w.seg + 1]) || 1) : 0);
+    let k = 0; while (k < w.marks0.length - 1 && w.marks0[k].i <= f) k++;
+    const m = w.marks0[k], i0 = k ? w.marks0[k - 1].i : 0, u = clamp((f - i0) / ((m.i - i0) || 1), 0, 1), a = P(byId[m.from]), b = P(byId[m.to]);
+    if (a && b) return { x: lerp(a.x, b.x, u), y: lerp(a.y, b.y, u), z: lerp(a.z, b.z, u) };
+  }
+  return P(byId[ag.cur]) || null;
+}
 function sphereFrame(dt, simDt) {
   if (!SPH) return;
   S3.user = Math.max(0, S3.user - dt);
   S3.yaw += S3.vyaw * dt; S3.pitch = clamp(S3.pitch + S3.vpitch * dt, -1.2, 1.2); const kd = Math.exp(-dt * 2.4); S3.vyaw *= kd; S3.vpitch *= kd;
   const ag = sel, foc = (ag && (byId[ag.target] || byId[ag.cur])) || null, busy = ag && (ag.A || ag.walk);
-  if (S3.user <= 0) {
-    S3.yaw += simDt * .05;
-    if (foc && foc.p3 && busy && cam.mode === 'follow') {
-      const p = foc.p3, ty = Math.atan2(-p.x, p.z), cyw = Math.cos(S3.yaw), syw = Math.sin(S3.yaw), zr = -p.x * syw + p.z * cyw, tp = clamp(Math.atan2(p.y, Math.max(1, zr)), -.65, .65);
-      S3.yaw += wrap(ty - S3.yaw) * Math.min(1, simDt * .45); S3.pitch += (tp - S3.pitch) * Math.min(1, simDt * .35);
-    } else S3.pitch += (.28 - S3.pitch) * Math.min(1, simDt * .2);
-  }
+  // ce qui passe au premier plan : le dossier de l'araignée, sa cible et les dossiers de son chemin
+  { const B = S3.boost || (S3.boost = new Set()); B.clear(); if (ag) { B.add(ag.cur); if (ag.target) B.add(ag.target); if (ag.walk && ag.walk.marks0) ag.walk.marks0.forEach(m => { B.add(m.from); B.add(m.to); }); } }
+  // la caméra accompagne l'araignée suivie (en caméra libre, elle reste où elle est)
+  if (cam.mode === 'follow' && ag) { const T = spider3D(ag); if (T) { const k = Math.min(1, dt * 3.2); S3.F.x += (T.x - S3.F.x) * k; S3.F.y += (T.y - S3.F.y) * k; S3.F.z += (T.z - S3.F.z) * k; } }
   projectAll();
   // les araignées sont portées par leur dossier : elles se déplacent avec lui ET tournent avec la toile autour
   // d'elles (l'angle dont tournent ses voisins), tête et pattes comprises ; sinon elles gardent toujours le même
@@ -1483,7 +1500,7 @@ function drawBolt(c) {
   B.T.forEach((t, id) => { const dt = tau - t; if (dt < 0) return; boost.set(id, Math.exp(-dt / .55)); if (dt > .45 || sparks > 26) return; const q = byId[id]; if (!q || q.zd < .5) return; sparks++; const R = rng(hash(id) + Math.floor(B.t0)); c.strokeStyle = `rgba(220,248,255,${(.85 * (1 - dt / .45)).toFixed(2)})`; c.lineWidth = .6 * RS; c.beginPath(); for (let k = 0; k < 5; k++) { const an = R() * Math.PI * 2, r0 = 3 * RS * q.k, r1 = r0 + (5 + dt * 22) * RS * q.k; c.moveTo(q.x + Math.cos(an) * r0, q.y + Math.sin(an) * r0); c.lineTo(q.x + Math.cos(an) * r1, q.y + Math.sin(an) * r1); } c.stroke(); });
   // le flash du départ, puis la boule qui s'illumine un instant
   const fl = Math.exp(-tau / .12) * .5 + Math.exp(-Math.abs(tau - B.end * .8) / .25) * .12;
-  if (fl > .01) { const g = c.createRadialGradient(CX, CY, 0, CX, CY, S3.R * 1.15); g.addColorStop(0, `rgba(200,240,255,${fl.toFixed(3)})`); g.addColorStop(1, 'rgba(200,240,255,0)'); c.fillStyle = g; c.beginPath(); c.arc(CX, CY, S3.R * 1.15, 0, Math.PI * 2); c.fill(); }
+  if (fl > .01) { const O = project3({ x: 0, y: 0, z: 0 }), g = c.createRadialGradient(O.x, O.y, 0, O.x, O.y, S3.R * 1.15 * O.k); g.addColorStop(0, `rgba(200,240,255,${fl.toFixed(3)})`); g.addColorStop(1, 'rgba(200,240,255,0)'); c.fillStyle = g; c.beginPath(); c.arc(O.x, O.y, S3.R * 1.15 * O.k, 0, Math.PI * 2); c.fill(); }
   c.restore();
   return boost;
 }
@@ -1549,7 +1566,7 @@ function drawSphereStage(c, targets) {
   // le ciel et le halo de la boule
   const cy = Math.cos(S3.yaw * .3), sy = Math.sin(S3.yaw * .3), cp = Math.cos(S3.pitch * .3), spp = Math.sin(S3.pitch * .3), FR = S3.R * 3.2;
   for (const s of FAR3) { const x = s.x * cy + s.z * sy, z0 = -s.x * sy + s.z * cy, y = s.y * cp - z0 * spp, z = s.y * spp + z0 * cp; if (z < -.1) continue; c.fillStyle = `rgba(230,225,255,${(s.a * .35 * (.35 + z * .65)).toFixed(3)})`; c.fillRect(CX + x * FR, CY + y * FR, s.s, s.s); }
-  const hal = c.createRadialGradient(CX, CY, 0, CX, CY, S3.R * 1.3); hal.addColorStop(0, 'rgba(94,230,255,.06)'); hal.addColorStop(.7, 'rgba(180,108,255,.04)'); hal.addColorStop(1, 'rgba(0,0,0,0)'); c.fillStyle = hal; c.beginPath(); c.arc(CX, CY, S3.R * 1.3, 0, Math.PI * 2); c.fill();
+  const O = project3({ x: 0, y: 0, z: 0 }), hal = c.createRadialGradient(O.x, O.y, 0, O.x, O.y, S3.R * 1.3 * O.k); hal.addColorStop(0, 'rgba(94,230,255,.06)'); hal.addColorStop(.7, 'rgba(180,108,255,.04)'); hal.addColorStop(1, 'rgba(0,0,0,0)'); c.fillStyle = hal; c.beginPath(); c.arc(O.x, O.y, S3.R * 1.3 * O.k, 0, Math.PI * 2); c.fill();
   // les fils : groupés par couleur et par profondeur pour ne pas multiplier les appels
   const groups = new Map();
   edges.forEach((e, i) => {
@@ -1564,9 +1581,12 @@ function drawSphereStage(c, targets) {
   c.save(); c.lineCap = 'round'; c.lineJoin = 'round';
   [...groups.values()].sort((p, q) => p.lvl - q.lvl).forEach((g, gi) => {
     const d = (g.lvl + .5) / 6, a0 = (.18 + .4 * d) * (g.spoke ? .55 : 1) * (g.mesh ? .6 : 1) * (g.hot ? 1.5 : EDGE_DENS * .5 + .5), w = (g.hot ? .5 : g.mesh ? .26 : .38) * RS, bright = mix(g.col, '#ffffff', g.hot ? .4 : .1);
-    c.globalCompositeOperation = 'lighter'; c.strokeStyle = hexA(g.col, (.06 * a0).toFixed(3)); c.lineWidth = w * 3; c.stroke(g.P);
-    c.globalCompositeOperation = 'source-over'; c.strokeStyle = hexA(bright, a0.toFixed(3)); c.lineWidth = w; c.stroke(g.P);
-    if (d > .3 && !g.mesh) { c.setLineDash([w * .35, w * 2.4]); c.lineDashOffset = -simT * w * 1.8 - gi * w; c.strokeStyle = hexA(mix(g.col, '#ffffff', .45), (a0 * .7).toFixed(3)); c.lineWidth = w * 1.4; c.stroke(g.P); c.setLineDash([]); }
+    // des fils pleins (jamais transparents) : la profondeur se lit à l'épaisseur (fins au fond, épais devant) et à la
+    // couleur, qui s'assombrit vers le fond au lieu de s'effacer
+    const lum = Math.min(1, a0 * 1.55), ww = w * (.32 + 1.2 * d), BG = '#06040c';
+    c.globalCompositeOperation = 'lighter'; c.strokeStyle = hexA(g.col, (.06 * a0).toFixed(3)); c.lineWidth = ww * 3; c.stroke(g.P);
+    c.globalCompositeOperation = 'source-over'; c.strokeStyle = mix(bright, BG, 1 - lum); c.lineWidth = ww; c.stroke(g.P);
+    if (d > .3 && !g.mesh) { c.setLineDash([ww * .35, ww * 2.4]); c.lineDashOffset = -simT * ww * 1.8 - gi * ww; c.strokeStyle = mix(mix(g.col, '#ffffff', .45), BG, 1 - lum * .8); c.lineWidth = ww * 1.4; c.stroke(g.P); c.setLineDash([]); }
   });
   if (selNode) { c.strokeStyle = 'rgba(255,255,255,.9)'; c.lineWidth = 1.2 * RS; c.beginPath(); adj[selNode.id].forEach(v => { const o = byId[v], e = edges[edgeIdx[selNode.id + '|' + v]]; if (!o.gone) { if (e && e.sp) wirePath(c, e.sp); else { c.moveTo(selNode.x, selNode.y); c.lineTo(o.x, o.y); } } }); c.stroke(); }
   c.restore();
@@ -1588,7 +1608,7 @@ function drawSphereStage(c, targets) {
   // le terminal garde sa petite console verte, à sa place sur la boule
   nodes.forEach(n => {
     if (n.kind !== 'term' || n.gone) return; const s = n.k * RS * .9, flash = simT - n.pulse < 1.2, A = AGENTS.map(a => a.A).find(a => a && a.tool === 'Bash' && a.n === n);
-    c.save(); c.translate(n.x, n.y); c.scale(s, s); c.globalAlpha = .35 + .65 * n.zd;
+    c.save(); c.translate(n.x, n.y); c.scale(s, s); c.globalAlpha = .08 + .92 * n.zd;
     glow(c, '#9dff8a', flash ? 16 : 6); c.fillStyle = flash ? '#163a1c' : '#0b1a0e'; c.beginPath(); c.roundRect(-10, -6.5, 20, 13, 3); c.fill(); noglow(c); c.strokeStyle = '#9dff8a'; c.lineWidth = .6; c.stroke();
     if (A) { const t = simT - A.t0; c.fillStyle = 'rgba(157,255,138,.85)'; for (let r = 0; r < 3; r++) { const wv = clamp((t - .3 - r * .5) / .5, 0, 1) * (r === 2 ? 9 : 14); c.fillRect(-7.5, -4 + r * 3, wv, .9); } }
     else { c.fillStyle = '#9dff8a'; c.font = '6px "JetBrains Mono", monospace'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('>_', 0, .3); }
@@ -1640,7 +1660,7 @@ function goTo(ag, id, cb, stop) {
   // injoignable par la soie : elle remonte sur son fil, se déplace dans les airs, et redescend sur la cible
   if (path.length <= 1 && id !== ag.cur && byId[id]) { const n = byId[id]; hangTo(ag, 45, .8, () => { ag.sp.x = n.x; ag.sp.y = n.y; ag.cur = id; ag.sp.setMorph(ag.sp.m); hangTo(ag, 0, 1, cb); }); return; }
   if (path.length <= 1) { cb(); return; }
-  const r = routePts(path); ag.walk = { ...r, seg: 0, u: 0, cb, done: 0, end: Math.max(0, r.total - stop) };
+  const r = routePts(path); ag.walk = { ...r, marks0: r.marks.slice(), seg: 0, u: 0, cb, done: 0, end: Math.max(0, r.total - stop) };
 }
 const stopFor = (ag, tool) => { const m = ag.sp.m; return tool === 'Edit' || tool === 'Write' ? m.cl * .48 + m.al * .9 : tool === 'Bash' ? m.cl * .5 + m.palp * .8 + 9 : tool === 'Repair' ? m.cl * .5 : m.cl * .5 + m.palp * .85; };
 function hangTo(ag, to, dur, cb) { ag.hangAnim = { from: ag.hang, to, t0: simT, dur, cb }; }
@@ -2224,7 +2244,7 @@ function render(rdt) {
   if (SPH) {
     tx = CX; ty = CY; tz = Math.min(cssW, cssH) / (vs * 2.35 * S3.R);
     if (cam.mode === 'free') { tx = cam.fx; ty = cam.fy; tz = cam.fz || tz; }
-    else { tx = S0.x; ty = S0.y; tz *= sel.baby ? 2 : 1.5; }
+    else { tx = S0.x; ty = S0.y; tz *= sel.baby ? 3 : 2.3; }
     if (dive && cam.mode === 'follow') { const t = simT - dive.t0, k = sm(0, .8, t) * (1 - sm(dive.tEnd, dive.dur - .1, t)); if (k > .01) { const px = dive.x + dive.w / 2, py = dive.y + dive.h / 2, pz = Math.min(cssW * .88 / (vs * (dive.w + 30)), cssH * .84 / (vs * (Math.max(dive.h, 22 + 14 * LH + 8) + 30))); tx = lerp(tx, px, k); ty = lerp(ty, py, k); tz = lerp(tz, pz, k); } }
   } else if (cam.mode === 'free') { tx = cam.fx; ty = cam.fy; tz = cam.fz || tz; }
   else {
@@ -2699,7 +2719,7 @@ function addLiveNode(d) {
     addPiece('core', e.pts, ei, .72); addPiece('front', e.pts, ei);
     if (SPH) sphereEdge(e);
   }
-  if (SPH) { n.x2 = n.x; n.y2 = n.y; place3(n, d.anchor && byId[d.anchor]); const q = project3(n.p3); n.x = n.ox = q.x; n.y = n.oy = q.y; n.zd = clamp((q.z / 100 + 1) / 2, 0, 1); n.k = q.k; if (d.anchor && byId[d.anchor]) { const e = edges[edges.length - 1]; e.sp.forEach((pt, j) => { const a = byId[e.a], b = byId[e.b]; pt.x = lerp(a.x, b.x, j / SEGS); pt.y = lerp(a.y, b.y, j / SEGS); }); } }
+  if (SPH) { n.x2 = n.x; n.y2 = n.y; place3(n, d.anchor && byId[d.anchor]); const q = project3(n.p3); n.x = n.ox = q.x; n.y = n.oy = q.y; n.zd = depthOf(q.z); n.k = q.k; if (d.anchor && byId[d.anchor]) { const e = edges[edges.length - 1]; e.sp.forEach((pt, j) => { const a = byId[e.a], b = byId[e.b]; pt.x = lerp(a.x, b.x, j / SEGS); pt.y = lerp(a.y, b.y, j / SEGS); }); } }
   webCache.dirty = true;
   refreshHeat();
 }
