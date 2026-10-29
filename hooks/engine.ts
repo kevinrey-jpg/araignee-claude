@@ -516,12 +516,19 @@ function sphereLayout(g) {
   for (let it = 0; it < 6; it++) dep = dep.map((v, i) => { const nb = g.adj[nodes[i].id]; if (!nb.length) return v; let m = 0; nb.forEach(id => { m += dep[idx.get(id)] }); return v * .4 + m / nb.length * .6 })
   nodes.map((o, i) => i).sort((i, j) => dep[i] - dep[j]).forEach((i, k) => { const r = isHub(nodes[i]) ? 6 + (hash(nodes[i].id) % 10) : 100 * (.3 + .66 * Math.cbrt((k + .5) / n)); nodes[i].p3 = { x: U[i].x * r, y: U[i].y * r, z: U[i].z * r } })
 }
-function proj3(W, p, yaw, pitch) {
-  const S = W.sph, cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), spp = Math.sin(pitch), RS = S.R / 100
-  const x = p.x * cy + p.z * sy, z0 = -p.x * sy + p.z * cy, y = p.y * cp - z0 * spp, z = p.y * spp + z0 * cp, k = S.D / (S.D - z)
-  return { x: x * RS * k, y: y * RS * k, zd: clamp((z / 100 + 1) / 2, 0, 1), k }
+// la caméra à la troisième personne (comme dans la grande toile) : elle vise le point F de la boule (l'araignée, ou
+// la cible vers laquelle elle va) et se tient toujours à la même distance ; la boule ne tourne plus d'elle-même.
+// zd dit ce qui compte à l'écran : près de l'araignée et sur son chemin, au premier plan ; au fond, fin et sombre ;
+// entre la caméra et elle, effacé
+const depthOf = z => z < 0 ? clamp(1 + z / 150, .04, 1) : clamp(1 - Math.max(0, z - 45) / 110, .06, 1)
+function proj3(W, p, yaw, pitch, F, id) {
+  const S = W.sph, f = F || S.F || { x: 0, y: 0, z: 0 }, cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), spp = Math.sin(pitch), RS = S.R / 100
+  const px = p.x - f.x, py = p.y - f.y, pz = p.z - f.z
+  const x = px * cy + pz * sy, z0 = -px * sy + pz * cy, y = py * cp - z0 * spp, z = py * spp + z0 * cp, k = S.D / (S.D - Math.min(z, S.D * .7))
+  const d3 = Math.hypot(px, py, pz), zd = S.boost && S.boost.has(id) ? Math.max(.92, depthOf(z)) : depthOf(z) * (.2 + .8 * Math.exp(-d3 / 46))
+  return { x: x * RS * k, y: y * RS * k, zd, k }
 }
-function placeAll(W, yaw, pitch) { const m = new Map(); W.g.nodes.forEach(n => { if (n.p3) m.set(n.id, proj3(W, n.p3, yaw, pitch)) }); return m }
+function placeAll(W, yaw, pitch, F) { const m = new Map(); W.g.nodes.forEach(n => { if (n.p3) m.set(n.id, proj3(W, n.p3, yaw, pitch, F, n.id)) }); return m }
 function applyPlace(W, P) { W.g.nodes.forEach(n => { const q = P.get(n.id); if (q) { n.x = q.x; n.y = q.y; n.zd = q.zd; n.k = q.k } }) }
 // l'angle dont la toile tourne autour d'un nœud d'un placement à l'autre (ses voisins, en moindres carrés)
 function spinAt(g, id, P0, P1) {
@@ -542,15 +549,6 @@ function ride(W, before, after) {
     for (const L of sp.legs) for (const k of ['foot', 'from', 'to', 'placed']) if (L[k]) L[k] = mv(L[k])
   }
 }
-// posée sur la boule : vue de face au centre, de biais (aplatie vers le bord) quand son dossier passe sur le côté
-function tiltOf(W, n) {
-  const p = n && n.p3, S = W.sph; if (!p || !S) return null; const l = Math.hypot(p.x, p.y, p.z); if (l < 1) return null
-  const cy = Math.cos(S.yaw), sy = Math.sin(S.yaw), cp = Math.cos(S.pitch), spp = Math.sin(S.pitch)
-  const x = p.x * cy + p.z * sy, z0 = -p.x * sy + p.z * cy, y = p.y * cp - z0 * spp, z = p.y * spp + z0 * cp, sl = Math.hypot(x, y) || 1
-  const f0 = clamp(.42 + .58 * Math.max(0, z / l), .42, 1), f = 1 - (1 - f0) * Math.min(1, l / 70)
-  return f < .995 ? { f, ux: x / sl, uy: y / sl } : null
-}
-const tiltWrap = (t, c, svg) => { if (!t || !c) return svg; const k = 1 - t.f, a = 1 - k * t.ux * t.ux, b = -k * t.ux * t.uy, d = 1 - k * t.uy * t.uy; return `<g transform="matrix(${a.toFixed(3)} ${b.toFixed(3)} ${b.toFixed(3)} ${d.toFixed(3)} ${f1(c.x - a * c.x - b * c.y)} ${f1(c.y - b * c.x - d * c.y)})">${svg}</g>` }
 // pendant que la boule tourne, l'araignée (dessinée à l'arrivée) part tournée à l'envers et revient avec la toile
 const spinWrap = (W, X, id, svg, kt4, dur) => {
   if (!X.turn) return svg; const B = X.turn.B.get(id); if (!B) return svg
@@ -640,8 +638,9 @@ export function sphereInit(W) {
   // une vraie boule physique ; la disposition « à aire égale » ne sert plus que si la simulation échoue
   try { force3D(g) } catch { sphereLayout(g) }
   if (g.nodes.some(o => !o.p3 || !Number.isFinite(o.p3.x))) sphereLayout(g)
-  W.sph = { yaw: .4, pitch: .28, R: 150 + 14 * Math.sqrt(g.nodes.length), D: 330, lastBolt: 0, dens: clamp(Math.sqrt(140 / Math.max(140, g.nodes.length)), .38, 1), edens: clamp(Math.sqrt(300 / Math.max(300, g.edges.length)), .3, 1) }
-  const before = new Map(g.nodes.map(n => [n.id, { x: n.x, y: n.y }]))
+  W.sph = { F: { x: 0, y: 0, z: 0 }, boost: new Set(), yaw: .4, pitch: .28, R: 150 + 14 * Math.sqrt(g.nodes.length), D: 330, lastBolt: 0, dens: clamp(Math.sqrt(140 / Math.max(140, g.nodes.length)), .38, 1), edens: clamp(Math.sqrt(300 / Math.max(300, g.edges.length)), .3, 1) }
+  const before = new Map(g.nodes.map(n => [n.id, { x: n.x, y: n.y }])), home = g.byId[W.actors.main.cur]
+  if (home && home.p3) { W.sph.F = { ...home.p3 }; W.sph.boost = new Set([home.id]) }
   applyPlace(W, placeAll(W, W.sph.yaw, W.sph.pitch)); buildGeometry(g); g.orbs = []
   ride(W, before)
   for (const a of Object.values(W.actors)) { const n = g.byId[a.cur]; if (n) { a.sp.x = n.x; a.sp.y = n.y; a.sp.setMorph(a.sp.m) } }
@@ -654,17 +653,14 @@ function place3(W, n, anchor) {
   n.x2 = n.x; n.y2 = n.y; n.p3 = p; const q = proj3(W, p, W.sph.yaw, W.sph.pitch); n.x = q.x; n.y = q.y; n.zd = q.zd; n.k = q.k
 }
 // la boule se tourne vers ce que fait l'araignée : orientation visée pour un nœud
-function facing(W, n) {
-  const p = n && n.p3; if (!p) return { yaw: W.sph.yaw + .25, pitch: W.sph.pitch }
-  const yaw = Math.atan2(-p.x, p.z) + .18, cyw = Math.cos(yaw), syw = Math.sin(yaw), zr = -p.x * syw + p.z * cyw
-  return { yaw: W.sph.yaw + wrap(yaw - W.sph.yaw), pitch: clamp(Math.atan2(p.y, Math.max(1, zr)) * .8, -.6, .6) }
-}
 // la rotation d'un clip : trois positions (départ, milieu, arrivée), interpolées en ligne droite par morceaux,
 // exactement comme le fera l'animation SVG (keyTimes) : l'araignée reste sur son nœud
 function turnPlan(W, to, T) {
-  const S = W.sph, y0 = S.yaw, p0 = S.pitch
-  return { T, A: placeAll(W, y0, p0), M: placeAll(W, (y0 + to.yaw) / 2, (p0 + to.pitch) / 2), B: placeAll(W, to.yaw, to.pitch), to }
+  const S = W.sph, y0 = S.yaw, p0 = S.pitch, F0 = S.F, F1 = to.F || F0
+  return { T, A: placeAll(W, y0, p0, F0), M: placeAll(W, (y0 + to.yaw) / 2, (p0 + to.pitch) / 2, lerp3(F0, F1, .5)), B: placeAll(W, to.yaw, to.pitch, F1), to }
 }
+// ce qui passe au premier plan : le dossier de l'araignée, sa cible et les dossiers du chemin entre les deux
+function boostFor(W, a, target) { const B = new Set([a.cur]); if (target) { B.add(target.id); bfs(W.g, a.cur, target.id).forEach(id => B.add(id)) } return B }
 function turnAt(plan, u) {
   const P = new Map(), A = plan.A, M = plan.M, B = plan.B
   A.forEach((a, id) => { const m = M.get(id), b = B.get(id); const v = u < .5 ? u * 2 : u * 2 - 1, p = u < .5 ? a : m, q = u < .5 ? m : b; P.set(id, { x: p.x + (q.x - p.x) * v, y: p.y + (q.y - p.y) * v, zd: p.zd + (q.zd - p.zd) * v, k: p.k + (q.k - p.k) * v }) })
@@ -724,11 +720,14 @@ export function turnClip(W, ev) {
   else if (ev.tool === 'Repair') { const e = g.edges.find(e => e.broken && !e.hidden); if (e) target = g.byId[e.a].gone ? g.byId[e.b] : g.byId[e.a] }
   else if (ev.path) target = nodeForPath(g, ev.path)
   else if (ev.tool === 'Grep' && Array.isArray(ev.targets) && ev.targets.length) target = nodeForPath(g, ev.targets[0])
-  const fo = target || g.byId[a.cur], to = facing(W, fo), dy = Math.abs(to.yaw - W.sph.yaw), dp = Math.abs(to.pitch - W.sph.pitch)
-  // une cible déjà devant, tout près : la boule n'a pas besoin de tourner
-  if (fo && (fo.zd || 0) > .55 && Math.hypot(fo.x - sp.x, fo.y - sp.y) < 150) return null
-  if (dy < .04 && dp < .03) return null
-  const turn = turnPlan(W, to, clamp(.55 + dy * .35, .6, 1.3)), frames = [], DT = 1 / 60, rec = Math.round(60 / FPS)
+  // la caméra glisse jusqu'à la cible (la boule ne tourne pas) : son chemin passe au premier plan
+  const fo = target || g.byId[a.cur]; if (!fo || !fo.p3 || W.free) return null
+  const F0 = W.sph.F, gap = Math.hypot(fo.p3.x - F0.x, fo.p3.y - F0.y, fo.p3.z - F0.z), boost = boostFor(W, a, fo)
+  const same = [...boost].every(id => W.sph.boost.has(id))
+  if (gap < 6 && same) return null
+  W.sph.boost = boost
+  const to = { yaw: W.sph.yaw, pitch: W.sph.pitch, F: { ...fo.p3 } }
+  const turn = turnPlan(W, to, clamp(.5 + gap / 160, .6, 1.4)), frames = [], DT = 1 / 60, rec = Math.round(60 / FPS)
   W.turning = true
   let last = turn.A, step = 0
   for (let t = 0; t < turn.T; t += DT) {
@@ -738,7 +737,7 @@ export function turnClip(W, ev) {
     sp.vx = sp.vy = 0; stepPhysics(W, DT)
     if (step++ % rec === 0) { W.cam.x += (sp.x - W.cam.x) * .25; W.cam.y += (sp.y - 8 - a.hang * TILT * .6 - W.cam.y) * .25; frames.push({ P: sp.pose(W.t, optsFor(a, null, 0, W.env.depth)), cam: { ...W.cam }, o: {}, tAct: -1, hang: a.hang }) }
   }
-  applyPlace(W, turn.B); buildGeometry(g); W.sph.yaw = turn.to.yaw; W.sph.pitch = turn.to.pitch; W.turning = false
+  applyPlace(W, turn.B); buildGeometry(g); W.sph.yaw = turn.to.yaw; W.sph.pitch = turn.to.pitch; if (turn.to.F) W.sph.F = turn.to.F; W.turning = false
   const X = { total: frames.length / FPS, walkDur: frames.length / FPS, act: { tool: 'idle' }, target: null, targets: [], plucks: [], edgeNear: [], S: SKINS[W.skin], actor: a, sounds: [], turn, others: Object.values(W.actors).filter(o => o !== a).map(o => ({ a: o, P: o.sp.pose(W.t, optsFor(o, null, 0, W.env.depth)) })) }
   return renderClip(W, { tool: 'idle' }, frames, X)
 }
@@ -899,10 +898,15 @@ export function sleepClip(W) {
 // image fixe quand Claude ne fait rien : l'araignée respire (ou dort sur son fil)
 export function idleClip(W) {
   const a = W.actors.main, frames = []
-  // en sphère, au repos : la boule dérive lentement pendant 4 s, puis la foudre part de l'araignée
+  // en sphère, au repos : la boule reste immobile ; si la caméra n'est plus sur l'araignée suivie, elle y revient en
+  // glissant ; puis la foudre part de l'araignée
   if (W.sph && !W.sleeping) {
-    const to = { yaw: W.sph.yaw + .2, pitch: clamp(.28 + Math.sin(Date.now() / 23000) * .14, -.6, .6) }, turn = turnPlan(W, to, 4)
-    applyPlace(W, turn.B); ride(W, turn.A); buildGeometry(W.g); W.sph.yaw = to.yaw; W.sph.pitch = to.pitch
+    const ca0 = camActor(W), hn = W.g.byId[ca0.cur], F0 = W.sph.F
+    let turn = null
+    if (!W.free && hn && hn.p3 && (Math.hypot(hn.p3.x - F0.x, hn.p3.y - F0.y, hn.p3.z - F0.z) > 6 || !W.sph.boost.has(hn.id))) {
+      W.sph.boost = new Set([hn.id]); const to = { yaw: W.sph.yaw, pitch: W.sph.pitch, F: { ...hn.p3 } }; turn = turnPlan(W, to, 1.6)
+      applyPlace(W, turn.B); ride(W, turn.A); buildGeometry(W.g); W.sph.F = to.F
+    }
     // l'araignée revient se poser sur son dossier (elle y reste accrochée pendant que la boule tourne) : on la pose,
     // et le clip la fait glisser depuis l'endroit où elle était
     const home = restSpot(W, a), settle = home && Math.hypot(home.x - a.sp.x, home.y - a.sp.y) > .5 ? { x: home.x - a.sp.x, y: home.y - a.sp.y } : null
@@ -955,6 +959,8 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
     const d = ((a.zd || 0) + (b.zd || 0)) / 2, lvl = Math.min(3, Math.floor(d * 4)), hot = !!e.trail || (e.h || 0) > .12, spoke = !hot && Math.max(g.adj[e.a].length, g.adj[e.b].length) > (g.hubDeg || 40), dep = e.kind === 'dep' && !hot
     // clip trop lourd : les fils du fond de la boule (les plus sombres) partent avant qu'on ne retire des images
     if (lod >= 1 && !hot && (lvl === 0 || (lvl === 1 && e.kind === 'dep'))) return
+    // loin de l'araignée et au fond : presque invisible, on ne l'écrit pas (moins de fouillis, clip plus léger)
+    if (!hot && (a.zd || 0) < .1 && (b.zd || 0) < .1) return
     wl0.push({ e, a, b, lvl, hot, spoke, dep, s: (hot ? 9 : 0) + (a === X.target || b === X.target || e.a === X.actor.cur || e.b === X.actor.cur ? 5 : 0) + d * 2 - Math.hypot((a.x + b.x) / 2 - cEnd.x, (a.y + b.y) / 2 - cEnd.y) / 120 })
   })
   // encore trop lourd : on garde les fils chauds, ceux de l'araignée et de sa cible, puis les plus proches et les plus en avant
@@ -966,11 +972,13 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
   })
   let wdefs = '', wi = 0
   ;[...groups.values()].sort((p, q) => p.lvl - q.lvl).forEach(gr => {
-    const d = (gr.lvl + .5) / 4, a0 = Math.min(1, (.18 + .4 * d) * (gr.spoke ? .55 : 1) * (gr.dep ? .6 : 1) * (gr.hot ? 1.5 : Math.max(.5, S.edens) * .5 + .5)), w = (gr.hot ? .5 : gr.dep ? .26 : .38) * Math.min(RS, 3), id = 'w' + wi++
+    // des fils pleins (jamais transparents) : fins et sombres au fond, épais et lumineux devant
+    const d = (gr.lvl + .5) / 4, a0 = Math.min(1, (.18 + .4 * d) * (gr.spoke ? .55 : 1) * (gr.dep ? .6 : 1) * (gr.hot ? 1.5 : Math.max(.5, S.edens) * .5 + .5)), w = (gr.hot ? .5 : gr.dep ? .26 : .38) * Math.min(RS, 3) * (.22 + 1.4 * d * d), id = 'w' + wi++
+    const lum = gr.hot ? Math.min(1, a0 * 1.55) : Math.min(1, (.1 + .9 * d * d) * 1.5 * (gr.spoke ? .6 : 1) * (gr.dep ? .75 : 1))
     wdefs += `<path id="${id}" d="${tr ? 'M0 0' : gr.dB}">${tr ? `<animate attributeName="d" values="${gr.dA};${gr.dM};${gr.dB}" ${TD} fill="freeze"/>` : ''}</path>`
     if ((gr.lvl >= 2 && lod < 1) || gr.hot) o.push(`<use href="#${id}" stroke="${gr.col}" stroke-opacity="${(.12 * a0).toFixed(3)}" stroke-width="${f1(w * 3)}"/>`)
-    o.push(`<use href="#${id}" stroke="${mixHex(gr.col, '#ffffff', gr.hot ? .4 : .1)}" stroke-opacity="${a0.toFixed(3)}" stroke-width="${(w).toFixed(2)}"/>`)
-    if (d > .3 && !gr.dep && lod < 1) o.push(`<use href="#${id}" stroke="${mixHex(gr.col, '#ffffff', .45)}" stroke-opacity="${(a0 * .7).toFixed(3)}" stroke-width="${(w * 1.4).toFixed(2)}" stroke-dasharray="${(w * .35).toFixed(2)} ${(w * 2.4).toFixed(2)}"><animate attributeName="stroke-dashoffset" values="0;${(-w * 2.75 * 4).toFixed(2)}" dur="${(4 / 1.8 * 2.75).toFixed(1)}s" repeatCount="indefinite"/></use>`)
+    o.push(`<use href="#${id}" stroke="${mixHex(mixHex(gr.col, '#ffffff', gr.hot ? .4 : .1), '#06040c', 1 - lum)}" stroke-width="${(w).toFixed(2)}"/>`)
+    if (d > .3 && !gr.dep && lod < 1) o.push(`<use href="#${id}" stroke="${mixHex(mixHex(gr.col, '#ffffff', .45), '#06040c', 1 - lum * .8)}" stroke-width="${(w * 1.4).toFixed(2)}" stroke-dasharray="${(w * .35).toFixed(2)} ${(w * 2.4).toFixed(2)}"><animate attributeName="stroke-dashoffset" values="0;${(-w * 2.75 * 4).toFixed(2)}" dur="${(4 / 1.8 * 2.75).toFixed(1)}s" repeatCount="indefinite"/></use>`)
   })
   // le style passe par le groupe : un tracé repris par <use> hérite de son <use>, pas de ses <defs>
   const wl = o.splice(1); o.push(`<defs>${wdefs}</defs><g fill="none" stroke-linecap="round">${wl.join('')}</g>`)
@@ -980,10 +988,14 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
   list.forEach(n => {
     const isT = n === X.target || X.targets.includes(n), zd = n.zd || 0, k = n.k || 1
     let body
-    if (n.kind === 'term') body = `<g transform="translate(${f1(n.x)} ${f1(n.y)}) scale(${f1(k * RS * .55)})" opacity="${(.4 + .6 * zd).toFixed(2)}"><rect x="-10" y="-6.5" width="20" height="13" rx="3" fill="#0b1a0e" stroke="#9dff8a" stroke-width=".6" filter="url(#glow)"/><text y="1.8" text-anchor="middle" font-family="monospace" font-size="5.5" fill="#9dff8a">&gt;_</text></g>`
+    // une araignée sur le terminal : la boîte s'écarte à côté d'elle, reliée à son étoile par un fil
+    let bo = { x: 0, y: 0 }
+    if (n.kind === 'term') { const sc = k * RS * .55; for (const o of Object.values(W.actors)) { const vx = n.x - o.sp.x, vy = n.y - o.sp.y, dd = Math.hypot(vx, vy), need = 11.5 * sc + Math.max(...o.sp.m.legs) * .85; if (dd < need) { const ux = dd > .5 ? vx / dd : .94, uy = dd > .5 ? vy / dd : -.34; bo.x += ux * (need - dd); bo.y += uy * (need - dd) } } }
+    if (n.kind === 'term') body = (Math.hypot(bo.x, bo.y) > 2 ? `<path d="M${f1(n.x)} ${f1(n.y)}l${f1(bo.x)} ${f1(bo.y)}" stroke="#9dff8a" stroke-opacity="${(.35 * zd).toFixed(2)}" stroke-width=".3"/>` : '') + `<g transform="translate(${f1(n.x + bo.x)} ${f1(n.y + bo.y)}) scale(${f1(k * RS * .55)})" opacity="${(.08 + .92 * zd).toFixed(2)}"><rect x="-10" y="-6.5" width="20" height="13" rx="3" fill="#0b1a0e" stroke="#9dff8a" stroke-width=".6" filter="url(#glow)"/><text y="1.8" text-anchor="middle" font-family="monospace" font-size="5.5" fill="#9dff8a">&gt;_</text></g>`
     else {
       used.add(n.comm)
-      const r = nebR(g, n) * RS * k * .62 * (isT ? 1.25 : 1), touched = (n.heat || 0) > .01 || n.visited || n.mod, op = Math.min(1, (.28 + .72 * zd) * (touched ? 1 : .72) * S.dens + (isT ? .3 : 0))
+      // loin de l'araignée : plus petite et plus discrète ; près d'elle, pleine
+      const r = nebR(g, n) * RS * k * .62 * (.5 + .5 * zd) * (isT ? 1.25 : 1), touched = (n.heat || 0) > .01 || n.visited || n.mod, op = Math.min(1, (.12 + .88 * zd * zd) * (touched ? 1 : .72) * S.dens + (isT ? .3 : 0))
       // les dossiers : une étoile à huit branches qui tourne ; les fichiers : quatre branches qui scintillent
       const dir = n.kind === 'dir' || n.kind === 'concept'; if (dir) used8.add(n.comm)
       body = `<use href="#${dir ? 's8' : 's4'}${n.comm}" transform="translate(${Math.round(n.x)} ${Math.round(n.y)})${dir ? `rotate(${hash(n.id) % 45})` : ''}scale(${(r * (dir ? 1.25 : .95) / 16).toFixed(2)})" opacity="${op.toFixed(2)}"/>`
@@ -1148,7 +1160,6 @@ export function renderClip(W, ev, frames, X) {
   X.others.forEach(o => {
     let s = dragSVG([o.P], [o.a.hang], dur, 1) + spiderSVG([o.P], S, dur, 1)
     if (o.a.id === 'main' && W.sleeping) s = swingWrap(o.P, s, 0) + zzzSVG(o.P)
-    if (W.sph) s = tiltWrap(tiltOf(W, g.byId[o.a.cur]), o.P, s)
     if (W.sph && X.turn && lod < 2) s = spinWrap(W, X, o.a.cur, s)
     if (W.sph && X.turn && lod < 2) { const A = X.turn.A.get(o.a.cur), M = X.turn.M.get(o.a.cur), B = X.turn.B.get(o.a.cur); if (A && M && B) s = `<g><animateTransform attributeName="transform" type="translate" values="${f1(A.x - B.x)} ${f1(A.y - B.y)};${f1(M.x - B.x)} ${f1(M.y - B.y)};0 0" dur="${X.turn.T.toFixed(2)}s" fill="freeze"/>${s}</g>` }
     out.push(s)
@@ -1158,8 +1169,9 @@ export function renderClip(W, ev, frames, X) {
   let sp = dragSVG(Ps, frames.map(f => f.hang || 0), dur, n) + spiderSVG(Ps, S, dur, n)
   if (X.act.tool === 'Mood') sp = `<g filter="url(#mood)">${sp}</g>`
   if (X.sleep) sp = swingWrap(Ps[Ps.length - 1], sp, T) + zzzSVG(Ps[Ps.length - 1])
-  if (W.sph) sp = tiltWrap(tiltOf(W, g.byId[X.actor.cur]), Ps[Ps.length - 1], sp)
   if (driftOff) sp = spinWrap(W, X, X.actor.cur, sp, `0;${kt(X.turn.T / 2)};${kt(X.turn.T)};1`, dur)
+  // sans glissement de caméra : l'araignée rejoint simplement sa place
+  if (!driftOff && X.settle && (X.settle.x || X.settle.y)) sp = `<g><animateTransform attributeName="transform" type="translate" values="${f1(-X.settle.x)} ${f1(-X.settle.y)};0 0" dur="1s" fill="freeze"/>${sp}</g>`
   if (driftOff) { const st = X.settle || { x: 0, y: 0 }, back = [1, .45, 0, 0]; sp = `<g><animateTransform attributeName="transform" type="translate" values="${driftOff.map((d, i) => f1(d.x - st.x * back[i]) + ' ' + f1(d.y - st.y * back[i])).join(';')}" keyTimes="0;${kt(X.turn.T / 2)};${kt(X.turn.T)};1" dur="${dur}" fill="freeze"/>${sp}</g>` }
   if (X.fadeOut !== undefined) sp = `<g>${sp}<animate attributeName="opacity" values="1;1;0" keyTimes="0;${kt(X.fadeOut)};1" dur="${dur}" fill="freeze"/></g>`
   out.push(sp)

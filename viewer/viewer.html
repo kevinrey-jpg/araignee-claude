@@ -1310,6 +1310,7 @@ let SPH = !/[?&]toile=classique\b/.test(location.search);
 try { if (localStorage.getItem('araignee-toile') === 'classique') SPH = false; } catch (e) {}
 const EDGE_DENS = clamp(Math.sqrt(600 / Math.max(600, edges.length)), .5, 1);
 const NEB_DENS = clamp(Math.sqrt(140 / Math.max(140, nodes.length)), .38, 1);
+let ldt = .016; // durée de la dernière image (pour les lissages faits pendant le dessin)
 const S3 = { F: { x: 0, y: 0, z: 0 }, yaw: .4, pitch: .28, vyaw: 0, vpitch: 0, user: 0, R: 150 + 14 * Math.sqrt(nodes.length), D: 330, lastBolt: -99, nextIdle: 6, bolt: null };
 const NEB_HUES = ['#b46cff', '#5ee6ff', '#ff6be6', '#ffb347', '#8dff7a', '#ffd36b', '#ff7a8a', '#7f9dff', '#e8e2ff'];
 // des directions : la toile plate est enroulée sur la sphère (le centre en haut, le bord en bas), puis les nœuds
@@ -1347,15 +1348,6 @@ function place3(n, anchor) {
 }
 const SEGS = 16;
 function sphereEdge(e) { e.pts2 = e.pts2 || e.pts; e.sp = Array.from({ length: SEGS + 1 }, () => ({ x: 0, y: 0 })); if (SPH) e.pts = e.sp; }
-// l'araignée posée sur la boule : vue de face au centre, de biais (aplatie vers le bord) quand son dossier passe
-// sur le côté ; f est l'aplatissement, (ux, uy) la direction vers laquelle la surface penche à l'écran
-function tiltOf(n) {
-  const p = n.p3; if (!p) return null; const l = Math.hypot(p.x, p.y, p.z); if (l < 1) return null;
-  const cy = Math.cos(S3.yaw), sy = Math.sin(S3.yaw), cp = Math.cos(S3.pitch), spp = Math.sin(S3.pitch);
-  const x = p.x * cy + p.z * sy, z0 = -p.x * sy + p.z * cy, y = p.y * cp - z0 * spp, z = p.y * spp + z0 * cp, sl = Math.hypot(x, y) || 1;
-  const f0 = clamp(.42 + .58 * Math.max(0, z / l), .42, 1), f = 1 - (1 - f0) * Math.min(1, l / 70);
-  return { f, ux: x / sl, uy: y / sl };
-}
 // la caméra à la troisième personne : elle vise le point F (l'araignée suivie, en 3D) et se tient toujours à la même
 // distance D de lui ; la boule ne tourne plus d'elle-même, c'est la caméra qui accompagne l'araignée, même quand elle
 // s'enfonce dans la boule. La souris fait tourner la vue autour d'elle.
@@ -1371,7 +1363,7 @@ const depthOf = z => z < 0 ? clamp(1 + z / 150, .04, 1) : clamp(1 - Math.max(0, 
 function projectAll() {
   for (const n of nodes) { if (!n.p3) place3(n, adj[n.id].map(id => byId[id]).find(o => o && o.p3)); const q = project3(n.p3); n.ox = n.x; n.oy = n.y; n.x = q.x; n.y = q.y; n.zz = q.z; n.k = q.k;
     // au premier plan : ce qui est près de l'araignée, son chemin et sa cible ; le reste s'estompe avec la distance
-    const F = S3.F, d3 = Math.hypot(n.p3.x - F.x, n.p3.y - F.y, n.p3.z - F.z); n.zd = S3.boost && S3.boost.has(n.id) ? Math.max(.92, depthOf(q.z)) : depthOf(q.z) * (.28 + .72 * Math.exp(-d3 / 55)); }
+    const F = S3.F, d3 = Math.hypot(n.p3.x - F.x, n.p3.y - F.y, n.p3.z - F.z); n.zd = S3.boost && S3.boost.has(n.id) ? Math.max(.92, depthOf(q.z)) : depthOf(q.z) * (.2 + .8 * Math.exp(-d3 / 46)); }
   // les fils ondulent comme des câbles posés : un, deux ou trois virages, dans tous les sens (pas seulement vers le bas),
   // et se balancent à peine ; l'araignée marche sur la courbe
   for (const e of edges) {
@@ -1432,9 +1424,8 @@ function sphereFrame(dt, simDt) {
   // d'elles (l'angle dont tournent ses voisins), tête et pattes comprises ; sinon elles gardent toujours le même
   // profil et ont l'air d'une image collée sur un monde qui tourne
   for (const a of AGENTS) {
-    if (dive && dive.ag === a && dive.onPage && !dive.back) { a.tilt = null; continue; }
+    if (dive && dive.ag === a && dive.onPage && !dive.back) continue;
     const n = byId[a.cur]; if (!n || n.ox === undefined) continue;
-    a.tilt = tiltOf(n);
     let sc = 0, sd = 0; const nb = adj[n.id]; for (let i = 0; i < nb.length && i < 14; i++) { const o = byId[nb[i]]; if (!o || o.ox === undefined) continue; const ux = o.ox - n.ox, uy = o.oy - n.oy, vx = o.x - n.x, vy = o.y - n.y; sc += ux * vy - uy * vx; sd += ux * vx + uy * vy; }
     const th = sd > 0 ? clamp(Math.atan2(sc, sd), -.15, .15) : 0, co = Math.cos(th), si = Math.sin(th);
     if (n.x === n.ox && n.y === n.oy && !th) continue;
@@ -1571,6 +1562,8 @@ function drawSphereStage(c, targets) {
   const groups = new Map();
   edges.forEach((e, i) => {
     if (cutEdge(i)) return; const a = byId[e.a], b = byId[e.b]; if (a.gone || b.gone) return;
+    // loin de l'araignée et au fond : un fil presque invisible, on ne le dessine pas (moins de fouillis)
+    if (a.zd < .1 && b.zd < .1 && !(e.trail > .01) && !((e.h || 0) > .12)) return;
     const d = (a.zd + b.zd) / 2, lvl = Math.min(5, Math.floor(d * 6)), same = a.comm === b.comm, hot = e.trail > .01 || (e.h || 0) > .12, spoke = !hot && Math.max(adj[e.a].length, adj[e.b].length) > (S3.hubDeg || 40), key = (hot ? 'h' : spoke ? 's' : same ? a.comm : 'w') + ':' + lvl;
     const cc = (adj[e.a].length >= adj[e.b].length ? b : a).comm, mesh = e.kind === 'dep' && !hot, ck = hot ? 'h' + cc : mesh ? 'm' + cc : spoke ? 's' + cc : cc;
     let g = groups.get(ck + ':' + lvl); if (!g) groups.set(ck + ':' + lvl, g = { P: new Path2D(), lvl, col: COMM[cc] ? COMM[cc].col : '#c9c2e6', hot, same, spoke, mesh });
@@ -1583,7 +1576,7 @@ function drawSphereStage(c, targets) {
     const d = (g.lvl + .5) / 6, a0 = (.18 + .4 * d) * (g.spoke ? .55 : 1) * (g.mesh ? .6 : 1) * (g.hot ? 1.5 : EDGE_DENS * .5 + .5), w = (g.hot ? .5 : g.mesh ? .26 : .38) * RS, bright = mix(g.col, '#ffffff', g.hot ? .4 : .1);
     // des fils pleins (jamais transparents) : la profondeur se lit à l'épaisseur (fins au fond, épais devant) et à la
     // couleur, qui s'assombrit vers le fond au lieu de s'effacer
-    const lum = Math.min(1, a0 * 1.55), ww = w * (.32 + 1.2 * d), BG = '#06040c';
+    const lum = g.hot ? Math.min(1, a0 * 1.55) : Math.min(1, (.1 + .9 * d * d) * 1.5 * (g.spoke ? .6 : 1) * (g.mesh ? .75 : 1)), ww = w * (.22 + 1.4 * d * d), BG = '#06040c';
     c.globalCompositeOperation = 'lighter'; c.strokeStyle = hexA(g.col, (.06 * a0).toFixed(3)); c.lineWidth = ww * 3; c.stroke(g.P);
     c.globalCompositeOperation = 'source-over'; c.strokeStyle = mix(bright, BG, 1 - lum); c.lineWidth = ww; c.stroke(g.P);
     if (d > .3 && !g.mesh) { c.setLineDash([ww * .35, ww * 2.4]); c.lineDashOffset = -simT * ww * 1.8 - gi * ww; c.strokeStyle = mix(mix(g.col, '#ffffff', .45), BG, 1 - lum * .8); c.lineWidth = ww * 1.4; c.stroke(g.P); c.setLineDash([]); }
@@ -1597,7 +1590,8 @@ function drawSphereStage(c, targets) {
   const vx0 = cam.x - cssW / (2 * pxw) - 60, vx1 = cam.x + cssW / (2 * pxw) + 60, vy0 = cam.y - cssH / (2 * pxw) - 60, vy1 = cam.y + cssH / (2 * pxw) + 60;
   for (const n of order) {
     if (n.x < vx0 || n.x > vx1 || n.y < vy0 || n.y > vy1) continue;
-    let r = nebR(n) * RS * n.k, al = (.28 + .72 * n.zd) * ((n.heat || 0) > .01 || n.visited || n.mod ? 1 : .72) * NEB_DENS, y = n.y;
+    // loin de l'araignée : des étoiles plus petites et plus discrètes ; près d'elle, pleines
+    let r = nebR(n) * RS * n.k * (.5 + .5 * n.zd), al = (.12 + .88 * n.zd * n.zd) * ((n.heat || 0) > .01 || n.visited || n.mod ? 1 : .72) * NEB_DENS, y = n.y;
     if (n.fallT !== undefined) { const u = simT - n.fallT; if (u > 1.6) continue; y += u * u * 40 * RS; al *= 1 - sm(.6, 1.6, u); }
     if (n.born !== undefined) r *= .2 + .8 * sm(n.born, n.born + 1.9, simT);
     const b = boost.get(n.id) || 0, act = targets.has(n.id); r *= 1 + b * .3 + (act ? .25 : 0); al = Math.min(1.1, al + b * .5 * NEB_DENS + (act ? .3 : 0));
@@ -1608,7 +1602,12 @@ function drawSphereStage(c, targets) {
   // le terminal garde sa petite console verte, à sa place sur la boule
   nodes.forEach(n => {
     if (n.kind !== 'term' || n.gone) return; const s = n.k * RS * .9, flash = simT - n.pulse < 1.2, A = AGENTS.map(a => a.A).find(a => a && a.tool === 'Bash' && a.n === n);
-    c.save(); c.translate(n.x, n.y); c.scale(s, s); c.globalAlpha = .08 + .92 * n.zd;
+    // une araignée sur le terminal : la boîte s'écarte à côté d'elle (reliée à son étoile par un fil) au lieu de la recouvrir
+    const want = { x: 0, y: 0 };
+    for (const ag of AGENTS) { if (ag.gone) continue; const vx = n.x - ag.sp.x, vy = n.y - ag.sp.y, d = Math.hypot(vx, vy), need = 11.5 * s + Math.max(...ag.sp.m.legs) * .85; if (d < need) { const ux = d > .5 ? vx / d : .94, uy = d > .5 ? vy / d : -.34; want.x += ux * (need - d); want.y += uy * (need - d); } }
+    const bo = n.boxOff || (n.boxOff = { x: 0, y: 0 }), kb = Math.min(1, ldt * 5); bo.x += (want.x - bo.x) * kb; bo.y += (want.y - bo.y) * kb;
+    if (Math.hypot(bo.x, bo.y) > 2) { c.strokeStyle = `rgba(157,255,138,${(.35 * n.zd).toFixed(3)})`; c.lineWidth = .3 * RS; c.beginPath(); c.moveTo(n.x, n.y); c.lineTo(n.x + bo.x, n.y + bo.y); c.stroke(); }
+    c.save(); c.translate(n.x + bo.x, n.y + bo.y); c.scale(s, s); c.globalAlpha = .08 + .92 * n.zd;
     glow(c, '#9dff8a', flash ? 16 : 6); c.fillStyle = flash ? '#163a1c' : '#0b1a0e'; c.beginPath(); c.roundRect(-10, -6.5, 20, 13, 3); c.fill(); noglow(c); c.strokeStyle = '#9dff8a'; c.lineWidth = .6; c.stroke();
     if (A) { const t = simT - A.t0; c.fillStyle = 'rgba(157,255,138,.85)'; for (let r = 0; r < 3; r++) { const wv = clamp((t - .3 - r * .5) / .5, 0, 1) * (r === 2 ? 9 : 14); c.fillRect(-7.5, -4 + r * 3, wv, .9); } }
     else { c.fillStyle = '#9dff8a'; c.font = '6px "JetBrains Mono", monospace'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('>_', 0, .3); }
@@ -2239,6 +2238,7 @@ function drawDew(c) {
 // pendant la plongée, la page cache ce qui est derrière elle (étiquettes, cartes)
 function pageHides(x, y) { if (!dive) return false; const t = simT - dive.t0; if (t < .5 || t > dive.tEnd + .3) return false; return x > dive.x - 30 && x < dive.x + dive.w + 60 && y > dive.y - 10 && y < dive.y + dive.h + 10; }
 function render(rdt) {
+  ldt = clamp(rdt || .016, 0, .1);
   const c = ctx, S0 = sel.sp;
   let tx = CX, ty = CY, tz = 1;
   if (SPH) {
@@ -2336,17 +2336,6 @@ function render(rdt) {
   const drawAgent = ag => {
     const sp = ag.sp, P = sp.pose(simT, ag.opts); ag.P = P; const A = ag.A;
     c.save();
-    // posée sur la boule : de biais quand son dossier est sur le côté
-    const tl = SPH && ag.tilt && ag.tilt.f < .995 && !(dive && dive.ag === ag && dive.onPage) ? ag.tilt : null;
-    // sur la boule pleine d'étoiles : un voile sombre sous chaque araignée, et une lueur à sa couleur, pour qu'on la
-    // voie toujours (les bébés des agents surtout, plus petits)
-    if (SPH && !(dive && dive.ag === ag && dive.onPage)) {
-      const r = Math.max(...sp.m.legs) * 1.25, gr = c.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, r);
-      gr.addColorStop(0, 'rgba(6,4,12,.62)'); gr.addColorStop(.55, ag.baby ? 'rgba(40,20,70,.35)' : 'rgba(30,16,50,.3)'); gr.addColorStop(1, 'rgba(6,4,12,0)');
-      c.fillStyle = gr; c.beginPath(); c.arc(sp.x, sp.y, r, 0, Math.PI * 2); c.fill();
-      if (ag.baby) { const k = .5 + .5 * Math.sin(simT * 2.4 + ag.k), g2 = c.createRadialGradient(sp.x, sp.y, r * .35, sp.x, sp.y, r * 1.05); g2.addColorStop(0, 'rgba(200,155,255,0)'); g2.addColorStop(.8, `rgba(200,155,255,${(.10 + .08 * k).toFixed(3)})`); g2.addColorStop(1, 'rgba(200,155,255,0)'); c.fillStyle = g2; c.beginPath(); c.arc(sp.x, sp.y, r * 1.05, 0, Math.PI * 2); c.fill(); }
-    }
-    if (tl) { const k = 1 - tl.f; c.translate(sp.x, sp.y); c.transform(1 - k * tl.ux * tl.ux, -k * tl.ux * tl.uy, -k * tl.ux * tl.uy, 1 - k * tl.uy * tl.uy, 0, 0); c.translate(-sp.x, -sp.y); }
     // endormie, elle se balance doucement au bout de son fil
     if (ag.sleeping && ag.hang > 1) { const s0 = P3(spinneret(P)), px = s0.x, py = s0.y - 600, a = Math.sin(simT * 1.75) * .012; c.translate(px, py); c.rotate(a); c.translate(-px, -py); }
     if (ag.hang > .5) { const s0 = P3(spinneret(P)); c.strokeStyle = 'rgba(255,255,255,.78)'; c.lineWidth = .28; c.beginPath(); c.moveTo(s0.x, s0.y); c.lineTo(s0.x, s0.y - 900); c.stroke(); }
@@ -2777,7 +2766,7 @@ if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) setPaused(tru
 AGENTS.forEach((ag, k) => later(ag, .5 + k * .9));
 requestAnimationFrame(frame);
 requestAnimationFrame(miniLoop);
-window.__araignee = { ecran: id => byId[id] && toScreen(byId[id].x, byId[id].y), sphere: () => ({ on: SPH, yaw: S3.yaw, pitch: S3.pitch, R: S3.R, p3: nodes.map(n => n.p3 && [Math.round(n.p3.x), Math.round(n.p3.y), Math.round(n.p3.z), adj[n.id].length]) }), camera: () => ({ mode: cam.mode, suit: sel.id, z: +cam.z.toFixed(3), zoom: +cam.uz.toFixed(3), x: Math.round(cam.x), y: Math.round(cam.y), araignee: AGENTS.map(a => ({ id: a.id, cur: a.cur, h: +a.sp.h.toFixed(2), f: a.tilt ? +a.tilt.f.toFixed(2) : 1, ...toScreen(a.sp.x, a.sp.y), noeud: byId[a.cur] && toScreen(byId[a.cur].x, byId[a.cur].y) })) }), etat: () => ({ simT, apparence: AGENTS[0].style.id, toile: SPH ? 'sphère' : 'à plat', erreurs: errCount, recus: recvCount, plonge: !!dive, araignees: AGENTS.map(a => ({ id: a.id, action: a.A ? a.A.tool : null, marche: !!a.walk, fil: !!a.hangAnim, file: a.queue.length, dort: a.sleeping })) }) };
+window.__araignee = { ecran: id => byId[id] && toScreen(byId[id].x, byId[id].y), sphere: () => ({ on: SPH, yaw: S3.yaw, pitch: S3.pitch, R: S3.R, p3: nodes.map(n => n.p3 && [Math.round(n.p3.x), Math.round(n.p3.y), Math.round(n.p3.z), adj[n.id].length]) }), camera: () => ({ mode: cam.mode, suit: sel.id, z: +cam.z.toFixed(3), zoom: +cam.uz.toFixed(3), x: Math.round(cam.x), y: Math.round(cam.y), araignee: AGENTS.map(a => ({ id: a.id, cur: a.cur, h: +a.sp.h.toFixed(2), ...toScreen(a.sp.x, a.sp.y), noeud: byId[a.cur] && toScreen(byId[a.cur].x, byId[a.cur].y) })) }), etat: () => ({ simT, apparence: AGENTS[0].style.id, toile: SPH ? 'sphère' : 'à plat', erreurs: errCount, recus: recvCount, plonge: !!dive, araignees: AGENTS.map(a => ({ id: a.id, action: a.A ? a.A.tool : null, marche: !!a.walk, fil: !!a.hangAnim, file: a.queue.length, dort: a.sleeping })) }) };
 })();
 </script>
 
