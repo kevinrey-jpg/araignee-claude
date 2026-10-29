@@ -96,6 +96,8 @@ Quand un sous-agent ou une tâche de fond travaille sur un fichier, la grande to
 
 Le bouton **Plongée** de la grande toile choisit qui plonge : les agents seulement (par défaut), tout le monde (Claude aussi), ou personne. Dans le petit panneau, les bébés araignées ouvrent une petite page avec les mêmes lignes.
 
+
+Pendant qu'elle lit, l'araignée avance à un rythme qu'on peut suivre des yeux, lettre après lettre, et les mots importants qu'elle remarque s'allument à son passage : ce qui est défini (fonctions, classes, titres) en doré, les erreurs et les TODO en rouge, les modules importés en bleu, les constantes en rose. Tout s'efface quand la page se referme.
 ### Plusieurs araignées sur un même dossier
 
 La première arrivée garde le centre de l'étoile. Les suivantes se posent chacune sur un fil différent qui part du dossier, tête tournée vers l'étoile ; s'il n'y a plus de fil libre, elles se placent en couronne. Deux araignées qui se croisent en marchant s'écartent un peu au lieu de se traverser (grande toile).

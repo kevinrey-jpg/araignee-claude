@@ -1931,8 +1931,37 @@ function wantsDive(ag, ev) {
 }
 const isReadK = k => k === 'read' || k === 'term';
 // le curseur de lecture : ligne par ligne, et de mot en mot sur la ligne (là où l'araignée pose ses pattes)
+// les mots qu'elle remarque en lisant : ce qui est défini (fonctions, classes, titres), les erreurs et les TODO, les
+// modules importés, les constantes ; ils s'allument à son passage et restent allumés tant que la page est ouverte
+const MARK_COL = { def: '#ffd36b', alert: '#ff6b8a', ok: '#9dff8a', imp: '#7df9ff', cst: '#ff9be6' };
+function findMarks(lines, kind, maxC) {
+  const out = [], seen = new Map(), add = (row, c0, word, k, pri) => {
+    if (!word || c0 < 0 || c0 + word.length > maxC - 1) return; const n = seen.get(word) || 0; if (n >= 2) return; seen.set(word, n + 1);
+    if (out.some(m => m.row === row && c0 < m.c1 && c0 + word.length > m.c0)) return; out.push({ row, c0, c1: c0 + word.length, k, pri, t: -1 });
+  };
+  const RX = [
+    [/\b(?:def|class|function|fn|func|interface|type|struct|enum|trait|impl|local\s+function)\s+([A-Za-z_$][\w$]*)/g, 'def', 0],
+    [/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\(|function|class)/g, 'def', 0],
+    [/\b(TODO|FIXME|XXX|HACK|BUG|WARNING|Error|ERROR|error|failed|FAILED|Traceback|panic|Exception)\b/g, 'alert', 1],
+    [/\b(passed|PASSED|success|OK|ok|✓)\b/g, 'ok', kind === 'term' ? 1 : 4],
+    [/^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))/g, 'imp', 2],
+    [/(?:from\s+|require\()['"]([^'"]+)['"]/g, 'imp', 2],
+    [/\b([A-Z][A-Z0-9_]{3,})\b/g, 'cst', 3],
+  ];
+  lines.forEach((line, row) => {
+    const h = line.match(/^(#{1,4})\s+(.+)/); if (h) add(row, h[1].length + 1, h[2].trim().slice(0, 40), 'def', 0);
+    for (const m of line.matchAll(/\*\*([^*]{2,40})\*\*/g)) add(row, m.index + 2, m[1], 'def', 1);
+    for (const [rx, k, pri] of RX) for (const m of line.matchAll(rx)) { const w = m[1] || m[2]; if (!w) continue; add(row, m.index + m[0].indexOf(w), w, k, pri); }
+  });
+  return out.sort((a, b) => a.pri - b.pri).slice(0, 14);
+}
+// l'araignée lit à vitesse régulière, lettre après lettre : une ligne longue prend plus de temps qu'une courte
+// (une ligne vide passe vite, mais pas instantanément)
 function readCursor(d, t) {
-  const u = clamp((t - d.tAct) / d.tRead, 0, 1), rf = u * d.L, row = Math.min(d.L - 1, Math.floor(rf)), f = rf - row, line = d.pg.lines[row] || '';
+  const u = clamp((t - d.tAct) / d.tRead, 0, 1);
+  if (!d.cum) { let c = 0; d.cum = d.pg.lines.map(l => (c += Math.max(5, Math.min(d.maxC || 64, l.trimEnd().length) - Math.max(0, l.search(/\S/))))); d.cum.unshift(0); }
+  const tot = d.cum[d.cum.length - 1] || 1, want = u * tot; let row = 0; while (row < d.L - 1 && d.cum[row + 1] <= want) row++;
+  const f = clamp((want - d.cum[row]) / ((d.cum[row + 1] - d.cum[row]) || 1), 0, 1), line = d.pg.lines[row] || '';
   const first = Math.max(0, line.search(/\S/)), last = Math.min(d.maxC || 64, line.trimEnd().length), col = first + (Math.max(first, last) - first) * f;
   return { row, f, col, u, done: u >= 1 };
 }
@@ -1944,12 +1973,15 @@ function startDive(ag, ev) {
   const kind = ['read', 'edit', 'write', 'term'].includes(pg.kind) ? pg.kind : ev.tool === 'Read' ? 'read' : 'edit', del = kind === 'edit' ? (pg.del || []).slice(0, 10).map(l => String(l ?? '')) : [];
   const typeRange = kind === 'write' ? [0, Math.min(L - 1, 23)] : isReadK(kind) ? null : hi;
   const chars = typeRange ? pg.lines.slice(typeRange[0], typeRange[1] + 1).reduce((s, l) => s + Math.max(1, l.length), 0) : 0;
-  const tType = typeRange ? clamp(chars / 60, .9, kind === 'write' ? 3.2 : 2.4) : 0;
-  // rien d'autre à faire ensuite : l'araignée prend le temps de lire, mot après mot ; sinon elle parcourt la page en vitesse
-  const tRead = isReadK(kind) ? (ag.queue.length ? clamp(L * .085, 1.4, 3.2) : clamp(L * .3, 2.6, 8.5)) : 0, tDel = del.length ? 1.1 : 0;
+  // un rythme qu'on peut suivre des yeux : environ 25 lettres tissées par seconde
+  const tType = typeRange ? clamp(chars / 25, 2, kind === 'write' ? 7 : 5.5) : 0;
+  // l'araignée prend le temps de lire, mot après mot (environ 2,5 fois moins vite qu'avant) ; si d'autres actions
+  // attendent, elle lit un peu plus vite, sans jamais filer
+  const tRead = isReadK(kind) ? (ag.queue.length ? clamp(L * .22, 3.5, 8) : clamp(L * .7, 6.5, 20)) : 0, tDel = del.length ? 2.2 : 0;
   const d = { ag, n, ev, pg, kind, x, y, w, h, L, rows, hi, del, typeRange, chars, tRead, tDel, tType, t0: simT, lit: new Float32Array(L), scroll: 0, focus: hi ? hi[0] : 0, flash: -9, typed: 0, home: { x: sp.x, y: sp.y, h: sp.h } };
   // les temps : ouverture, saut sur la page, lecture / effacement / tissage, éclat, fermeture
   d.maxC = Math.floor((w - 44) / CW);
+  d.marks = isReadK(kind) ? findMarks(pg.lines, kind, d.maxC) : [];
   d.tAct = 1.25; d.tEnd = d.tAct + (isReadK(kind) ? tRead + .5 : tDel + tType + .2) + .6; d.dur = d.tEnd + .8;
   dive = d;
   const A = ag.A = { tool: 'Dive', ev, n, t0: simT, dur: d.dur, acc: 0 };
@@ -1981,6 +2013,10 @@ function updateDive(ag, dt) {
   let focus = d.focus;
   if (isReadK(d.kind) && t > d.tAct) {
     const rc = d.rc = readCursor(d, t); focus = rc.row; for (let i = d.litTo || 0; i < rc.row; i++) d.lit[i] = 1; d.litTo = rc.row;
+    // un mot important sous ses pattes : il s'allume, avec quelques étincelles
+    for (const m of d.marks || []) if (m.t < 0 && (m.row < rc.row || rc.done || (m.row === rc.row && rc.col >= m.c0 + 1))) {
+      m.t = simT; if (d.onPage) for (let k = 0; k < 5; k++) parts.push({ k: 'spark', x: textX(d) + (m.c0 + Math.random() * (m.c1 - m.c0)) * CW, y: rowY(d, m.row), vx: (Math.random() - .5) * 26, vy: -8 - Math.random() * 12, t0: simT, dur: .7 });
+    }
     // quelques lettres s'envolent de sous ses pattes
     if (!rc.done && d.onPage && simT - (d.lastGlyph || 0) > .09) { const ch = (d.pg.lines[rc.row] || '')[Math.floor(rc.col)]; d.lastGlyph = simT; if (ch && ch.trim()) parts.push({ k: 'rglyph', ch, x: textX(d) + Math.floor(rc.col) * CW, y: rowY(d, rc.row), t0: simT, dur: .7, term: d.kind === 'term' }); }
   }
@@ -1995,7 +2031,8 @@ function updateDive(ag, dt) {
     if (isReadK(d.kind)) { const rc = t > d.tAct && d.rc ? d.rc : { row: 0, col: 0 }; tx = textX(d) + rc.col * CW; ty = rowY(d, rc.row) - LH * .1; }
     else if (cur && t > d.tAct + d.tDel) { let len = 0; for (let i = Math.max(0, cur.row - 2); i <= Math.min(d.L - 1, cur.row + 2); i++) len = Math.max(len, i === cur.row ? cur.col : i < cur.row || !d.typeRange || i > d.typeRange[1] ? d.pg.lines[i].length : 0); tx = Math.min(d.x + d.w - 10, textX(d) + (len + 3) * CW + 10); ty = rowY(d, cur.row); }
     else { const r = d.hi ? d.hi[0] : 0; tx = d.x + d.w - 18; ty = rowY(d, r); }
-    const k = Math.min(1, dt * (t < 1.25 ? 3 : isReadK(d.kind) ? 12 : 6)); sp.x += (tx - sp.x) * k; sp.y += (ty - sp.y) * k;
+    // elle suit le texte en douceur (sans bondir d'un bout à l'autre de la ligne)
+    const k = Math.min(1, dt * (t < 1.25 ? 3 : isReadK(d.kind) ? 5 : 4)); sp.x += (tx - sp.x) * k; sp.y += (ty - sp.y) * k;
   } else if (!d.onPage) { const k = Math.min(1, dt * 4), tx = d.x + d.w - 18, ty = rowY(d, d.hi ? d.hi[0] : 0); if (t > .6) { sp.x += (tx - sp.x) * k * sm(.6, .9, t); sp.y += (ty - sp.y) * k * sm(.6, .9, t); } }
   if (t >= d.dur) { dive = null; if (!d.back) { sp.env = d.env0 || stageEnv; sp.setMorph(m0); const hp = homeOf(d); sp.x = hp.x; sp.y = hp.y; } }
 }
@@ -2045,7 +2082,11 @@ function drawDive(c) {
       const lit = d.lit[i] || 0, term = d.kind === 'term', rc = isReadK(d.kind) && d.rc && t > d.tAct && !d.rc.done ? d.rc : null, hl = term ? '#9dff8a' : '#7df9ff';
       if (lit > .05) { c.fillStyle = hexA(hl, .1 * lit); c.fillRect(x + 29, yy - LH * .5, w - 34, LH); glow(c, hl, 8 * lit); }
       c.fillStyle = lit > .05 ? (term ? `rgba(190,255,180,${.55 + .45 * lit})` : `rgba(${Math.round(lerp(205, 210, lit))},${Math.round(lerp(198, 252, lit))},255,${.55 + .45 * lit})`) : term ? (txt[0] === '$' ? 'rgba(157,255,138,.9)' : 'rgba(180,230,170,.55)') : 'rgba(205,198,235,.55)';
+      // les mots remarqués : un surlignage doux derrière, le mot éclatant devant
+      const mk = (d.marks || []).filter(m => m.row === i && m.t >= 0);
+      if (mk.length) { c.save(); noglow(c); for (const m of mk) { const u = clamp((simT - m.t) / .35, 0, 1), pop = 1 + .25 * Math.sin(Math.PI * u) * (u < 1 ? 1 : 0), col = MARK_COL[m.k] || '#ffd36b', mx = textX(d) + m.c0 * CW - 2, mw = (m.c1 - m.c0) * CW + 4, mh = LH * .78 * pop; glow(c, col, 10 * u); c.fillStyle = hexA(col, (.26 * u).toFixed(3)); c.beginPath(); c.roundRect(mx, yy - mh / 2, mw, mh, 2.5); c.fill(); noglow(c); } c.restore(); }
       c.fillText(txt, textX(d), yy); noglow(c);
+      for (const m of mk) { const u = clamp((simT - m.t) / .35, 0, 1), col = MARK_COL[m.k] || '#ffd36b'; c.save(); glow(c, col, 8 * u); c.fillStyle = mix(col, '#ffffff', .55); c.globalAlpha = a * u; c.fillText(txt.slice(m.c0, m.c1), textX(d) + m.c0 * CW, yy); c.restore(); }
       // la ligne en cours : ce qui est déjà lu s'allume, et les lettres sous les pattes brillent
       if (rc && rc.row === i) {
         const col = Math.floor(rc.col), done = txt.slice(0, Math.min(col, txt.length));
