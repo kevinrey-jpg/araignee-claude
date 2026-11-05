@@ -1430,7 +1430,7 @@ function cardSVG(ev, X, frames) {
 // au précédent ; un petit tableau de bord compte ce qu'elle lit. La lecture se joue en plusieurs clips courts
 // (la taille d'un clip du panneau est limitée), puis elle redescend sur son dossier.
 const MARK_COL = { def: '#ffd36b', alert: '#ff6b8a', ok: '#9dff8a', imp: '#7df9ff', cst: '#ff9be6' }
-function findMarks(lines, kind, maxC) {
+function findMarks(lines, kind, maxC, md) {
   const out = [], seen = new Map(), add = (row, c0, word, k, pri) => {
     if (!word || c0 < 0 || c0 + word.length > maxC - 1) return; const n = seen.get(word) || 0; if (n >= 2) return; seen.set(word, n + 1)
     if (out.some(m => m.row === row && c0 < m.c1 && c0 + word.length > m.c0)) return; out.push({ row, c0, c1: c0 + word.length, k, pri, word })
@@ -1446,8 +1446,8 @@ function findMarks(lines, kind, maxC) {
     [/\b([A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+|[A-Z]{2,}[a-z][A-Za-z0-9]*)\b/g, 'cst', 3],
   ]
   lines.forEach((line, row) => {
-    const h = line.match(/^(#{1,4})\s+(.+)/); if (h) add(row, h[1].length + 1, h[2].trim().slice(0, 30), 'def', 0)
-    for (const m of line.matchAll(/\*\*([^*]{2,30})\*\*/g)) add(row, m.index + 2, m[1], 'def', 1)
+    // les titres et le gras : seulement dans un texte Markdown (dans du code, # est un commentaire)
+    if (md) { const h = line.match(/^(#{1,4})\s+(.+)/); if (h) add(row, h[1].length + 1, h[2].trim().slice(0, 30), 'def', 0); for (const m of line.matchAll(/\*\*([^*]{2,30})\*\*/g)) add(row, m.index + 2, m[1], 'def', 1) }
     for (const [rx, k, pri] of RX) for (const m of line.matchAll(rx)) { const w = m[1] || m[2]; if (!w) continue; add(row, m.index + m[0].indexOf(w), w, k, pri) }
   })
   return out.sort((a, b) => a.pri - b.pri).slice(0, 9).sort((a, b) => a.row - b.row || a.c0 - b.c0)
@@ -1462,7 +1462,7 @@ export function crawlBegin(W, ev) {
   const rows = pg.lines.slice(s0, s0 + R).map(l => String(l ?? '').replace(/\t/g, '  ').slice(0, CR.MAXC))
   let c = 0; const cum = [0, ...rows.map(l => (c += Math.max(4, l.trimEnd().length - Math.max(0, l.search(/\S/)))))]
   const words = rows.reduce((s, l) => s + (l.match(/[\wÀ-ÿ]+/g) || []).length, 0)
-  W.crawl = { actor: ev.actor || 'main', n, pg, s0, rows, cum, tot: c || 1, words, marks: findMarks(rows, pg.kind || 'read', CR.MAXC), t: 0, readT: clamp(R * .5, 3, 7), phase: 'in', seg: 0, hit: [], rowAt: rows.map(() => -1) }
+  W.crawl = { actor: ev.actor || 'main', n, pg, s0, rows, cum, tot: c || 1, words, marks: findMarks(rows, pg.kind || 'read', CR.MAXC, /\.(md|markdown|txt)$/i.test(ev.path)), t: 0, readT: clamp(R * .5, 3, 7), phase: 'in', seg: 0, hit: [], rowAt: rows.map(() => -1) }
   ev.crawl = true
   return true
 }
