@@ -435,6 +435,9 @@ class Spider {
       if (L.raise > .01) { const hh = this.local(hl.x + m.cl * .15, hl.y + L.s * m.legs[L.i] * .3); F = { x: lerp(F.x, hh.x, L.raise), y: lerp(F.y, hh.y, L.raise), z: lerp(F.z, m.legs[L.i] * .5, L.raise) + Math.sin(t * 9 + L.s) * L.raise * 1.2 }; }
       // pattes repliées ; en boule (au bout d'un fil), serrées contre le corps et ramenées par-dessus
       if (o.tuck > .001) { const b = o.ball || 0, fold = this.local(hl.x + (L.i < 2 ? m.cl * (.45 - .2 * b) : -m.cl * (.2 - .12 * b)), hl.y + L.s * m.legs[L.i] * (.2 - .13 * b)); F = lerp3(F, { x: fold.x, y: fold.y, z: bz - m.bodyZ * .25 + m.legs[L.i] * (.12 + .1 * b) }, o.tuck); }
+      // suspendue à son fil (qui sort au bout de l'abdomen) : les pattes arrière remontent tenir le fil au-dessus de
+      // l'abdomen, les autres s'écartent autour d'elle et pendent un peu, dans le vide
+      if (o.hangPose > .001) { const hp = o.hangPose, q = L.i === 3 ? this.local(-(m.cl * .5 + m.al * 1.05), L.s * m.cw * .12) : this.local(hl.x + Math.cos(m.ang[L.i] * DEG) * m.legs[L.i] * .62, hl.y + L.s * Math.sin(m.ang[L.i] * DEG) * m.legs[L.i] * .62), qz = L.i === 3 ? bz + m.legs[3] * .3 : bz - m.legs[L.i] * .22; F = lerp3(F, { x: q.x, y: q.y, z: qz }, hp); }
       for (const ov of (o.over || [])) if (ov.w > .001 && ov.i === L.i && (!ov.s || ov.s === L.s)) F = lerp3(F, ov.p(L.s), ov.w);
       const len = m.legs[L.i], { K, A } = ik3(Hh, F, len * m.seg[0], len * m.seg[1], len * m.seg[2]);
       return { H: Hh, K, A, F, s: L.s, i: L.i, stepping: L.p >= 0 };
@@ -442,7 +445,7 @@ class Spider {
     const palps = [-1, 1].map(s => {
       const b = this.local(m.cl * .4, s * m.cw * .17), w = Math.sin(t * 3.1 + s * 1.3) * m.cw * .05;
       const tip = this.local(m.cl * .5 + m.palp * .78, s * (m.cw * .22 + w));
-      const B = { x: b.x, y: b.y, z: bz }; let T = { x: tip.x, y: tip.y, z: bz * .4 };
+      const B = { x: b.x, y: b.y, z: bz }; let T = { x: tip.x, y: tip.y, z: bz - Math.max(.2, m.bodyZ * .6) };
       if (o.palp && o.palp.w > .001) T = lerp3(T, { x: o.palp.x + (-Math.sin(this.h)) * s * 1.2, y: o.palp.y + Math.cos(this.h) * s * 1.2, z: o.palp.z }, o.palp.w);
       return { B, K: { x: (B.x + T.x) / 2, y: (B.y + T.y) / 2, z: Math.max(B.z, T.z) + m.palp * .32 }, T, s };
     });
@@ -1928,8 +1931,8 @@ function step(dt) {
     stageEnv.loads = SPH ? [] : L;
     AGENTS.forEach(ag => {
       ag.opts = actionOpts(ag.A, ag.sp);
-      // au bout de son fil : en boule, pattes serrées
-      if (ag.hang > .5) { ag.opts.lift = (ag.opts.lift || 0) + ag.hang; ag.opts.tuck = Math.max(ag.opts.tuck || 0, clamp(ag.hang / 8, 0, .95)); ag.opts.ball = Math.max(ag.opts.ball || 0, clamp(ag.hang / 14, 0, 1)); }
+      // au bout de son fil (qui sort de l'abdomen) : pattes arrière sur le fil, les autres écartées dans le vide
+      if (ag.hang > .5) { ag.opts.lift = (ag.opts.lift || 0) + ag.hang; ag.opts.hangPose = Math.max(ag.opts.hangPose || 0, clamp(ag.hang / 10, 0, 1)); }
       ag.sp.tick(dt, simT, ag.opts);
     });
     edges.forEach(e => { if (e.trail > .3) e.trail = Math.max(.3, e.trail - dt * .03); });
