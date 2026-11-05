@@ -1462,7 +1462,7 @@ export function crawlBegin(W, ev) {
   const rows = pg.lines.slice(s0, s0 + R).map(l => String(l ?? '').replace(/\t/g, '  ').slice(0, CR.MAXC))
   let c = 0; const cum = [0, ...rows.map(l => (c += Math.max(4, l.trimEnd().length - Math.max(0, l.search(/\S/)))))]
   const words = rows.reduce((s, l) => s + (l.match(/[\wÀ-ÿ]+/g) || []).length, 0)
-  W.crawl = { pi: 0, wait: 0, actor: ev.actor || 'main', n, pg, s0, rows, cum, tot: c || 1, words, marks: findMarks(rows, pg.kind || 'read', CR.MAXC, /\.(md|markdown|txt)$/i.test(ev.path)), t: 0, readT: clamp(R * .5, 3, 7), phase: 'in', seg: 0, hit: [], rowAt: rows.map(() => -1) }
+  W.crawl = { pi: 0, actor: ev.actor || 'main', n, pg, s0, rows, cum, tot: c || 1, words, marks: findMarks(rows, pg.kind || 'read', CR.MAXC, /\.(md|markdown|txt)$/i.test(ev.path)), t: 0, readT: clamp(R * .5, 3, 7), phase: 'in', seg: 0, hit: [], rowAt: rows.map(() => -1) }
   ev.crawl = true
   return true
 }
@@ -1505,7 +1505,15 @@ export function crawlClip(W, hurry) {
   const sp = a.sp, g = W.g, frames = [], DT = 1 / 60, rec = Math.round(60 / FPS), lay = crawlLayout(C), S = SKINS[W.skin], sounds = [], over = []
   // d'autres actions attendent, ou la lecture dure : elle finit vite (encore un ou deux mots)
   if (C.seg >= 6) hurry = true
-  const pageEnv = { snap: p => { const i = clamp(Math.round((p.y - lay.y - 16) / CR.LH - .5), 0, C.rows.length - 1); return { x: clamp(p.x, lay.x + 4, lay.x + lay.w - 4), y: lay.row(i) + CR.LH * .38 } }, depth: () => 0, onPlant: () => {} }
+  // chaque patte se pose sur une lettre du texte (jamais sur un blanc ni une ligne vide) ; un pied posé sur un mot
+  // important l'attrape
+  const cells = []; C.rows.forEach((ln, i) => { for (let k = 0; k < ln.length; k++) if (ln[k] !== ' ') cells.push({ x: lay.tx + (k + .5) * CR.CW, y: lay.row(i) }) })
+  const markAt = f => C.marks.find(m => m.at === undefined && Math.abs(lay.row(m.row) - f.y) < CR.LH * .5 && f.x >= lay.tx + m.c0 * CR.CW - 1 && f.x <= lay.tx + m.c1 * CR.CW + 1)
+  const pageEnv = {
+    snap: p => { let b = null, bd = Infinity; for (const c of cells) { const d = (c.x - p.x) ** 2 + (c.y - p.y) ** 2 * 1.6; if (d < bd) { bd = d; b = c } } return b ? { x: b.x, y: b.y } : p },
+    depth: () => 0,
+    onPlant: f => { if (C.phase !== 'read') return; const m = markAt(f); if (m) { m.at = ct; m.seg = C.seg } }
+  }
   let step = 0, ct = 0, lift = 0, spd = 0
   // la caméra cadre la page entière, et descend un peu avec l'araignée au fil des lignes
   const recFrame = () => { const o = { over: over.filter(r => r.w > .001), lift }, fx = lay.x + lay.w / 2, fy = lerp(lay.y + lay.h / 2 + 8, sp.y, .3); W.cam.x += (fx - W.cam.x) * .18; W.cam.y += (fy - W.cam.y) * .18; frames.push({ P: sp.pose(W.t, o), cam: { ...W.cam }, o, tAct: -1, hang: 0 }) }
@@ -1521,42 +1529,42 @@ export function crawlClip(W, hurry) {
   // accélère, ralentit et s'arrête devant le mot ; une patte s'étire pour l'attraper, le mot se marque, elle repart.
   // Les lignes s'éclairent là où elle passe.
   if (!C.path) C.path = crawlPath(C, lay, sp)
-  const VMAX = 78, wordAt = m => ({ x: lay.tx + (m.c0 + m.c1) / 2 * CR.CW, y: lay.row(m.row) })
+  const VMAX = 105, wordAt = m => ({ x: lay.tx + (m.c0 + m.c1) / 2 * CR.CW, y: lay.row(m.row) })
   while (C.phase === 'read' && ct < CR.SEG) {
     C.t += DT
     if (hurry && !C.hurried) { C.hurried = true; C.path = C.path.slice(0, C.pi + 2) }
     const tgt = C.path[C.pi]
     if (!tgt) { for (let i = 0; i < C.rows.length; i++) if (C.rowAt[i] < 0) C.rowAt[i] = 1, C.hit.push({ row: i, at: ct, seg: C.seg }); C.phase = 'out'; break }
     // où se poser : juste avant le mot, du côté d'où elle arrive, pour que sa patte l'atteigne
-    const wc = tgt.m ? wordAt(tgt.m) : tgt, dx0 = wc.x - sp.x, dy0 = wc.y - sp.y, d0 = Math.hypot(dx0, dy0) || 1
-    const stand = tgt.m ? (C.stand && C.stand.pi === C.pi ? C.stand : (C.stand = { pi: C.pi, x: wc.x - dx0 / d0 * 7.5, y: wc.y - dy0 / d0 * 5 })) : wc
+    const wc = tgt.m ? wordAt(tgt.m) : tgt
+    const stand = wc
     const dx = stand.x - sp.x, dy = stand.y - sp.y, d = Math.hypot(dx, dy), px = sp.x, py = sp.y
-    if (C.wait > 0) {
-      // arrêtée devant le mot : elle le regarde, l'attrape, puis repart
-      C.wait -= DT; sp.vx = sp.vy = 0; spd = 0
-      if (tgt.m) sp.h += wrap(Math.atan2(wc.y - sp.y, wc.x - sp.x) - sp.h) * Math.min(1, DT * 5)
-      if (C.wait <= 0) C.pi++
-    } else if (d < 1.6) {
-      C.wait = tgt.m ? .55 : .15 + (C.rnd() * .2)
+    if (d < 5 && C.pi < C.path.length - 1) {
+      // elle passe sur le mot sans s'arrêter : si aucun pied ne l'a touché, un petit coup de patte au passage
       const m = tgt.m
       if (m && m.at === undefined) {
-        m.at = ct + .18; m.seg = C.seg
+        m.at = ct + .1; m.seg = C.seg
         const side = { x: -Math.sin(sp.h), y: Math.cos(sp.h) }, s = (wc.x - sp.x) * side.x + (wc.y - sp.y) * side.y >= 0 ? 1 : -1
         over.push({ i: 0, s, w: 0, t0: ct, p: () => ({ x: wc.x, y: wc.y, z: 0 }) })
       }
-    } else {
-      // se tourner vers sa destination, puis avancer droit devant (jamais de côté : pas de glissade)
-      const want = Math.atan2(dy, dx), turn = wrap(want - sp.h)
-      sp.h += clamp(turn, -DT * 9, DT * 9)
-      const ahead = Math.max(0, Math.cos(wrap(want - sp.h))), tv = VMAX * clamp(d / 16, .3, 1) * ahead * ahead
-      spd += (tv - spd) * Math.min(1, DT * 6)
+      C.pi++
+    } else if (d < 1.6) {
+      const m = tgt.m; if (m && m.at === undefined) { m.at = ct; m.seg = C.seg } C.pi++
+    }
+    {
+      // se tourner vers sa destination et avancer droit devant (jamais de côté : pas de glissade) ; elle ne
+      // ralentit qu'en arrivant au dernier mot
+      const want = Math.atan2(dy, dx), turn = wrap(want - sp.h), last = C.pi >= C.path.length - 1
+      sp.h += clamp(turn, -DT * 8, DT * 8)
+      const ahead = Math.max(0, Math.cos(wrap(want - sp.h))), tv = VMAX * (last ? clamp(d / 16, .25, 1) : 1) * (.15 + .85 * ahead * ahead)
+      spd += (tv - spd) * Math.min(1, DT * 5)
       sp.x += Math.cos(sp.h) * spd * DT; sp.y += Math.sin(sp.h) * spd * DT
       sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT
     }
     // les lignes qu'elle survole s'allument
     const r = Math.round((sp.y - lay.y - 16) / CR.LH - .5)
     for (const i of [r - 1, r, r + 1]) if (i >= 0 && i < C.rows.length && C.rowAt[i] < 0 && Math.abs(lay.row(i) - sp.y) < CR.LH * .9) { C.rowAt[i] = 1; C.hit.push({ row: i, at: ct, seg: C.seg }) }
-    for (const rr of over) { const v = (ct - rr.t0) / .55; rr.w = v > 0 && v < 1 ? Math.sin(Math.PI * v) : 0 }
+    for (const rr of over) { const v = (ct - rr.t0) / .35; rr.w = v > 0 && v < 1 ? Math.sin(Math.PI * v) : 0 }
     tick()
   }
   let fadeOut = -1
