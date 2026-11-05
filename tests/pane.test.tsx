@@ -302,6 +302,27 @@ test("la caméra du panneau : le zoom reste, elle suit l'agent qui travaille, et
   expect(W.free).toBe(null)
 })
 
+test("une page lue : l'araignée la parcourt en crawler, attrape les mots-clés, puis reprend sa taille sur son dossier", () => {
+  const g: any = E.graphFromTree(['src/a.ts', 'src/b.ts', 'src/c.ts', 'docs/d.md', 'lib/f.lua'], 'proj')
+  const W: any = E.createWorld(g, 'fusion')
+  W.aspect = .63
+  E.sphereInit(W)
+  const lines = ["import { b } from './b'", '', 'export function start(x) {', '  // TODO: vérifier', '  return MAX_SIZE * x', '}', 'class Spider {}', '']
+  const ev: any = { tool: 'Read', path: 'src/a.ts', label: 'Read', lines: ['x'], page: { kind: 'read', start: 1, lines } }
+  const legs = W.actors.main.sp.m.legs[0]
+  expect(E.crawlBegin(W, ev)).toBe(true)
+  E.makeClip(W, ev)
+  const clips: any[] = []
+  for (let k = 0; k < 8 && E.crawling(W); k++) clips.push(E.crawlClip(W, false))
+  expect(E.crawling(W)).toBe(false)
+  expect(clips.length).toBeGreaterThan(1)
+  for (const c of clips) { expect(c.svg.length).toBeLessThan(131072); expect(c.svg).not.toContain('NaN') }
+  const all = clips.map(c => c.svg).join('')
+  expect(all).toContain('CRAWLER/01')
+  expect(all).toContain('START')
+  expect(W.actors.main.sp.m.legs[0]).toBe(legs)
+})
+
 test("fermée avec /araignee-fermer, l'araignée ne se rouvre pas toute seule ; /araignee la rouvre", async ($, on) => {
   let opens = 0, closes = 0
   on('command.register', () => ({ value: { command: 'araignee' } }))

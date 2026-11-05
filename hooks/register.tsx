@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface } from 'claude-code'
 
 import type { Clip, Status, Recap } from '../types'
-import { setZoom, setFollow, applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, importsOf, readsImports, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
+import { crawlAbort, crawlBegin, crawlClip, crawling, setZoom, setFollow, applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, importsOf, readsImports, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
 
 const PANE = 'araignee'
 // Changer l'étiquette quand la forme d'une valeur change : elle survit aux rechargements.
@@ -247,11 +247,21 @@ async function pump($: EngineInterface) {
     await ensureWorld($)
     await update($, statusAtom, () => ({ tool: ev.toolName, path: ev.label, source }))
     const main = async () => {
+      // une lecture avec sa page : après l'arrivée, l'araignée la parcourt en crawler, en quelques clips courts
+      // (elle se presse si d'autres actions attendent)
+      if (ev.tool === 'Read' && ev.page) crawlBegin(world, ev)
       const clip = makeClip(world, ev)
       await showClip($, clip)
       playSounds($, clip.sounds || [])
+      const stop = () => { if (world) crawlAbort(world); playing = false; void pump($) }
+      const next = () => {
+        let c: any = null
+        try { c = world && crawling(world) ? crawlClip(world, queue.length > 0) : null } catch (err) { $.ui.log(`araignee crawler : ${String(err)}`); stop(); return }
+        if (!c) { playing = false; void pump($); return }
+        void showClip($, c).then(() => { playSounds($, c.sounds || []); const ms = Math.max(300, c.dur * 1000 + 60); playUntil = Date.now() + ms; $.clock.after(ms, next) }).catch(stop)
+      }
       const ms = Math.max(500, clip.dur * 1000 + 150); playUntil = Date.now() + ms
-      $.clock.after(ms, () => { playing = false; void pump($) })
+      $.clock.after(ms, next)
     }
     // en sphère, la boule se tourne d'abord vers la cible (un court clip à part), puis l'action se joue
     const pre = world.sph ? turnClip(world, ev) : null

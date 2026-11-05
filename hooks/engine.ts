@@ -768,7 +768,8 @@ export function makeClip(W, ev) {
     if (i >= 0) edge = i
   }
   const walkTo = ['Read', 'Edit', 'Write', 'Bash', 'Repair'].includes(ev.tool) ? target : null
-  const actDur = ev.tool === 'Mood' ? (ev.ok ? (ev.big ? 2.6 : 1.7) : 2.3) : (ACT_DUR[ev.tool] || 1.5) / Math.sqrt(pace)
+  // une lecture parcourue en crawler : l'araignée ne s'attarde pas sur le fichier, elle saute ensuite sur la page
+  const actDur = ev.crawl ? .5 : ev.tool === 'Mood' ? (ev.ok ? (ev.big ? 2.6 : 1.7) : 2.3) : (ACT_DUR[ev.tool] || 1.5) / Math.sqrt(pace)
   const act = { tool: ev.tool, n: target, dur: actDur, ok: ev.ok, at }
   const frames = [], DT = 1 / 60, rec = Math.round(60 / FPS), edgeNear = new Set(), sounds = []
   let step = 0
@@ -1156,6 +1157,8 @@ export function renderClip(W, ev, frames, X) {
   }
   // effets de l'action
   out.push(effectsSVG(W, ev, frames, X, dur, kt))
+  // la page parcourue par le crawler, sous les araignées
+  if (X.crawl) out.push(crawlSVG(X))
   // les autres araignées (immobiles pendant ce clip)
   X.others.forEach(o => {
     let s = dragSVG([o.P], [o.a.hang], dur, 1) + spiderSVG([o.P], S, dur, 1)
@@ -1177,7 +1180,7 @@ export function renderClip(W, ev, frames, X) {
   out.push(sp)
   // carte de texte
   // les bébés araignées ouvrent une petite page : les vraies lignes, lues ou tissées
-  if (ev.page && ev.page.lines && ev.page.lines.length && ev.actor && ev.actor !== 'main' && X.target && ['Read', 'Edit', 'Write'].includes(ev.tool)) out.push(pageCardSVG(ev, X))
+  if (!X.crawl && ev.page && ev.page.lines && ev.page.lines.length && ev.actor && ev.actor !== 'main' && X.target && ['Read', 'Edit', 'Write'].includes(ev.tool) && !ev.crawl) out.push(pageCardSVG(ev, X))
   else if ((ev.lines || []).length && !['idle', 'Sleep', 'Leave'].includes(ev.tool)) out.push(cardSVG(ev, X, frames))
   out.push('</svg>')
   const svg = out.join('')
@@ -1419,6 +1422,144 @@ function cardSVG(ev, X, frames) {
   s += `<text x="${f1(x + 3)}" y="${f1(y + 5)}" font-size="3.6" font-weight="700" fill="${col}">${esc(title.slice(0, 44))}</text>`
   lines.forEach((ln, k) => { const c = ln[0] === '+' || ln[0] === '✓' ? '#9dff8a' : ln[0] === '-' || ln[0] === '✗' ? '#ff8aa8' : '#cfc4ef'; s += `<text x="${f1(x + 3)}" y="${f1(y + 12 + k * 6)}" font-size="3.3" fill="${c}">${esc(ln.slice(0, 50))}</text>` })
   return s + '</g>'
+}
+
+/* ---------------- le crawler : l'araignée saute sur la page qu'elle lit et la parcourt ---------------- */
+// elle rapetisse, saute sur la première ligne et avance lettre après lettre ; quand elle croise un mot important,
+// une patte s'étire pour l'attraper : il est entouré, barré, encadré ou souligné selon ce qu'il est, et un fil le relie
+// au précédent ; un petit tableau de bord compte ce qu'elle lit. La lecture se joue en plusieurs clips courts
+// (la taille d'un clip du panneau est limitée), puis elle redescend sur son dossier.
+const MARK_COL = { def: '#ffd36b', alert: '#ff6b8a', ok: '#9dff8a', imp: '#7df9ff', cst: '#ff9be6' }
+function findMarks(lines, kind, maxC) {
+  const out = [], seen = new Map(), add = (row, c0, word, k, pri) => {
+    if (!word || c0 < 0 || c0 + word.length > maxC - 1) return; const n = seen.get(word) || 0; if (n >= 2) return; seen.set(word, n + 1)
+    if (out.some(m => m.row === row && c0 < m.c1 && c0 + word.length > m.c0)) return; out.push({ row, c0, c1: c0 + word.length, k, pri, word })
+  }
+  const RX = [
+    [/\b(?:def|class|function|fn|func|interface|type|struct|enum|trait|impl|local\s+function)\s+([A-Za-z_$][\w$]*)/g, 'def', 0],
+    [/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\(|function|class)/g, 'def', 0],
+    [/\b(TODO|FIXME|XXX|HACK|BUG|WARNING|Error|ERROR|error|failed|FAILED|Traceback|panic|Exception)\b/g, 'alert', 1],
+    [/\b(passed|PASSED|success|OK)\b/g, 'ok', kind === 'term' ? 1 : 4],
+    [/^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))/g, 'imp', 2],
+    [/(?:from\s+|require\()['"]([^'"]+)['"]/g, 'imp', 2],
+    [/\b([A-Z][A-Z0-9_]{3,})\b/g, 'cst', 3],
+    [/\b([A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+|[A-Z]{2,}[a-z][A-Za-z0-9]*)\b/g, 'cst', 3],
+  ]
+  lines.forEach((line, row) => {
+    const h = line.match(/^(#{1,4})\s+(.+)/); if (h) add(row, h[1].length + 1, h[2].trim().slice(0, 30), 'def', 0)
+    for (const m of line.matchAll(/\*\*([^*]{2,30})\*\*/g)) add(row, m.index + 2, m[1], 'def', 1)
+    for (const [rx, k, pri] of RX) for (const m of line.matchAll(rx)) { const w = m[1] || m[2]; if (!w) continue; add(row, m.index + m[0].indexOf(w), w, k, pri) }
+  })
+  return out.sort((a, b) => a.pri - b.pri).slice(0, 9).sort((a, b) => a.row - b.row || a.c0 - b.c0)
+}
+function pageMorph(m) { const k = .36, o = { ...m }; ['cl', 'cw', 'al', 'aw', 'bodyZ', 'legW', 'palp', 'R'].forEach(key => o[key] = m[key] * k); o.legs = m.legs.map(v => v * k); o.stepDur = m.stepDur * .7; o.baby = true; return o }
+const CR = { FS: 6, CW: 3.6, LH: 9.5, MAXC: 44, ROWS: 12, SEG: 3.2 }
+// une lecture avec une page : l'araignée la parcourra après être arrivée sur le fichier
+export function crawlBegin(W, ev) {
+  const pg = ev && ev.page; if (!pg || !Array.isArray(pg.lines) || pg.lines.length < 3 || ev.tool !== 'Read' || !ev.path) return false
+  const n = nodeForPath(W.g, ev.path); if (!n) return false
+  const L = pg.lines.length, R = Math.min(CR.ROWS, L), s0 = clamp((pg.hi ? pg.hi[0] : 0) - 2, 0, Math.max(0, L - R))
+  const rows = pg.lines.slice(s0, s0 + R).map(l => String(l ?? '').replace(/\t/g, '  ').slice(0, CR.MAXC))
+  let c = 0; const cum = [0, ...rows.map(l => (c += Math.max(4, l.trimEnd().length - Math.max(0, l.search(/\S/)))))]
+  const words = rows.reduce((s, l) => s + (l.match(/[\wÀ-ÿ]+/g) || []).length, 0)
+  W.crawl = { actor: ev.actor || 'main', n, pg, s0, rows, cum, tot: c || 1, words, marks: findMarks(rows, pg.kind || 'read', CR.MAXC), t: 0, readT: clamp(R * .5, 3, 7), phase: 'in', seg: 0, hit: [], rowAt: rows.map(() => -1) }
+  ev.crawl = true
+  return true
+}
+export const crawling = W => !!W.crawl
+// une lecture interrompue : l'araignée reprend sa taille et redescend sur son dossier
+export function crawlAbort(W) {
+  const C = W.crawl; W.crawl = null; if (!C) return
+  const a = W.actors[C.actor]; if (!a) return
+  if (C.m0) { a.sp.env = C.env0 || W.env; a.sp.setMorph(C.m0) }
+  const q = restSpot(W, a) || C.n; a.sp.x = q.x; a.sp.y = q.y
+}
+function crawlLayout(C) {
+  const n = C.n, w = 22 + CR.MAXC * CR.CW + 6, h = 16 + C.rows.length * CR.LH + 4
+  return { x: n.x + 24, y: n.y - h * .35, w, h, tx: n.x + 24 + 20, row: i => n.y - h * .35 + 16 + (i + .5) * CR.LH }
+}
+function crawlCursor(C, u) {
+  const want = clamp(u, 0, 1) * C.tot; let row = 0; while (row < C.rows.length - 1 && C.cum[row + 1] <= want) row++
+  const f = clamp((want - C.cum[row]) / ((C.cum[row + 1] - C.cum[row]) || 1), 0, 1), line = C.rows[row] || '', first = Math.max(0, line.search(/\S/)), last = line.trimEnd().length
+  return { row, col: first + (Math.max(first, last) - first) * f }
+}
+// le clip suivant de la lecture, ou null quand elle est finie
+export function crawlClip(W, hurry) {
+  const C = W.crawl; if (!C) return null
+  const a = W.actors[C.actor]; if (!a || C.n.gone) { W.crawl = null; return null }
+  const sp = a.sp, g = W.g, frames = [], DT = 1 / 60, rec = Math.round(60 / FPS), lay = crawlLayout(C), S = SKINS[W.skin], sounds = [], over = []
+  if (hurry) C.readT = Math.min(C.readT, C.t + 1.4)
+  const pageEnv = { snap: p => { const i = clamp(Math.round((p.y - lay.y - 16) / CR.LH - .5), 0, C.rows.length - 1); return { x: clamp(p.x, lay.x + 4, lay.x + lay.w - 4), y: lay.row(i) + CR.LH * .38 } }, depth: () => 0, onPlant: () => {} }
+  let step = 0, ct = 0, lift = 0
+  // la caméra cadre la page entière, et descend un peu avec l'araignée au fil des lignes
+  const recFrame = () => { const o = { over: over.filter(r => r.w > .001), lift }, fx = lay.x + lay.w / 2, fy = lerp(lay.y + lay.h / 2 + 8, sp.y, .3); W.cam.x += (fx - W.cam.x) * .18; W.cam.y += (fy - W.cam.y) * .18; frames.push({ P: sp.pose(W.t, o), cam: { ...W.cam }, o, tAct: -1, hang: 0 }) }
+  const tick = () => { stepPhysics(W, DT); ct += DT; if (step++ % rec === 0) recFrame() }
+  const jump = (to, T) => { const x0 = sp.x, y0 = sp.y; for (let t = 0; t < T; t += DT) { const u = ease(Math.min(1, (t + DT) / T)), px = sp.x, py = sp.y; sp.x = lerp(x0, to.x, u); sp.y = lerp(y0, to.y, u); lift = Math.sin(Math.PI * u) * 9; sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT; tick() } lift = 0; sp.vx = sp.vy = 0 }
+  const segStart = C.t, firstSeg = C.phase === 'in'
+  if (C.phase === 'in') {
+    C.m0 = sp.m; C.env0 = sp.env; sp.env = pageEnv; sp.setMorph(pageMorph(sp.m)); sounds.push({ at: 0, name: 'silk' })
+    jump({ x: lay.tx, y: lay.row(0) - CR.LH * .1 }, .7); C.phase = 'read'
+  } else sp.env = pageEnv
+  // la lecture : la tête vers la droite, le corps suit le curseur ; une patte attrape chaque mot important croisé
+  while (C.phase === 'read' && ct < CR.SEG) {
+    C.t += DT; const u = C.t / C.readT, cur = crawlCursor(C, u)
+    const tx = lay.tx + cur.col * CR.CW, ty = lay.row(cur.row) - CR.LH * .1, px = sp.x, py = sp.y, k = Math.min(1, DT * 6)
+    sp.x += (tx - sp.x) * k; sp.y += (ty - sp.y) * k; sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT; sp.h += wrap(0 - sp.h) * Math.min(1, DT * 4)
+    for (let i = 0; i < cur.row; i++) if (C.rowAt[i] < 0) C.rowAt[i] = 1, C.hit.push({ row: i, at: ct, seg: C.seg })
+    for (const m of C.marks) if (m.at === undefined && (m.row < cur.row || (m.row === cur.row && cur.col >= m.c0 + .5) || u >= 1)) {
+      m.at = ct; m.seg = C.seg; const wx = lay.tx + (m.c0 + m.c1) / 2 * CR.CW, wy = lay.row(m.row), side = { x: -Math.sin(sp.h), y: Math.cos(sp.h) }, s = (wx - sp.x) * side.x + (wy - sp.y) * side.y >= 0 ? 1 : -1
+      over.push({ i: 0, s, w: 0, t0: ct, p: () => ({ x: wx, y: wy, z: 0 }) })
+    }
+    for (const r of over) { const v = (ct - r.t0) / .7; r.w = v > 0 && v < 1 ? Math.sin(Math.PI * v) : 0 }
+    if (u >= 1) { for (let i = 0; i < C.rows.length; i++) if (C.rowAt[i] < 0) C.rowAt[i] = 1, C.hit.push({ row: i, at: ct, seg: C.seg }); C.phase = 'out' }
+    tick()
+  }
+  let fadeOut = -1
+  if (C.phase === 'out' && ct < CR.SEG + .1) {
+    for (let k = 0; k < 6; k++) tick()
+    const home = restSpot(W, a) || C.n; fadeOut = ct; jump(home, .6)
+    sp.env = C.env0; sp.setMorph(C.m0); sp.x = home.x; sp.y = home.y; sounds.push({ at: ct, name: 'pluck' })
+    for (let k = 0; k < 4; k++) tick()
+    C.phase = 'done'
+  }
+  const X = { total: frames.length / FPS, walkDur: 0, act: { tool: 'idle' }, target: C.n, targets: [], plucks: [], edgeNear: [], S, actor: a, sounds, crawl: { C, lay, seg: C.seg, firstSeg, fadeOut, from: segStart }, others: Object.values(W.actors).filter(o => o !== a).map(o => ({ a: o, P: o.sp.pose(W.t, optsFor(o, null, 0, W.env.depth)) })) }
+  const clip = renderClip(W, { tool: 'idle' }, frames, X)
+  C.seg++; if (C.phase === 'done') W.crawl = null
+  return clip
+}
+// la page, ses marques et le tableau de bord, pour un clip de la lecture
+function crawlSVG(X, kt, dur) {
+  const { C, lay, seg, firstSeg, fadeOut } = X.crawl, T = Math.max(.1, X.total), col = C.n.lang || langColor(C.n.path || C.n.label)
+  const at = t => `begin="${t.toFixed(2)}s"`
+  let s = `<g font-family="monospace" xml:space="preserve" style="white-space:pre"${firstSeg ? ' opacity="0"' : ''}>`
+  if (firstSeg) s += `<animate attributeName="opacity" values="0;1" dur=".45s" begin=".15s" fill="freeze"/>`
+  if (fadeOut >= 0) s += `<animate attributeName="opacity" values="1;0" dur=".6s" ${at(fadeOut + .2)} fill="freeze"/>`
+  s += `<rect x="${f1(lay.x)}" y="${f1(lay.y)}" width="${f1(lay.w)}" height="${f1(lay.h)}" rx="3" fill="rgba(9,6,20,.94)" stroke="${col}" stroke-opacity=".7" stroke-width=".4" filter="url(#glow)"/>`
+  s += `<text x="${f1(lay.x + 4)}" y="${f1(lay.y + 7)}" font-size="4.6" font-weight="700" fill="${col}">${esc(C.n.label.slice(0, 28))}</text><text x="${f1(lay.x + lay.w - 4)}" y="${f1(lay.y + 7)}" font-size="3.4" text-anchor="end" fill="rgba(200,190,235,.75)">crawler · lecture · l.${C.pg.start + C.s0}–${C.pg.start + C.s0 + C.rows.length - 1}</text>`
+  s += `<line x1="${f1(lay.x + 3)}" y1="${f1(lay.y + 10.5)}" x2="${f1(lay.x + lay.w - 3)}" y2="${f1(lay.y + 10.5)}" stroke="#fff" stroke-opacity=".18" stroke-width=".25"/>`
+  const rowHit = new Map(C.hit.map(h => [h.row, h]))
+  C.rows.forEach((ln, i) => {
+    const y = lay.row(i) + CR.FS * .35, h = rowHit.get(i), done = h && h.seg < seg, now = h && h.seg === seg, txt = esc(ln).replace(/^ +/, m => ' '.repeat(m.length))
+    s += `<text x="${f1(lay.tx - 3)}" y="${f1(y)}" font-size="3.6" text-anchor="end" fill="rgba(150,140,190,.5)">${C.pg.start + C.s0 + i}</text>`
+    s += `<text x="${f1(lay.tx)}" y="${f1(y)}" font-size="${CR.FS}" fill="${done ? '#cdeff5' : 'rgba(205,198,235,.55)'}">${txt}${now ? `<animate attributeName="fill" values="rgba(205,198,235,.55);#e6fdff;#cdeff5" dur=".6s" ${at(h.at)} fill="freeze"/>` : ''}</text>`
+  })
+  // les mots attrapés : la marque se trace à l'instant où la patte le touche ; un fil relie chaque mot au précédent
+  const hits = C.marks.filter(m => m.at !== undefined && m.seg <= seg), pos = m => ({ x: lay.tx + (m.c0 + m.c1) / 2 * CR.CW, y: lay.row(m.row), w: (m.c1 - m.c0) * CR.CW })
+  hits.forEach((m, k) => {
+    const c = MARK_COL[m.k] || '#ffd36b', p = pos(m), live = m.seg === seg, draw = (len, el) => live ? el.replace('/>', ` stroke-dasharray="${f1(len)}" stroke-dashoffset="${f1(len)}"><animate attributeName="stroke-dashoffset" values="${f1(len)};0" dur=".45s" ${at(m.at)} fill="freeze"/></${el.match(/^<(\w+)/)[1]}>`) : el
+    if (m.k === 'def' || m.k === 'ok') { const rx = p.w / 2 + 2.6, ry = CR.LH * .52; s += draw(2 * Math.PI * Math.sqrt((rx * rx + ry * ry) / 2), `<ellipse cx="${f1(p.x)}" cy="${f1(p.y)}" rx="${f1(rx)}" ry="${f1(ry)}" fill="none" stroke="${c}" stroke-width=".55" filter="url(#glow)"/>`) }
+    else if (m.k === 'alert') s += draw(p.w + 4, `<path d="M${f1(p.x - p.w / 2 - 2)} ${f1(p.y)}h${f1(p.w + 4)}" stroke="${c}" stroke-width=".8"/>`)
+    else if (m.k === 'cst') s += draw(p.w + 2, `<path d="M${f1(p.x - p.w / 2 - 1)} ${f1(p.y + CR.LH * .36)}h${f1(p.w + 2)}" stroke="${c}" stroke-width=".7"/>`)
+    else s += `<rect x="${f1(p.x - p.w / 2 - 1.2)}" y="${f1(p.y - CR.LH * .42)}" width="${f1(p.w + 2.4)}" height="${f1(CR.LH * .84)}" rx="1" fill="${c}" fill-opacity=".22" stroke="${c}" stroke-width=".35"${live ? ` opacity="0"><animate attributeName="opacity" values="0;1" dur=".3s" ${at(m.at)} fill="freeze"/></rect>` : '/>'}`
+    if (k) { const q = pos(hits[k - 1]), len = Math.hypot(p.x - q.x, p.y - q.y); s += draw(len, `<path d="M${f1(q.x)} ${f1(q.y)}L${f1(p.x)} ${f1(p.y)}" stroke="#7df9ff" stroke-opacity=".45" stroke-width=".3"/>`) }
+  })
+  // le tableau de bord, sous la page
+  const hx = lay.x, hy = lay.y + lay.h + 3, readNow = C.hit.filter(h => h.seg <= seg).length, wps = Math.round(C.words / Math.max(1, C.readT))
+  s += `<rect x="${f1(hx)}" y="${f1(hy)}" width="${f1(lay.w)}" height="15" fill="#1d3cff" fill-opacity=".85"/>`
+  s += `<text x="${f1(hx + 3)}" y="${f1(hy + 5.4)}" font-size="3.6" fill="#e8f0ff">CRAWLER/01 · ${wps} mots/s · ${String(Math.round(C.words * readNow / C.rows.length)).padStart(3, '0')} / ${String(C.words).padStart(3, '0')} mots</text>`
+  s += `<text x="${f1(hx + 3)}" y="${f1(hy + 11.6)}" font-size="3.6" fill="#e8f0ff">MOTS-CLÉS ${String(hits.length).padStart(2, '0')}${hits.length ? ' ·' : ''}`
+  hits.forEach(m => { s += `<tspan fill="${MARK_COL[m.k]}"${m.seg === seg ? ` opacity="0"><set attributeName="opacity" to="1" ${at(m.at)}/` : ''}> ${esc(m.word.slice(0, 14).toUpperCase())}</tspan>` })
+  return s + '</text></g>'
 }
 
 function pageCardSVG(ev, X) {
