@@ -1450,7 +1450,7 @@ function findMarks(lines, kind, maxC, md) {
     if (md) { const h = line.match(/^(#{1,4})\s+(.+)/); if (h) add(row, h[1].length + 1, h[2].trim().slice(0, 30), 'def', 0); for (const m of line.matchAll(/\*\*([^*]{2,30})\*\*/g)) add(row, m.index + 2, m[1], 'def', 1) }
     for (const [rx, k, pri] of RX) for (const m of line.matchAll(rx)) { const w = m[1] || m[2]; if (!w) continue; add(row, m.index + m[0].indexOf(w), w, k, pri) }
   })
-  return out.sort((a, b) => a.pri - b.pri).slice(0, 9).sort((a, b) => a.row - b.row || a.c0 - b.c0)
+  return out.sort((a, b) => a.pri - b.pri).slice(0, 7).sort((a, b) => a.row - b.row || a.c0 - b.c0)
 }
 function pageMorph(m) { const k = .36, o = { ...m }; ['cl', 'cw', 'al', 'aw', 'bodyZ', 'legW', 'palp', 'R'].forEach(key => o[key] = m[key] * k); o.legs = m.legs.map(v => v * k); o.stepDur = m.stepDur * .7; o.baby = true; return o }
 const CR = { FS: 6, CW: 3.6, LH: 9.5, MAXC: 44, ROWS: 12, SEG: 3.2 }
@@ -1462,7 +1462,7 @@ export function crawlBegin(W, ev) {
   const rows = pg.lines.slice(s0, s0 + R).map(l => String(l ?? '').replace(/\t/g, '  ').slice(0, CR.MAXC))
   let c = 0; const cum = [0, ...rows.map(l => (c += Math.max(4, l.trimEnd().length - Math.max(0, l.search(/\S/)))))]
   const words = rows.reduce((s, l) => s + (l.match(/[\wÀ-ÿ]+/g) || []).length, 0)
-  W.crawl = { actor: ev.actor || 'main', n, pg, s0, rows, cum, tot: c || 1, words, marks: findMarks(rows, pg.kind || 'read', CR.MAXC, /\.(md|markdown|txt)$/i.test(ev.path)), t: 0, readT: clamp(R * .5, 3, 7), phase: 'in', seg: 0, hit: [], rowAt: rows.map(() => -1) }
+  W.crawl = { pi: 0, wait: 0, actor: ev.actor || 'main', n, pg, s0, rows, cum, tot: c || 1, words, marks: findMarks(rows, pg.kind || 'read', CR.MAXC, /\.(md|markdown|txt)$/i.test(ev.path)), t: 0, readT: clamp(R * .5, 3, 7), phase: 'in', seg: 0, hit: [], rowAt: rows.map(() => -1) }
   ev.crawl = true
   return true
 }
@@ -1483,14 +1483,30 @@ function crawlCursor(C, u) {
   const f = clamp((want - C.cum[row]) / ((C.cum[row + 1] - C.cum[row]) || 1), 0, 1), line = C.rows[row] || '', first = Math.max(0, line.search(/\S/)), last = line.trimEnd().length
   return { row, col: first + (Math.max(first, last) - first) * f }
 }
+// son trajet sur la page : les mots importants dans un ordre un peu désordonné (le plus proche, mais pas toujours),
+// avec de temps en temps un détour sur une autre ligne ; sans mot important, quelques arrêts au hasard
+function crawlPath(C, lay, sp) {
+  C.rnd = rng(hash(C.n.id + C.rows.length)); const R = C.rnd, pts = [], left = C.marks.slice(), at = { x: sp.x, y: sp.y }
+  const pos = m => ({ x: lay.tx + (m.c0 + m.c1) / 2 * CR.CW, y: lay.row(m.row) })
+  const roam = () => { const i = Math.floor(R() * C.rows.length), ln = C.rows[i], a = Math.max(0, ln.search(/\S/)), b = Math.max(a + 4, ln.trimEnd().length); return { x: lay.tx + (a + R() * (b - a)) * CR.CW, y: lay.row(i) - CR.LH * .15 } }
+  while (left.length) {
+    left.sort((p, q) => dist(pos(p), at) - dist(pos(q), at))
+    const m = left.splice(left.length > 1 && R() < .3 ? 1 : 0, 1)[0]
+    if (R() < .2) pts.push(roam())
+    pts.push({ m }); Object.assign(at, pos(m))
+  }
+  if (pts.length < 3) for (let k = pts.length; k < 4; k++) pts.splice(Math.floor(R() * (pts.length + 1)), 0, roam())
+  return pts
+}
 // le clip suivant de la lecture, ou null quand elle est finie
 export function crawlClip(W, hurry) {
   const C = W.crawl; if (!C) return null
   const a = W.actors[C.actor]; if (!a || C.n.gone) { W.crawl = null; return null }
   const sp = a.sp, g = W.g, frames = [], DT = 1 / 60, rec = Math.round(60 / FPS), lay = crawlLayout(C), S = SKINS[W.skin], sounds = [], over = []
-  if (hurry) C.readT = Math.min(C.readT, C.t + 1.4)
+  // d'autres actions attendent, ou la lecture dure : elle finit vite (encore un ou deux mots)
+  if (C.seg >= 6) hurry = true
   const pageEnv = { snap: p => { const i = clamp(Math.round((p.y - lay.y - 16) / CR.LH - .5), 0, C.rows.length - 1); return { x: clamp(p.x, lay.x + 4, lay.x + lay.w - 4), y: lay.row(i) + CR.LH * .38 } }, depth: () => 0, onPlant: () => {} }
-  let step = 0, ct = 0, lift = 0
+  let step = 0, ct = 0, lift = 0, spd = 0
   // la caméra cadre la page entière, et descend un peu avec l'araignée au fil des lignes
   const recFrame = () => { const o = { over: over.filter(r => r.w > .001), lift }, fx = lay.x + lay.w / 2, fy = lerp(lay.y + lay.h / 2 + 8, sp.y, .3); W.cam.x += (fx - W.cam.x) * .18; W.cam.y += (fy - W.cam.y) * .18; frames.push({ P: sp.pose(W.t, o), cam: { ...W.cam }, o, tAct: -1, hang: 0 }) }
   const tick = () => { stepPhysics(W, DT); ct += DT; if (step++ % rec === 0) recFrame() }
@@ -1500,18 +1516,47 @@ export function crawlClip(W, hurry) {
     C.m0 = sp.m; C.env0 = sp.env; sp.env = pageEnv; sp.setMorph(pageMorph(sp.m)); sounds.push({ at: 0, name: 'silk' })
     jump({ x: lay.tx, y: lay.row(0) - CR.LH * .1 }, .7); C.phase = 'read'
   } else sp.env = pageEnv
-  // la lecture : la tête vers la droite, le corps suit le curseur ; une patte attrape chaque mot important croisé
+  // la lecture : elle va de mot important en mot important (dans un ordre un peu désordonné, avec parfois un détour
+  // pour jeter un œil ailleurs), comme une vraie araignée : elle se tourne d'abord vers où elle va, puis marche,
+  // accélère, ralentit et s'arrête devant le mot ; une patte s'étire pour l'attraper, le mot se marque, elle repart.
+  // Les lignes s'éclairent là où elle passe.
+  if (!C.path) C.path = crawlPath(C, lay, sp)
+  const VMAX = 78, wordAt = m => ({ x: lay.tx + (m.c0 + m.c1) / 2 * CR.CW, y: lay.row(m.row) })
   while (C.phase === 'read' && ct < CR.SEG) {
-    C.t += DT; const u = C.t / C.readT, cur = crawlCursor(C, u)
-    const tx = lay.tx + cur.col * CR.CW, ty = lay.row(cur.row) - CR.LH * .1, px = sp.x, py = sp.y, k = Math.min(1, DT * 6)
-    sp.x += (tx - sp.x) * k; sp.y += (ty - sp.y) * k; sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT; sp.h += wrap(0 - sp.h) * Math.min(1, DT * 4)
-    for (let i = 0; i < cur.row; i++) if (C.rowAt[i] < 0) C.rowAt[i] = 1, C.hit.push({ row: i, at: ct, seg: C.seg })
-    for (const m of C.marks) if (m.at === undefined && (m.row < cur.row || (m.row === cur.row && cur.col >= m.c0 + .5) || u >= 1)) {
-      m.at = ct; m.seg = C.seg; const wx = lay.tx + (m.c0 + m.c1) / 2 * CR.CW, wy = lay.row(m.row), side = { x: -Math.sin(sp.h), y: Math.cos(sp.h) }, s = (wx - sp.x) * side.x + (wy - sp.y) * side.y >= 0 ? 1 : -1
-      over.push({ i: 0, s, w: 0, t0: ct, p: () => ({ x: wx, y: wy, z: 0 }) })
+    C.t += DT
+    if (hurry && !C.hurried) { C.hurried = true; C.path = C.path.slice(0, C.pi + 2) }
+    const tgt = C.path[C.pi]
+    if (!tgt) { for (let i = 0; i < C.rows.length; i++) if (C.rowAt[i] < 0) C.rowAt[i] = 1, C.hit.push({ row: i, at: ct, seg: C.seg }); C.phase = 'out'; break }
+    // où se poser : juste avant le mot, du côté d'où elle arrive, pour que sa patte l'atteigne
+    const wc = tgt.m ? wordAt(tgt.m) : tgt, dx0 = wc.x - sp.x, dy0 = wc.y - sp.y, d0 = Math.hypot(dx0, dy0) || 1
+    const stand = tgt.m ? (C.stand && C.stand.pi === C.pi ? C.stand : (C.stand = { pi: C.pi, x: wc.x - dx0 / d0 * 7.5, y: wc.y - dy0 / d0 * 5 })) : wc
+    const dx = stand.x - sp.x, dy = stand.y - sp.y, d = Math.hypot(dx, dy), px = sp.x, py = sp.y
+    if (C.wait > 0) {
+      // arrêtée devant le mot : elle le regarde, l'attrape, puis repart
+      C.wait -= DT; sp.vx = sp.vy = 0; spd = 0
+      if (tgt.m) sp.h += wrap(Math.atan2(wc.y - sp.y, wc.x - sp.x) - sp.h) * Math.min(1, DT * 5)
+      if (C.wait <= 0) C.pi++
+    } else if (d < 1.6) {
+      C.wait = tgt.m ? .55 : .15 + (C.rnd() * .2)
+      const m = tgt.m
+      if (m && m.at === undefined) {
+        m.at = ct + .18; m.seg = C.seg
+        const side = { x: -Math.sin(sp.h), y: Math.cos(sp.h) }, s = (wc.x - sp.x) * side.x + (wc.y - sp.y) * side.y >= 0 ? 1 : -1
+        over.push({ i: 0, s, w: 0, t0: ct, p: () => ({ x: wc.x, y: wc.y, z: 0 }) })
+      }
+    } else {
+      // se tourner vers sa destination, puis avancer droit devant (jamais de côté : pas de glissade)
+      const want = Math.atan2(dy, dx), turn = wrap(want - sp.h)
+      sp.h += clamp(turn, -DT * 9, DT * 9)
+      const ahead = Math.max(0, Math.cos(wrap(want - sp.h))), tv = VMAX * clamp(d / 16, .3, 1) * ahead * ahead
+      spd += (tv - spd) * Math.min(1, DT * 6)
+      sp.x += Math.cos(sp.h) * spd * DT; sp.y += Math.sin(sp.h) * spd * DT
+      sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT
     }
-    for (const r of over) { const v = (ct - r.t0) / .7; r.w = v > 0 && v < 1 ? Math.sin(Math.PI * v) : 0 }
-    if (u >= 1) { for (let i = 0; i < C.rows.length; i++) if (C.rowAt[i] < 0) C.rowAt[i] = 1, C.hit.push({ row: i, at: ct, seg: C.seg }); C.phase = 'out' }
+    // les lignes qu'elle survole s'allument
+    const r = Math.round((sp.y - lay.y - 16) / CR.LH - .5)
+    for (const i of [r - 1, r, r + 1]) if (i >= 0 && i < C.rows.length && C.rowAt[i] < 0 && Math.abs(lay.row(i) - sp.y) < CR.LH * .9) { C.rowAt[i] = 1; C.hit.push({ row: i, at: ct, seg: C.seg }) }
+    for (const rr of over) { const v = (ct - rr.t0) / .55; rr.w = v > 0 && v < 1 ? Math.sin(Math.PI * v) : 0 }
     tick()
   }
   let fadeOut = -1
@@ -1554,7 +1599,7 @@ function crawlSVG(X, kt, dur) {
     if (k) { const q = pos(hits[k - 1]), len = Math.hypot(p.x - q.x, p.y - q.y); s += draw(len, `<path d="M${f1(q.x)} ${f1(q.y)}L${f1(p.x)} ${f1(p.y)}" stroke="#7df9ff" stroke-opacity=".45" stroke-width=".3"/>`) }
   })
   // le tableau de bord, sous la page
-  const hx = lay.x, hy = lay.y + lay.h + 3, readNow = C.hit.filter(h => h.seg <= seg).length, wps = Math.round(C.words / Math.max(1, C.readT))
+  const hx = lay.x, hy = lay.y + lay.h + 3, readNow = C.hit.filter(h => h.seg <= seg).length, wps = Math.max(1, Math.round(C.words * readNow / C.rows.length / Math.max(1, C.t)))
   s += `<rect x="${f1(hx)}" y="${f1(hy)}" width="${f1(lay.w)}" height="15" fill="#1d3cff" fill-opacity=".85"/>`
   s += `<text x="${f1(hx + 3)}" y="${f1(hy + 5.4)}" font-size="3.6" fill="#e8f0ff">CRAWLER/01 · ${wps} mots/s · ${String(Math.round(C.words * readNow / C.rows.length)).padStart(3, '0')} / ${String(C.words).padStart(3, '0')} mots</text>`
   s += `<text x="${f1(hx + 3)}" y="${f1(hy + 11.6)}" font-size="3.6" fill="#e8f0ff">MOTS-CLÉS ${String(hits.length).padStart(2, '0')}${hits.length ? ' ·' : ''}`
