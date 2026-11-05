@@ -1462,7 +1462,7 @@ export function crawlBegin(W, ev) {
   const rows = pg.lines.slice(s0, s0 + R).map(l => String(l ?? '').replace(/\t/g, '  ').slice(0, CR.MAXC))
   let c = 0; const cum = [0, ...rows.map(l => (c += Math.max(4, l.trimEnd().length - Math.max(0, l.search(/\S/)))))]
   const words = rows.reduce((s, l) => s + (l.match(/[\wÀ-ÿ]+/g) || []).length, 0)
-  W.crawl = { pi: 0, actor: ev.actor || 'main', n, pg, s0, rows, cum, tot: c || 1, words, marks: findMarks(rows, pg.kind || 'read', CR.MAXC, /\.(md|markdown|txt)$/i.test(ev.path)), t: 0, readT: clamp(R * .5, 3, 7), phase: 'in', seg: 0, hit: [], rowAt: rows.map(() => -1) }
+  W.crawl = { pi: 0, silk: [], actor: ev.actor || 'main', n, pg, s0, rows, cum, tot: c || 1, words, marks: findMarks(rows, pg.kind || 'read', CR.MAXC, /\.(md|markdown|txt)$/i.test(ev.path)), t: 0, readT: clamp(R * .5, 3, 7), phase: 'in', seg: 0, hit: [], rowAt: rows.map(() => -1) }
   ev.crawl = true
   return true
 }
@@ -1482,6 +1482,17 @@ function crawlCursor(C, u) {
   const want = clamp(u, 0, 1) * C.tot; let row = 0; while (row < C.rows.length - 1 && C.cum[row + 1] <= want) row++
   const f = clamp((want - C.cum[row]) / ((C.cum[row + 1] - C.cum[row]) || 1), 0, 1), line = C.rows[row] || '', first = Math.max(0, line.search(/\S/)), last = line.trimEnd().length
   return { row, col: first + (Math.max(first, last) - first) * f }
+}
+// y a-t-il un grand blanc sur le chemin (aucune lettre où poser les pieds) ? et dans quel sens le franchir
+function gapKind(cells, a, b) {
+  const L = Math.hypot(b.x - a.x, b.y - a.y), n = Math.ceil(L / 3); let run = 0, best = 0
+  for (let i = 1; i < n; i++) {
+    const x = lerp(a.x, b.x, i / n), y = lerp(a.y, b.y, i / n); let near = false
+    for (const c of cells) if (Math.abs(c.x - x) < 7 && Math.abs(c.y - y) < CR.LH * .75) { near = true; break }
+    run = near ? 0 : run + 3; best = Math.max(best, run)
+  }
+  if (best < CR.LH * 1.6) return null
+  return Math.abs(b.y - a.y) < CR.LH * .8 ? 'leap' : b.y > a.y ? 'drop' : 'climb'
 }
 // son trajet sur la page : les mots importants dans un ordre un peu désordonné (le plus proche, mais pas toujours),
 // avec de temps en temps un détour sur une autre ligne ; sans mot important, quelques arrêts au hasard
@@ -1514,9 +1525,9 @@ export function crawlClip(W, hurry) {
     depth: () => 0,
     onPlant: f => { if (C.phase !== 'read') return; const m = markAt(f); if (m) { m.at = ct; m.seg = C.seg } }
   }
-  let step = 0, ct = 0, lift = 0, spd = 0
+  let step = 0, ct = 0, lift = 0, spd = 0, tuck = 0
   // la caméra cadre la page entière, et descend un peu avec l'araignée au fil des lignes
-  const recFrame = () => { const o = { over: over.filter(r => r.w > .001), lift }, fx = lay.x + lay.w / 2, fy = lerp(lay.y + lay.h / 2 + 8, sp.y, .3); W.cam.x += (fx - W.cam.x) * .18; W.cam.y += (fy - W.cam.y) * .18; frames.push({ P: sp.pose(W.t, o), cam: { ...W.cam }, o, tAct: -1, hang: 0 }) }
+  const recFrame = () => { const o = { over: over.filter(r => r.w > .001), lift, tuck }, fx = lay.x + lay.w / 2, fy = lerp(lay.y + lay.h / 2 + 8, sp.y, .3); W.cam.x += (fx - W.cam.x) * .18; W.cam.y += (fy - W.cam.y) * .18; frames.push({ P: sp.pose(W.t, o), cam: { ...W.cam }, o, tAct: -1, hang: 0 }) }
   const tick = () => { stepPhysics(W, DT); ct += DT; if (step++ % rec === 0) recFrame() }
   const jump = (to, T) => { const x0 = sp.x, y0 = sp.y; for (let t = 0; t < T; t += DT) { const u = ease(Math.min(1, (t + DT) / T)), px = sp.x, py = sp.y; sp.x = lerp(x0, to.x, u); sp.y = lerp(y0, to.y, u); lift = Math.sin(Math.PI * u) * 9; sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT; tick() } lift = 0; sp.vx = sp.vy = 0 }
   const segStart = C.t, firstSeg = C.phase === 'in'
@@ -1539,7 +1550,18 @@ export function crawlClip(W, hurry) {
     const wc = tgt.m ? wordAt(tgt.m) : tgt
     const stand = wc
     const dx = stand.x - sp.x, dy = stand.y - sp.y, d = Math.hypot(dx, dy), px = sp.x, py = sp.y
-    if (d < 5 && C.pi < C.path.length - 1) {
+    // un grand blanc entre elle et le mot (des paragraphes éloignés) : elle ne marche pas dans le vide ; vers le bas
+    // elle se laisse descendre au bout d'un fil, vers le haut elle lance un fil et y grimpe, sur le côté elle bondit
+    if (!C.gap && C.gapFor !== C.pi && d > 14) { C.gapFor = C.pi; const kind = gapKind(cells, sp, wc); if (kind) C.gap = { kind, from: { x: sp.x, y: sp.y }, to: { x: wc.x, y: wc.y }, t: 0, T: kind === 'leap' ? .5 : .45 + d / 110 } }
+    if (C.gap) {
+      const G = C.gap; G.t += DT; const u = Math.min(1, G.t / G.T)
+      if (G.t <= DT * 1.5) C.silk.push({ kind: G.kind, from: G.kind === 'climb' ? { x: G.to.x, y: G.to.y - CR.LH * .3 } : G.from, to: G.kind === 'climb' ? G.from : G.to, at: ct, seg: C.seg, dur: G.kind === 'climb' ? .22 : G.T })
+      const k = G.kind === 'climb' ? clamp((G.t - .25) / Math.max(.1, G.T - .25), 0, 1) : u, e = G.kind === 'leap' ? ease(k) : k * k * (3 - 2 * k)
+      sp.x = lerp(G.from.x, G.to.x, e); sp.y = lerp(G.from.y, G.to.y, e); sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT
+      tuck = Math.sin(Math.PI * Math.min(1, u * 1.1)) * (G.kind === 'leap' ? .55 : .8); lift = G.kind === 'leap' ? Math.sin(Math.PI * u) * 14 : 0
+      if (G.kind !== 'leap') sp.h += wrap((G.kind === 'drop' ? Math.PI / 2 : -Math.PI / 2) - sp.h) * Math.min(1, DT * 6)
+      if (u >= 1) { C.gap = null; tuck = 0; lift = 0; spd = 20 }
+    } else if (d < 5 && C.pi < C.path.length - 1) {
       // elle passe sur le mot sans s'arrêter : si aucun pied ne l'a touché, un petit coup de patte au passage
       const m = tgt.m
       if (m && m.at === undefined) {
@@ -1551,7 +1573,7 @@ export function crawlClip(W, hurry) {
     } else if (d < 1.6) {
       const m = tgt.m; if (m && m.at === undefined) { m.at = ct; m.seg = C.seg } C.pi++
     }
-    {
+    if (!C.gap) {
       // se tourner vers sa destination et avancer droit devant (jamais de côté : pas de glissade) ; elle ne
       // ralentit qu'en arrivant au dernier mot
       const want = Math.atan2(dy, dx), turn = wrap(want - sp.h), last = C.pi >= C.path.length - 1
@@ -1596,6 +1618,12 @@ function crawlSVG(X, kt, dur) {
     s += `<text x="${f1(lay.tx - 3)}" y="${f1(y)}" font-size="3.6" text-anchor="end" fill="rgba(150,140,190,.5)">${C.pg.start + C.s0 + i}</text>`
     s += `<text x="${f1(lay.tx)}" y="${f1(y)}" font-size="${CR.FS}" fill="${done ? '#cdeff5' : 'rgba(205,198,235,.55)'}">${txt}${now ? `<animate attributeName="fill" values="rgba(205,198,235,.55);#e6fdff;#cdeff5" dur=".6s" ${at(h.at)} fill="freeze"/>` : ''}</text>`
   })
+  // les fils de soie tendus pour franchir un grand blanc : ils se tirent, restent un instant, puis s'effacent
+  for (const k of C.silk) {
+    if (k.seg !== seg && k.seg !== seg - 1) continue
+    const len = Math.hypot(k.to.x - k.from.x, k.to.y - k.from.y), live = k.seg === seg, t0 = live ? k.at : 0, fade = live ? k.at + k.dur + 1.2 : 0
+    s += `<path d="M${f1(k.from.x)} ${f1(k.from.y)}L${f1(k.to.x)} ${f1(k.to.y)}" stroke="#f2f0ff" stroke-width=".6" stroke-opacity=".9"${live ? ` stroke-dasharray="${f1(len)}" stroke-dashoffset="${f1(len)}"><animate attributeName="stroke-dashoffset" values="${f1(len)};0" dur="${k.dur.toFixed(2)}s" begin="${t0.toFixed(2)}s" fill="freeze"/><animate attributeName="stroke-opacity" values=".85;0" dur=".9s" begin="${fade.toFixed(2)}s" fill="freeze"/></path>` : ` opacity="0"/>`}`
+  }
   // les mots attrapés : la marque se trace à l'instant où la patte le touche ; un fil relie chaque mot au précédent
   const hits = C.marks.filter(m => m.at !== undefined && m.seg <= seg), pos = m => ({ x: lay.tx + (m.c0 + m.c1) / 2 * CR.CW, y: lay.row(m.row), w: (m.c1 - m.c0) * CR.CW })
   hits.forEach((m, k) => {
