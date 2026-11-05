@@ -1564,9 +1564,11 @@ export function crawlClip(W, hurry) {
     if (!C.gap && C.gapFor !== C.pi && d > 14) { C.gapFor = C.pi; const kind = gapKind(cells, sp, wc); if (kind) C.gap = { kind, from: { x: sp.x, y: sp.y }, to: { x: wc.x, y: wc.y }, t: 0, T: kind === 'leap' ? .6 : kind === 'climb' ? 1.1 + d / 75 : .75 + d / 95 } }
     if (C.gap) {
       // comme une vraie araignée sur un fil :
-      // - descendre : elle se met en boule, tête en bas, le fil accroché derrière l'abdomen ; elle se laisse filer
-      //   (de plus en plus vite, puis elle freine), en se balançant un peu, et déplie les pattes juste avant de toucher
-      // - remonter : elle lance un fil jusqu'au mot, puis le tire patte après patte, par à-coups, ramassée sur elle-même
+      // - au bout du fil, l'abdomen (plus lourd) pend vers le bas : la tête reste en haut, les pattes avant tiennent le
+      //   fil au-dessus d'elle, les autres sont repliées en boule
+      // - descendre : elle se laisse filer (de plus en plus vite, puis elle freine), en se balançant un peu, déplie
+      //   les pattes juste avant de toucher le mot, puis se retourne et repart en marchant
+      // - remonter : elle lance un fil jusqu'au mot, puis le tire patte après patte, par à-coups
       // - bondir : elle s'accroupit, saute en boule, et tend les pattes pour atterrir
       const G = C.gap; G.t += DT; const u = Math.min(1, G.t / G.T)
       if (G.t <= DT * 1.5) C.silk.push({ kind: G.kind, from: G.kind === 'climb' ? { x: G.to.x, y: G.to.y - CR.LH * .3 } : G.from, to: G.kind === 'climb' ? G.from : G.to, at: ct, seg: C.seg, dur: G.kind === 'climb' ? .25 : G.T * .9 })
@@ -1576,12 +1578,14 @@ export function crawlClip(W, hurry) {
         const k = sm(.12, .9, u), e = k * k * (3 - 2 * k)
         sp.x = lerp(G.from.x, G.to.x, e) + Math.sin(u * Math.PI * 3) * 2.2 * (1 - u); sp.y = lerp(G.from.y, G.to.y, e)
         tuck = sm(0, .14, u) * open; ball = tuck
-        sp.h += wrap(Math.PI / 2 - sp.h) * Math.min(1, DT * 9)
+        sp.h += wrap(-Math.PI / 2 - sp.h) * Math.min(1, DT * 9)
+        const hold = m.legs[0] * .5, gw = .9 * sm(.05, .2, u) * open
+        climbOver = [{ i: 0, w: gw, p: s => ({ x: sp.x + s * m.cw * .15, y: sp.y - hold, z: m.bodyZ * .6 }) }]
       } else if (G.kind === 'climb') {
         const k = clamp((G.t - .3) / Math.max(.1, G.T - .3), 0, 1), n = 6, f = k * n, e = (Math.floor(f) + ease(f - Math.floor(f))) / n
         sp.x = lerp(G.from.x, G.to.x, Math.min(1, e)); sp.y = lerp(G.from.y, G.to.y, Math.min(1, e))
         tuck = sm(0, .2, u) * open * .75; ball = .5 * tuck
-        sp.h += wrap(Math.atan2(G.to.y - G.from.y, G.to.x - G.from.x) - sp.h) * Math.min(1, DT * 9)
+        sp.h += wrap(-Math.PI / 2 - sp.h) * Math.min(1, DT * 9)
         // les deux pattes avant tirent sur le fil à tour de rôle, plus haut que la tête
         if (k > 0 && k < 1) { const side = (Math.floor(f) % 2) ? 1 : -1, reachUp = m.legs[0] * .55, hx = Math.cos(sp.h), hy = Math.sin(sp.h), wv = Math.sin(Math.PI * (f - Math.floor(f)))
           climbOver = [{ i: 0, s: side, w: .85, p: () => ({ x: sp.x + hx * reachUp, y: sp.y + hy * reachUp, z: m.bodyZ * .6 }) }, { i: 0, s: -side, w: .6 * (1 - wv), p: () => ({ x: sp.x + hx * reachUp * .55, y: sp.y + hy * reachUp * .55, z: m.bodyZ * .4 }) }] }
