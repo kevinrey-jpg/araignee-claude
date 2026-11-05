@@ -391,7 +391,13 @@ class Spider {
   hipL(L) { return { x: this.m.cl * HIPX[L.i], y: L.s * this.m.cw * .34 }; }
   reach(L) { return this.m.legs[L.i] * this.m.reachF; }
   ideal(L) { const h = this.hipL(L), a = this.m.ang[L.i] * DEG, r = this.reach(L); return this.local(h.x + Math.cos(a) * r, h.y + L.s * Math.sin(a) * r); }
-  snapPt(p, L) { const q = this.env.snap ? this.env.snap(p, this.reach(L) * (this.env.snapK || .42)) : null; return q || p; }
+  // chaque pied s'agrippe à un fil : le plus proche à portée, sinon un peu plus loin ; s'il n'y en a vraiment aucun,
+  // la patte se replie vers le corps au lieu de se poser dans le vide
+  snapPt(p, L) {
+    if (!this.env.snap) return p; const r = this.reach(L), q = this.env.snap(p, r * (this.env.snapK || .42)) || (this.env.grip ? this.env.snap(p, r * 1.8) : null);
+    if (q) return q; if (!this.env.grip) return p;
+    return { x: lerp(this.x, p.x, .45), y: lerp(this.y, p.y, .45) };
+  }
   update(dt) {
     const m = this.m, sp = Math.hypot(this.vx, this.vy);
     this.time += dt; this.still = sp > 3 ? 0 : this.still + dt; this.phase += dt * sp * .12;
@@ -427,7 +433,8 @@ class Spider {
       const hl = this.hipL(L), hw = this.local(hl.x, hl.y), Hh = { x: hw.x, y: hw.y, z: bz };
       let F = { x: L.foot.x, y: L.foot.y, z: L.foot.z + dep(L.foot.x, L.foot.y) };
       if (L.raise > .01) { const hh = this.local(hl.x + m.cl * .15, hl.y + L.s * m.legs[L.i] * .3); F = { x: lerp(F.x, hh.x, L.raise), y: lerp(F.y, hh.y, L.raise), z: lerp(F.z, m.legs[L.i] * .5, L.raise) + Math.sin(t * 9 + L.s) * L.raise * 1.2 }; }
-      if (o.tuck > .001) { const fold = this.local(hl.x + (L.i < 2 ? m.cl * .45 : -m.cl * .2), hl.y + L.s * m.legs[L.i] * .2); F = lerp3(F, { x: fold.x, y: fold.y, z: bz - m.bodyZ * .25 + m.legs[L.i] * .12 }, o.tuck); }
+      // pattes repliées ; en boule (au bout d'un fil), serrées contre le corps et ramenées par-dessus
+      if (o.tuck > .001) { const b = o.ball || 0, fold = this.local(hl.x + (L.i < 2 ? m.cl * (.45 - .2 * b) : -m.cl * (.2 - .12 * b)), hl.y + L.s * m.legs[L.i] * (.2 - .13 * b)); F = lerp3(F, { x: fold.x, y: fold.y, z: bz - m.bodyZ * .25 + m.legs[L.i] * (.12 + .1 * b) }, o.tuck); }
       for (const ov of (o.over || [])) if (ov.w > .001 && ov.i === L.i && (!ov.s || ov.s === L.s)) F = lerp3(F, ov.p(L.s), ov.w);
       const len = m.legs[L.i], { K, A } = ik3(Hh, F, len * m.seg[0], len * m.seg[1], len * m.seg[2]);
       return { H: Hh, K, A, F, s: L.s, i: L.i, stepping: L.p >= 0 };
@@ -1300,7 +1307,7 @@ const editFor = id => { const ext = id.split('.').pop(); return ext === 'md' ? [
 
 let simT = 0;
 const vib = [], waves = [], pulses = [], parts = [], timers = [], rings = [];
-const stageEnv = { loads: [], snapK: .95, snap: snapStage, depth: (x, y) => depthFrom(stageEnv.loads, x, y, simT), onPlant: (f, m) => vib.push({ x: f.x, y: f.y, t0: simT, w: 1.3 * m.mass, f: 2 * Math.PI * 8, tau: .22, s2: 50 }) };
+const stageEnv = { grip: true, loads: [], snapK: .95, snap: snapStage, depth: (x, y) => depthFrom(stageEnv.loads, x, y, simT), onPlant: (f, m) => vib.push({ x: f.x, y: f.y, t0: simT, w: 1.3 * m.mass, f: 2 * Math.PI * 8, tau: .22, s2: 50 }) };
 const after = (s, fn) => timers.push({ at: simT + s, fn });
 let speed = 1, paused = false;
 
@@ -1921,7 +1928,8 @@ function step(dt) {
     stageEnv.loads = SPH ? [] : L;
     AGENTS.forEach(ag => {
       ag.opts = actionOpts(ag.A, ag.sp);
-      if (ag.hang > .5) { ag.opts.lift = (ag.opts.lift || 0) + ag.hang; ag.opts.tuck = Math.max(ag.opts.tuck || 0, clamp(ag.hang / 10, 0, .85)); }
+      // au bout de son fil : en boule, pattes serrées
+      if (ag.hang > .5) { ag.opts.lift = (ag.opts.lift || 0) + ag.hang; ag.opts.tuck = Math.max(ag.opts.tuck || 0, clamp(ag.hang / 8, 0, .95)); ag.opts.ball = Math.max(ag.opts.ball || 0, clamp(ag.hang / 14, 0, 1)); }
       ag.sp.tick(dt, simT, ag.opts);
     });
     edges.forEach(e => { if (e.trail > .3) e.trail = Math.max(.3, e.trail - dt * .03); });
