@@ -1400,12 +1400,16 @@ function spiderSVG(Ps, S, dur, n) {
   let boneSVG = ''
   if (S.wire) o.push(`<g fill="none" stroke="${lineCol}" stroke-width="${f1(w * .28)}" stroke-linejoin="round" stroke-linecap="round" stroke-opacity=".9" filter="url(#glow)">${lines}</g>`)
   else {
-    // de vrais os : fins sur toute leur longueur, et qui s'épaississent à chaque bout en une tête à deux bosses
-    // (les condyles) ; à chaque articulation, deux têtes se font face, avec un petit espace entre elles
-    const bone = S.xray ? '#f2f6ff' : '#efe8ff', end = sg => { const k = v => f1(v * sg); return `M${k(-3)} -.2C${k(-1.7)} -.2 ${k(-1.25)} -.5 ${k(-1)} -.88Q${k(-.68)} -1.18 ${k(-.38)} -.9Q${k(-.2)} -.56 ${k(-.32)} -.22Q${k(-.48)} 0 ${k(-.32)} .22Q${k(-.2)} .56 ${k(-.38)} .9Q${k(-.68)} 1.18 ${k(-1)} .88C${k(-1.25)} .5 ${k(-1.7)} .2 ${k(-3)} .2Z` }
-    const mk = (id, d, wd) => `<marker id="${uid}${id}" viewBox="-3 -1.4 6 2.8" markerWidth="${f1(wd * 2.6)}" markerHeight="${f1(wd * 1.21)}" orient="auto" markerUnits="userSpaceOnUse"><path d="${d}" fill="${bone}"/></marker>`
-    o.push(`<defs>${mk('o', end(1) + end(-1), w)}${mk('p', end(1), w)}${mk('q', end(-1), w)}${mk('r', end(1) + end(-1), w * .72)}${mk('s', end(-1), w * .72)}${mk('t', end(1), w * .6)}</defs>`)
-    boneSVG = (`<g fill="none" stroke="${bone}" stroke-opacity="${S.xray ? .8 : .7}" stroke-linecap="butt"><use href="#${uid}a" stroke-width="${f1(w * .17)}" marker-start="url(#${uid}q)" marker-mid="url(#${uid}o)" marker-end="url(#${uid}p)"/><use href="#${uid}b" stroke-width="${f1(w * .12)}" marker-start="url(#${uid}s)" marker-mid="url(#${uid}r)" marker-end="url(#${uid}t)"/></g>`)
+    // des os comme de vrais os : une tige fine qui s'évase en deux grosses bosses arrondies à chaque bout, cerclée de
+    // sombre avec un reflet ; à chaque articulation, une rotule ronde relie la tête d'un os à celle du suivant
+    const bone = S.xray ? '#f2f6ff' : '#f4f0e6', ink = '#1a1024'
+    const end = sg => { const k = v => f1(v * sg); return `M${k(-3)} -.17C${k(-2)} -.17 ${k(-1.55)} -.3 ${k(-1.3)} -.64A.5 .5 0 1 ${sg > 0 ? 1 : 0} ${k(-.42)} -.38Q${k(-.62)} 0 ${k(-.42)} .38A.5 .5 0 1 ${sg > 0 ? 1 : 0} ${k(-1.3)} .64C${k(-1.55)} .3 ${k(-2)} .17 ${k(-3)} .17Z` }
+    const hi = sg => { const k = v => f1(v * sg); return `M${k(-1.05)} -.62Q${k(-.72)} -.78 ${k(-.55)} -.55` }
+    const rot = '<circle r=".42" fill="' + bone + '" stroke="' + ink + '" stroke-width=".1"/><circle cx="-.12" cy="-.14" r=".12" fill="#fff" opacity=".8"/>'
+    const piece = (sgs, withRot) => sgs.map(sg => `<path d="${end(sg)}" fill="${bone}" stroke="${ink}" stroke-width=".1"/><path d="${hi(sg)}" stroke="#fff" stroke-width=".1" stroke-linecap="round" fill="none" opacity=".8"/>`).join('') + (withRot ? rot : '')
+    const mk = (id, sgs, withRot, wd) => `<marker id="${uid}${id}" viewBox="-3 -1.2 6 2.4" markerWidth="${f1(wd * 2.5)}" markerHeight="${f1(wd)}" orient="auto" markerUnits="userSpaceOnUse">${piece(sgs, withRot)}</marker>`
+    o.push(`<defs>${mk('o', [1, -1], true, w * 1.45)}${mk('p', [1], true, w * 1.45)}${mk('q', [-1], false, w * 1.45)}${mk('r', [1, -1], true, w * 1.1)}${mk('s', [-1], false, w * 1.1)}${mk('t', [1], false, w * .85)}</defs>`)
+    boneSVG = (`<g fill="none" stroke-linecap="butt"><g stroke="${ink}"><use href="#${uid}a" stroke-width="${f1(w * .44)}"/><use href="#${uid}b" stroke-width="${f1(w * .34)}"/></g><g stroke="${bone}"><use href="#${uid}a" stroke-width="${f1(w * .34)}" marker-start="url(#${uid}q)" marker-mid="url(#${uid}o)" marker-end="url(#${uid}p)"/><use href="#${uid}b" stroke-width="${f1(w * .26)}" marker-start="url(#${uid}s)" marker-mid="url(#${uid}r)" marker-end="url(#${uid}t)"/></g></g>`)
     o.push(`<g fill="none" stroke="${lineCol}" stroke-width="${f1(w * .12)}" stroke-linecap="round" stroke-opacity=".55">${lines}</g>`)
   }
   if (S.photo) o.push(`<g fill="none" stroke="${S.photo[0]}" stroke-width="${f1(w * .7)}" stroke-linecap="round" stroke-dasharray=".01 4.5" filter="url(#glow)">${lines}<animate attributeName="stroke-dashoffset" values="0;-9" dur="1.4s" repeatCount="indefinite"/></g>`)
