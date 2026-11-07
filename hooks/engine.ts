@@ -379,15 +379,6 @@ function blobPath(rx, ry, taper) {
   }
   return d + 'Z'
 }
-// quelques poils fins qui dépassent de la silhouette, couchés vers l'arrière
-function hairsSVG(rx, ry, col, n, len) {
-  let d = ''
-  for (let k = 0; k < n; k++) {
-    const a = (k + .5) / n * Math.PI * 2 + Math.sin(k * 2.7) * .12, c = Math.cos(a), sn = Math.sin(a), x = rx * c * 1.01, y = ry * sn * 1.01, l = len * (.6 + .4 * Math.abs(Math.sin(k * 1.9)))
-    d += `M${f1(x)} ${f1(y)}l${f1((c - .45) * l)} ${f1(sn * l)}`
-  }
-  return `<path d="${d}" stroke="${col}" stroke-width=".11" stroke-opacity=".6" stroke-linecap="round" fill="none"/>`
-}
 function abdomenSVG(S, rx, ry) {
   const B = S.body, o = [], outline = blobPath(rx, ry, 1)
   const ell = (fill, stroke, sw, extra = '') => `<path d="${outline}" fill="${fill}"${stroke ? ` stroke="${stroke}" stroke-width="${sw}"` : ''} ${extra}/>`
@@ -416,7 +407,6 @@ function abdomenSVG(S, rx, ry) {
   if (B.scan) o.push(`<line y1="${f1(-ry)}" y2="${f1(ry)}" stroke="#f2fdff" stroke-width=".4" filter="url(#glow)"><animate attributeName="x1" values="${f1(-rx * .9)};${f1(rx * .9)};${f1(-rx * .9)}" dur="2.8s" repeatCount="indefinite"/><animate attributeName="x2" values="${f1(-rx * .9)};${f1(rx * .9)};${f1(-rx * .9)}" dur="2.8s" repeatCount="indefinite"/></line>`)
   if (!B.wireOnly && !B.xray) o.push(`<ellipse cx="${f1(-rx * .2)}" cy="${f1(-ry * .32)}" rx="${f1(rx * .38)}" ry="${f1(ry * .22)}" fill="#fff" opacity=".18"/>`)
   o.push(ell('none', B.rim, B.wireOnly ? .2 : .26, 'filter="url(#glow)"'))
-  if (!B.wireOnly) o.push(hairsSVG(rx, ry, B.xray ? '#f2f6ff' : B.rim, 22, Math.min(rx, ry) * .2))
   return o.join('')
 }
 function carapaceSVG(S, cl, cw) {
@@ -434,7 +424,6 @@ function carapaceSVG(S, cl, cw) {
   let st = ''; const fx = -cl * .1; for (let k = 0; k < 10; k++) { const an = k / 10 * Math.PI * 2 + .3; st += `M${f1(fx + Math.cos(an) * cl * .07)} ${f1(Math.sin(an) * cw * .07)}L${f1(fx + Math.cos(an) * cl * .36)} ${f1(Math.sin(an) * cw * .36)}` }
   o.push(`<path d="${st}" stroke="${B.xray ? '#f2f6ff' : B.rim}" stroke-opacity="${B.xray ? .8 : .35}" stroke-width=".2" fill="none"/>`)
   o.push(`<path d="${path}" fill="none" stroke="${B.rim}" stroke-width=".28" filter="url(#glow)"/>`)
-  if (!B.wireOnly) o.push(hairsSVG(a * .95, b * .95, B.xray ? '#f2f6ff' : B.rim, 14, Math.min(a, b) * .22))
   for (const [px, py, pr] of [[.8, .075, .07], [.66, .085, .062], [.74, .21, .055], [.6, .23, .05]]) for (const s of [-1, 1]) o.push(`<circle cx="${f1(a * px)}" cy="${f1(s * cw * py)}" r="${f1(cl * pr)}" fill="${B.xray || B.wireOnly ? 'none' : '#1d4250'}" stroke="${B.eyes}" stroke-width=".18" filter="url(#glow)"/><circle cx="${f1(a * px - .15)}" cy="${f1(s * cw * py - .15)}" r="${f1(cl * pr * .3)}" fill="#fff"/>`)
   return o.join('')
 }
@@ -805,7 +794,8 @@ export function turnClip(W, ev) {
 // ev : { tool: 'Read'|'Edit'|'Write'|'Grep'|'Bash'|'Web'|'Mood'|'Delete'|'Repair'|'Leave', path?, targets?, label, lines?,
 //        actor?: 'main' | id d'un bébé, ok?: bool (Mood), big?: bool, pace?: rythme (1 = normal) }
 // 20 images par seconde : assez pour que la marche se lise patte après patte (à 12, l'araignée semblait glisser)
-const FPS = 20, MAX_CHARS = 125000
+// la limite du panneau est 131 072 caractères : on garde une petite marge (le panneau réécrit la taille du dessin)
+const FPS = 20, MAX_CHARS = 128500
 const ACT_DUR = { Read: 2.6, Edit: 3.3, Write: 3.3, Grep: 1.9, Bash: 2.6, Web: 3.4, Delete: 1.9, Repair: 2.8 }
 export function makeClip(W, ev) {
   const g = W.g, S = SKINS[W.skin], a = actorFor(W, ev), sp = a.sp, m = sp.m, pace = clamp(ev.pace || 1, .6, 2)
@@ -1368,6 +1358,18 @@ function keepFrames(F, tol) {
 }
 const r1 = v => Math.round(v * 10) / 10
 // un tracé compact : premier point absolu, les suivants relatifs (calculés sur les valeurs arrondies, sans dérive)
+// la même chose en courbe douce : la cuisse se cambre un peu (bow : de combien, et de quel côté) et le tibia prolonge
+// la courbe, comme une vraie patte, au lieu de traits droits
+function bowPath(groups, bows) {
+  let d = ''
+  groups.forEach((pts, g) => { let px = 0, py = 0; pts.forEach((p, i) => { const x = r1(p.x), y = r1(p.y)
+    if (!i) d += 'M' + x + ' ' + y
+    else if (i === 1) { const dx = x - px, dy = y - py, b = bows[g]; d += 'q' + Math.round(dx / 2 - dy * b) + ' ' + Math.round(dy / 2 + dx * b) + ' ' + r1(dx) + ' ' + r1(dy) }
+    // le segment suivant prolonge la courbe en douceur (t : il ne coûte qu'un point)
+    else d += 't' + r1(x - px) + ' ' + r1(y - py)
+    px = x; py = y }) })
+  return d
+}
 function relPath(groups) {
   let d = ''
   for (const pts of groups) { let px = 0, py = 0; pts.forEach((p, i) => { const x = r1(p.x), y = r1(p.y); d += i ? 'l' + r1(x - px) + ' ' + r1(y - py) : 'M' + x + ' ' + y; px = x; py = y }) }
@@ -1389,21 +1391,20 @@ function spiderSVG(Ps, S, dur, n) {
   const keep = keepFrames(flat, .3), kts = keep.length < n ? keep.map(i => (i / Math.max(1, n - 1)).toFixed(4)).join(';') : ''
   const animK = (attr, values) => n > 1 ? `<animate attributeName="${attr}" values="${keep.map(i => values[i]).join(';')}"${kts ? ` keyTimes="${kts}"` : ''} dur="${dur}" fill="freeze"/>` : ''
   // deux tracés par patte : cuisse et tibia (épais), puis métatarse et tarse (fins) qui finissent en griffe pointue
-  const dA = proj.map(L => relPath(L.map(q => [q.H, q.K, q.A]))), dB = proj.map(L => relPath(L.map(q => [q.A, q.T, q.F])))
+  const bowA = P0.legs.map(L => L.s * (.08 + LEG_JIT[L.i * 2 + (L.s > 0 ? 1 : 0)]))
+  const dA = proj.map(L => bowPath(L.map(q => [q.H, q.K, q.A]), bowA)), dB = proj.map(L => relPath(L.map(q => [q.A, q.T, q.F])))
   // articulations et pieds : des marqueurs posés sur les sommets des tracés (genou au milieu, cheville au bout, pied au bout)
-  const jc = S.xray ? '#ffffff' : S.wire ? S.leg[0] : S.leg[2] || S.leg[0], dot = (id, r, fill, extra = '') => `<marker id="${uid}${id}" viewBox="-2 -2 4 4" markerWidth="${f1(r * 2)}" markerHeight="${f1(r * 2)}" markerUnits="userSpaceOnUse">${extra}<circle r="1" fill="${fill}"/></marker>`
-  const ring = S.ring && !S.wire ? `<circle r="1.35" fill="${S.ring}" opacity=".8"/>` : ''
+  const jc = S.xray ? '#ffffff' : S.wire ? S.leg[0] : S.leg[2] || S.leg[0], dot = (id, r, fill, extra = '') => `<marker id="${uid}${id}" viewBox="-2 -2 4 4" markerWidth="${f1(r * 2)}" markerHeight="${f1(r * 2)}" orient="auto" markerUnits="userSpaceOnUse">${extra}<path d="M1.05 0Q.95 .62 .2 .74Q-.7 .82 -.98 .1Q-1.02 -.58 -.3 -.76Q.7 -.86 1.05 0Z" fill="${fill}"/></marker>`
+  const ring = S.ring && !S.wire ? `<path d="M1.3 0Q1.2 .8 .2 .95Q-.9 1.02 -1.25 .1Q-1.3 -.75 -.35 -.98Q.85 -1.08 1.3 0Z" fill="${S.ring}" opacity=".8"/>` : ''
   // la griffe au bout du tarse : une pointe orientée dans le sens de la patte (et non plus un bout arrondi)
   const legCol = S.xray ? '#e8e0ff' : S.leg[1], claw = `<marker id="${uid}g" viewBox="-1 -1.2 4.6 2.4" markerWidth="${f1(w * 2.3)}" markerHeight="${f1(w * 1.2)}" refX="0" refY="0" orient="auto" markerUnits="userSpaceOnUse"><path d="M-.6 -.9Q1.2 -.5 3.4 .25Q1.1 .2 -.6 .9Z" fill="${legCol}"/><path d="M1.4 -.18L3.4 .25" stroke="#fff" stroke-width=".3" stroke-opacity=".7"/></marker>`
-  o.push(`<defs><path id="${uid}a" d="${dA[0]}">${animK('d', dA)}</path><path id="${uid}b" d="${dB[0]}">${animK('d', dB)}</path>${dot('k', w * 1.25, jc, ring)}${dot('n', w * .9, jc)}${claw}</defs>`)
+  o.push(`<defs><path id="${uid}a" d="${dA[0]}">${animK('d', dA)}</path><path id="${uid}b" d="${dB[0]}">${animK('d', dB)}</path>${dot('k', w * .82, jc, ring)}${dot('n', w * .62, jc)}${claw}</defs>`)
   // épais près du corps, fins au bout ; le bout de la patte n'est pas arrondi
   const both = (wa, wb) => `<use href="#${uid}a" stroke-width="${f1(wa)}"/><use href="#${uid}b" stroke-width="${f1(wb * .8)}" stroke-linecap="butt"/>`
   o.push(`<g fill="none" stroke="#000" stroke-opacity=".35" stroke-linecap="round" stroke-linejoin="round" transform="translate(1.4 1.1)">${both(w * 2.2, w * 1.1)}</g>`)
   if (S.wire) o.push(`<g fill="none" stroke="${S.leg[0]}" stroke-opacity=".9" stroke-dasharray=".25 .9" stroke-linecap="round">${both(w * 2.35, w * 1.1)}</g>`)
   else if (S.xray) o.push(`<g fill="none" stroke="#e8e0ff" stroke-opacity=".14" stroke-linecap="round" stroke-linejoin="round">${both(w * 2.35, w * 1.1)}</g>`)
   else o.push(`<g fill="none" stroke="${S.leg[1]}" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">${both(w * 2.35, w * 1.1)}</g>`)
-  // de petits poils raides le long des pattes (de fines rayures en travers), plus serrés vers le bout
-  if (!S.wire) o.push(`<g fill="none" stroke="${S.xray ? '#f2f6ff' : S.leg[2] || S.leg[0]}" stroke-opacity=".45"><use href="#${uid}a" stroke-width="${f1(w * 3.1)}" stroke-dasharray=".07 1.15"/><use href="#${uid}b" stroke-width="${f1(w * 1.7)}" stroke-dasharray=".06 .7"/></g>`)
   // reflet / filament lumineux le long de chaque patte
   const lineCol = S.xray ? '#f2f6ff' : S.wire ? S.leg[0] : (S.stripe || S.leg[2]), lines = `<use href="#${uid}a"/><use href="#${uid}b"/>`
   o.push(`<g fill="none" stroke="${lineCol}" stroke-width="${f1(S.xray ? w * .32 : w * .28)}" stroke-linejoin="round" stroke-linecap="round" stroke-opacity=".9" filter="url(#glow)">${lines}</g>`)
