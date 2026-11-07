@@ -326,6 +326,25 @@ const locP = (P, lx, ly) => { const c = Math.cos(P.h), s = Math.sin(P.h); return
 function abdC(P) { const m = P.m, up = P.abdUp || 0, ped = locP(P, -m.cl * .48, 0), d = m.al * .47 * (1 - .35 * up); return { x: ped.x - Math.cos(P.abd) * d, y: ped.y - Math.sin(P.abd) * d } }
 function spinneret(P) { const m = P.m, up = P.abdUp || 0, ped = locP(P, -m.cl * .48, 0), d = m.al * .96 * (1 - .55 * up); return { x: ped.x - Math.cos(P.abd) * d, y: ped.y - Math.sin(P.abd) * d, z: P.bz + up * m.al * .85 } }
 
+/* ---------------- franchir un écart : enjamber ou bondir (sur une page comme sur le graphe) ---------------- */
+// enjamber (u de 0 à 1) : les pattes avant s'étirent au-dessus du vide et attrapent l'autre bord (grab : un point par
+// côté), puis elle s'y hisse en tirant, le corps glisse et les pattes reprennent leur longueur
+const SPAN_STRETCH = 1.6
+function spanAt(from, grab, u, m, ux, uy) {
+  const reachW = sm(0, .3, u) * (1 - sm(.66, .8, u)), z0 = Math.sin(Math.PI * clamp(u / .3, 0, 1)) * m.legs[0] * .25
+  const k = sm(.24, .76, u), e = k * k * (3 - 2 * k), back = m.legs[0] * .45
+  const dest = { x: (grab[1].x + grab[-1].x) / 2 - ux * back, y: (grab[1].y + grab[-1].y) / 2 - uy * back }
+  const over = [0, 1].map(i => ({ i, w: reachW * (i ? .85 : 1), p: s => { const g = grab[s], off = i ? -2.2 : 0; return { x: g.x + ux * off, y: g.y + uy * off, z: u < .3 ? z0 : 0 } } }))
+  return { x: lerp(from.x, dest.x, e), y: lerp(from.y, dest.y, e), over, lift: -sm(.24, .4, u) * (1 - sm(.6, .76, u)) * m.bodyZ * .25 }
+}
+// bondir : elle s'accroupit (pattes fléchies), se détend d'un coup, vole pattes repliées (plus haut si c'est loin),
+// les tend juste avant de toucher et amortit la réception
+function leapAt(from, to, u, m) {
+  const L = Math.hypot(to.x - from.x, to.y - from.y), crouch = sm(0, .22, u) * (1 - sm(.22, .3, u)), k = sm(.26, .88, u), land = sm(.86, .93, u) * (1 - sm(.93, 1, u))
+  return { x: lerp(from.x, to.x, k), y: lerp(from.y, to.y, k), lift: Math.sin(Math.PI * k) * Math.min(60, 8 + L * .19) - crouch * m.bodyZ * .55 - land * m.bodyZ * .4, tuck: (k > 0 && k < 1 ? Math.sin(Math.PI * Math.min(1, k * 1.25)) * .85 : 0) + crouch * .3 }
+}
+const leapTime = L => clamp(.55 + L / 260, .6, 1.5), spanTime = L => clamp(.9 + L / 110, 1, 1.8)
+
 /* ---------------- les skins (SVG) ---------------- */
 const NEON_MORPH = { cl: 10, cw: 9, al: 15, aw: 13, legs: [46, 42, 31, 40], ang: [36, 70, 112, 150], reachF: .6, bodyZ: 6, legW: 1.2, seg: [.36, .36, .28], palp: 4, stepDur: .14 }
 const HUNTSMAN = { cl: 11, cw: 11, al: 13, aw: 10, legs: [56, 60, 54, 48], ang: [52, 82, 108, 136], reachF: .58, bodyZ: 4, legW: .95, seg: [.36, .36, .28], palp: 4.5, stepDur: .13 }
@@ -463,7 +482,7 @@ function stepPhysics(W, dt) {
 function optsFor(a, act, t, dep) {
   const o = act ? actionOpts(act, t, a.sp, dep) : { over: [] }
   if (a.hang > .5) { o.lift = (o.lift || 0) + a.hang; o.tuck = Math.max(o.tuck || 0, clamp(a.hang / 10, 0, .85)) }
-  if (a.leap) { o.lift = (o.lift || 0) + a.leap.lift; o.tuck = Math.max(o.tuck || 0, a.leap.tuck) }
+  if (a.leap) { o.lift = (o.lift || 0) + a.leap.lift; if (a.leap.tuck) o.tuck = Math.max(o.tuck || 0, a.leap.tuck); if (a.leap.over) o.over = [...(o.over || []), ...a.leap.over]; if (a.leap.stretch) o.stretch = a.leap.stretch }
   return o
 }
 function actionOpts(act, t, sp, dep) {
@@ -795,15 +814,17 @@ export function makeClip(W, ev) {
     g.edges.forEach((e, i) => { if (!e.hidden && dist(e.c, sp) < 70) edgeNear.add(i) })
   }
   const turn = null
-  // une cible injoignable par la soie : plutôt que de tendre les pattes à travers la toile, l'araignée y bondit
-  // (elle s'accroupit, se détend d'un coup, vole pattes repliées, les tend pour atterrir et amortit)
+  // une cible injoignable par la soie : à portée de pattes, elle les étire jusqu'à elle et s'y hisse ; plus loin, elle
+  // y bondit (jamais de pattes tendues à travers toute la toile)
   if (walkTo && walkTo.id !== a.cur && bfs(g, a.cur, walkTo.id).length <= 1) {
-    const x0 = sp.x, y0 = sp.y, L = Math.hypot(walkTo.x - x0, walkTo.y - y0), T = clamp(.6 + L / 300, .6, 1.5)
+    const x0 = sp.x, y0 = sp.y, L = Math.hypot(walkTo.x - x0, walkTo.y - y0), ux = (walkTo.x - x0) / (L || 1), uy = (walkTo.y - y0) / (L || 1), span = L < m.legs[0] * 1.5
+    const grabAt = s => { const q = { x: walkTo.x + -uy * s * m.cw * .6, y: walkTo.y + ux * s * m.cw * .6 }; return snapOn(g, q, m.legs[0] * .4) || q }
+    const grab = { 1: grabAt(1), [-1]: grabAt(-1) }, T = span ? spanTime(L) : leapTime(L)
     for (let t = 0; t < T; t += DT) {
-      const u = Math.min(1, (t + DT) / T), crouch = sm(0, .22, u) * (1 - sm(.22, .3, u)), k = sm(.26, .88, u), land = sm(.86, .93, u) * (1 - sm(.93, 1, u))
-      sp.h += wrap(Math.atan2(walkTo.y - y0, walkTo.x - x0) - sp.h) * Math.min(1, DT * 10)
-      const px = sp.x, py = sp.y; sp.x = lerp(x0, walkTo.x, k); sp.y = lerp(y0, walkTo.y, k); sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT
-      a.leap = { lift: Math.sin(Math.PI * k) * Math.min(60, 10 + L * .2) - crouch * m.bodyZ * .55 - land * m.bodyZ * .4, tuck: (k > 0 && k < 1 ? Math.sin(Math.PI * Math.min(1, k * 1.25)) * .85 : 0) + crouch * .3 }
+      const u = Math.min(1, (t + DT) / T), q = span ? spanAt({ x: x0, y: y0 }, grab, u, m, ux, uy) : leapAt({ x: x0, y: y0 }, walkTo, u, m)
+      sp.h += wrap(Math.atan2(uy, ux) - sp.h) * Math.min(1, DT * 10)
+      const px = sp.x, py = sp.y; sp.x = q.x; sp.y = q.y; sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT
+      a.leap = span ? { lift: q.lift, over: q.over, stretch: SPAN_STRETCH } : { lift: q.lift, tuck: q.tuck }
       stepPhysics(W, DT); if (step++ % rec === 0) recFrame(-1)
     }
     a.leap = null; a.cur = walkTo.id; sp.vx = sp.vy = 0; sounds.push({ at: frames.length / FPS, name: 'pluck' })
@@ -1572,7 +1593,7 @@ export function crawlClip(W, hurry) {
     const stand = wc
     const dx = stand.x - sp.x, dy = stand.y - sp.y, d = Math.hypot(dx, dy), px = sp.x, py = sp.y
     // un grand blanc entre elle et le mot (des paragraphes éloignés) : elle ne marche pas dans le vide, elle bondit
-    if (!C.gap && C.gapFor !== C.pi && d > 14) { C.gapFor = C.pi; const gk = gapKind(cells, sp, wc, sp.m.legs[0] * 1.45), kind = gk && gk.kind; if (kind) C.gap = { kind, from: { x: sp.x, y: sp.y }, to: { x: wc.x, y: wc.y }, t: 0, T: kind === 'span' ? 1.1 + d / 90 : .55 + d / 240, run0: gk.run } }
+    if (!C.gap && C.gapFor !== C.pi && d > 14) { C.gapFor = C.pi; const gk = gapKind(cells, sp, wc, sp.m.legs[0] * 1.45), kind = gk && gk.kind; if (kind) C.gap = { kind, from: { x: sp.x, y: sp.y }, to: { x: wc.x, y: wc.y }, t: 0, T: kind === 'span' ? spanTime(d) : leapTime(d), run0: gk.run } }
     if (C.gap) {
       // un bond, comme une impulsion : elle s'accroupit (pattes fléchies), se détend d'un coup, vole pattes repliées,
       // les tend vers l'avant juste avant de toucher, amortit, et repart
@@ -1584,23 +1605,17 @@ export function crawlClip(W, hurry) {
         if (!G.grab) {
           const far = cells.filter(c => (c.x - G.from.x) * ux + (c.y - G.from.y) * uy > G.run0 * .55 && Math.hypot(c.x - G.to.x, c.y - G.to.y) < L), side = c => ((c.x - G.from.x) * -uy + (c.y - G.from.y) * ux)
           const pick = sg => far.filter(c => side(c) * sg >= -2).sort((a, b) => Math.hypot(a.x - G.from.x, a.y - G.from.y) - Math.hypot(b.x - G.from.x, b.y - G.from.y))[0] || { x: G.to.x, y: G.to.y }
-          G.grab = { '1': pick(1), '-1': pick(-1) }
+          G.grab = { 1: pick(1), [-1]: pick(-1) }
         }
         sp.h += wrap(Math.atan2(uy, ux) - sp.h) * Math.min(1, DT * 8)
-        const reachW = sm(0, .32, u) * (1 - sm(.82, .95, u)), lift0 = Math.sin(Math.PI * clamp(u / .32, 0, 1)) * sp.m.legs[0] * .25
-        over.length = 0
-        for (const i of [0, 1]) over.push({ i, w: reachW * (i ? .85 : 1), t0: -9, p: s => { const g = G.grab[s], off = i ? -2.2 : 0; return { x: g.x + ux * off, y: g.y + uy * off, z: u < .32 ? lift0 : 0 } } })
-        const k = sm(.3, .9, u), e = k * k * (3 - 2 * k), dest = { x: (G.grab['1'].x + G.grab['-1'].x) / 2 - ux * sp.m.legs[0] * .45, y: (G.grab['1'].y + G.grab['-1'].y) / 2 - uy * sp.m.legs[0] * .45 }
-        sp.x = lerp(G.from.x, dest.x, e); sp.y = lerp(G.from.y, dest.y, e); sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT
-        stretch = 1.6; lift = -sm(.3, .5, u) * (1 - sm(.7, .9, u)) * sp.m.bodyZ * .25
+        const q = spanAt(G.from, G.grab, u, sp.m, ux, uy)
+        over.length = 0; over.push(...q.over.map(o => ({ ...o, t0: -9 })))
+        sp.x = q.x; sp.y = q.y; sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT; stretch = SPAN_STRETCH; lift = q.lift
         if (u >= 1) { C.gap = null; over.length = 0; stretch = 0; lift = 0; spd = 25 }
         tick(); continue
       }
-      const crouch = sm(0, .22, u) * (1 - sm(.22, .3, u)), k = sm(.26, .88, u), land = sm(.86, .93, u) * (1 - sm(.93, 1, u))
       sp.h += wrap(Math.atan2(G.to.y - G.from.y, G.to.x - G.from.x) - sp.h) * Math.min(1, DT * 10)
-      sp.x = lerp(G.from.x, G.to.x, k); sp.y = lerp(G.from.y, G.to.y, k)
-      lift = Math.sin(Math.PI * k) * (8 + L * .18) - crouch * sp.m.bodyZ * .55 - land * sp.m.bodyZ * .4
-      tuck = (k > 0 && k < 1 ? Math.sin(Math.PI * Math.min(1, k * 1.25)) * .85 : 0) + crouch * .3
+      const q = leapAt(G.from, G.to, u, sp.m); sp.x = q.x; sp.y = q.y; lift = q.lift; tuck = q.tuck
       sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT
       if (u >= 1) { C.gap = null; tuck = 0; lift = 0; spd = 35 }
     } else if (d < 5 && C.pi < C.path.length - 1) {

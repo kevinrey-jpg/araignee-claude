@@ -323,6 +323,22 @@ test("une page lue : l'araignée la parcourt en crawler, attrape les mots-clés,
   expect(W.actors.main.sp.m.legs[0]).toBe(legs)
 })
 
+test("une page aérée : elle enjambe les petits blancs, bondit par-dessus les grands, et chaque pied finit sur une lettre", () => {
+  const g: any = E.graphFromTree(['src/a.py', 'src/b.py', 'docs/d.md'], 'proj')
+  const W: any = E.createWorld(g, 'fusion')
+  W.aspect = .63
+  E.sphereInit(W)
+  const lines = ['import os', 'from json import loads', '', '', 'class Spider:', '    MAX_LEGS = 8', '', '', '', '', '', '    def crawl(self):']
+  const ev: any = { tool: 'Read', path: 'src/a.py', label: 'Read', lines: ['x'], page: { kind: 'read', start: 1, lines } }
+  expect(E.crawlBegin(W, ev)).toBe(true)
+  E.makeClip(W, ev)
+  const clips: any[] = []
+  for (let k = 0; k < 10 && E.crawling(W); k++) clips.push(E.crawlClip(W, false))
+  expect(E.crawling(W)).toBe(false)
+  for (const c of clips) { expect(c.svg.length).toBeLessThan(131072); expect(c.svg).not.toContain('NaN') }
+  expect(clips.map(c => c.svg).join('')).toContain('CRAWL')
+})
+
 test("fermée avec /araignee-fermer, l'araignée ne se rouvre pas toute seule ; /araignee la rouvre", async ($, on) => {
   let opens = 0, closes = 0
   on('command.register', () => ({ value: { command: 'araignee' } }))

@@ -98,6 +98,14 @@ Le bouton **Plongée** de la grande toile choisit qui plonge : les agents seulem
 
 
 Pendant qu'elle lit, l'araignée avance à un rythme qu'on peut suivre des yeux, lettre après lettre, et les mots importants qu'elle remarque s'allument à son passage : ce qui est défini (fonctions, classes, titres) en doré, les erreurs et les TODO en rouge, les modules importés en bleu, les constantes en rose. Tout s'efface quand la page se referme.
+### Le crawler (panneau)
+
+Quand Claude ou un agent lit un fichier, l'araignée rapetisse, saute sur la page et la parcourt comme un robot d'indexation : elle marche de mot important en mot important, dans un ordre un peu désordonné, chaque pied posé sur une lettre. Un pied posé sur un mot important l'attrape : il est entouré (ce qui est défini), barré (erreurs, TODO), encadré (modules importés) ou souligné (constantes), et un fil le relie au précédent. Sous la page, un tableau de bord compte les mots lus et liste les mots-clés. La lecture dure quelques secondes ; si d'autres actions attendent, elle finit plus vite.
+
+### Franchir un écart
+
+Ses pieds s'agrippent toujours à quelque chose : une lettre sur une page, un fil sur le graphe (s'il n'y a rien à portée, la patte se replie au lieu de se poser dans le vide). Devant un vide qu'elle ne peut pas traverser en marchant (des paragraphes éloignés, un fichier dont les fils sont coupés) : s'il est à portée de pattes, elle les étire jusqu'à l'autre bord et s'y hisse ; plus loin, elle prend son élan et bondit.
+
 ### Plusieurs araignées sur un même dossier
 
 La première arrivée garde le centre de l'étoile. Les suivantes se posent chacune sur un fil différent qui part du dossier, tête tournée vers l'étoile ; s'il n'y a plus de fil libre, elles se placent en couronne. Deux araignées qui se croisent en marchant s'écartent un peu au lieu de se traverser (grande toile).

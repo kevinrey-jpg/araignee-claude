@@ -350,6 +350,21 @@ function foliumPath(c, rx, ry) {
 /* ============ l'araignée : squelette 3D et démarche ============ */
 const HIPX = [.3, .12, -.08, -.26];
 const sm = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+// franchir un écart (les mêmes gestes que dans le panneau) : enjamber, pattes avant étirées jusqu'à l'autre bord puis
+// elle s'y hisse ; ou bondir, accroupie, détente, vol pattes repliées, réception amortie
+const SPAN_STRETCH = 1.6;
+function spanAt(from, grab, u, m, ux, uy) {
+  const reachW = sm(0, .3, u) * (1 - sm(.66, .8, u)), z0 = Math.sin(Math.PI * clamp(u / .3, 0, 1)) * m.legs[0] * .25;
+  const k = sm(.24, .76, u), e = k * k * (3 - 2 * k), back = m.legs[0] * .45;
+  const dest = { x: (grab[1].x + grab[-1].x) / 2 - ux * back, y: (grab[1].y + grab[-1].y) / 2 - uy * back };
+  const over = [0, 1].map(i => ({ i, w: reachW * (i ? .85 : 1), p: s => { const g = grab[s], off = i ? -2.2 : 0; return { x: g.x + ux * off, y: g.y + uy * off, z: u < .3 ? z0 : 0 }; } }));
+  return { x: lerp(from.x, dest.x, e), y: lerp(from.y, dest.y, e), over, lift: -sm(.24, .4, u) * (1 - sm(.6, .76, u)) * m.bodyZ * .25 };
+}
+function leapAt(from, to, u, m) {
+  const L = Math.hypot(to.x - from.x, to.y - from.y), crouch = sm(0, .22, u) * (1 - sm(.22, .3, u)), k = sm(.26, .88, u), land = sm(.86, .93, u) * (1 - sm(.93, 1, u));
+  return { x: lerp(from.x, to.x, k), y: lerp(from.y, to.y, k), lift: Math.sin(Math.PI * k) * Math.min(60, 8 + L * .19) - crouch * m.bodyZ * .55 - land * m.bodyZ * .4, tuck: (k > 0 && k < 1 ? Math.sin(Math.PI * Math.min(1, k * 1.25)) * .85 : 0) + crouch * .3 };
+}
+const leapTime = L => clamp(.55 + L / 260, .6, 1.5), spanTime = L => clamp(.9 + L / 110, 1, 1.8);
 function ik3(H, F, f, t, mt) {
   const dx = F.x - H.x, dy = F.y - H.y, D = Math.hypot(dx, dy) || 1e-3, ux = dx / D, uy = dy / D;
   const tot = f + t + mt, dn = clamp((D / tot - .3) / .45, 0, 1), phi = lerp(78, 42, dn) * DEG;
@@ -438,8 +453,9 @@ class Spider {
       if (L.raise > .01) { const hh = this.local(hl.x + m.cl * .15, hl.y + L.s * m.legs[L.i] * .3); F = { x: lerp(F.x, hh.x, L.raise), y: lerp(F.y, hh.y, L.raise), z: lerp(F.z, m.legs[L.i] * .5, L.raise) + Math.sin(t * 9 + L.s) * L.raise * 1.2 }; }
       if (o.tuck > .001) { const fold = this.local(hl.x + (L.i < 2 ? m.cl * .45 : -m.cl * .2), hl.y + L.s * m.legs[L.i] * .2); F = lerp3(F, { x: fold.x, y: fold.y, z: bz - m.bodyZ * .25 + m.legs[L.i] * .12 }, o.tuck); }
       for (const ov of (o.over || [])) if (ov.w > .001 && ov.i === L.i && (!ov.s || ov.s === L.s)) F = lerp3(F, ov.p(L.s), ov.w);
-      const len = m.legs[L.i], { K, A } = ik3(Hh, F, len * m.seg[0], len * m.seg[1], len * m.seg[2]);
-      return { H: Hh, K, A, F, s: L.s, i: L.i, stepping: L.p >= 0 };
+      // une patte qui doit aller plus loin que sa longueur peut s'étirer un peu (o.stretch : jusqu'à combien de fois)
+      const len0 = m.legs[L.i], k = o.stretch ? clamp(Math.hypot(F.x - Hh.x, F.y - Hh.y, F.z - Hh.z) / (len0 * .97), 1, o.stretch) : 1, len = len0 * k, { K, A } = ik3(Hh, F, len * m.seg[0], len * m.seg[1], len * m.seg[2]);
+      return { H: Hh, K, A, F, s: L.s, i: L.i, stepping: L.p >= 0, k };
     });
     const palps = [-1, 1].map(s => {
       const b = this.local(m.cl * .4, s * m.cw * .17), w = Math.sin(t * 3.1 + s * 1.3) * m.cw * .05;
@@ -1665,8 +1681,8 @@ function removeAgent(ag) { ag.gone = true; const i = AGENTS.indexOf(ag); if (i >
 const short = id => id.split('/').slice(1).join('/') || id;
 function goTo(ag, id, cb, stop) {
   ag.target = id; const path = bfs(ag.cur, id);
-  // injoignable par la soie : elle y bondit (accroupie, détente, vol pattes repliées, réception amortie)
-  if (path.length <= 1 && id !== ag.cur && byId[id]) { const n = byId[id], L = dist(ag.sp, n); ag.leap = { n, x0: ag.sp.x, y0: ag.sp.y, t0: simT, T: clamp(.6 + L / 300, .6, 1.5), L, cb }; return; }
+  // injoignable par la soie : à portée de pattes, elle les étire jusqu'à elle et s'y hisse ; plus loin, elle y bondit
+  if (path.length <= 1 && id !== ag.cur && byId[id]) { const n = byId[id], L = dist(ag.sp, n), span = L < ag.sp.m.legs[0] * 1.5; ag.leap = { n, x0: ag.sp.x, y0: ag.sp.y, t0: simT, T: span ? spanTime(L) : leapTime(L), L, span, cb }; return; }
   if (path.length <= 1) { cb(); return; }
   const r = routePts(path); ag.walk = { ...r, marks0: r.marks.slice(), seg: 0, u: 0, cb, done: 0, end: Math.max(0, r.total - stop) };
 }
@@ -1833,12 +1849,14 @@ function markTrail(a, b) { const i = edgeIdx[a + '|' + b]; if (i === undefined) 
 function stepAgent(ag, dt) {
   const sp = ag.sp, px = sp.x, py = sp.y, w = ag.walk, maxS = 150 * (sp.m.speed || 1) * (ag.pace || 1);
   if (ag.hangAnim) { const h = ag.hangAnim, u = clamp((simT - h.t0) / h.dur, 0, 1); ag.hang = lerp(h.from, h.to, ease(u)); if (u >= 1) { ag.hangAnim = null; h.cb && h.cb(); } }
-  // le bond : elle s'accroupit, se détend d'un coup, vole pattes repliées, les tend pour atterrir et amortit
+  // franchir un écart : enjamber (pattes étirées jusqu'à l'autre bord) ou bondir
   if (ag.leap) {
-    const J = ag.leap, u = clamp((simT - J.t0) / J.T, 0, 1), crouch = sm(0, .22, u) * (1 - sm(.22, .3, u)), k = sm(.26, .88, u), land = sm(.86, .93, u) * (1 - sm(.93, 1, u)), m = sp.m;
-    sp.h += wrap(Math.atan2(J.n.y - J.y0, J.n.x - J.x0) - sp.h) * Math.min(1, dt * 10);
-    sp.x = lerp(J.x0, J.n.x, k); sp.y = lerp(J.y0, J.n.y, k);
-    ag.leapO = { lift: Math.sin(Math.PI * k) * Math.min(60, 10 + J.L * .2) - crouch * m.bodyZ * .55 - land * m.bodyZ * .4, tuck: (k > 0 && k < 1 ? Math.sin(Math.PI * Math.min(1, k * 1.25)) * .85 : 0) + crouch * .3 };
+    const J = ag.leap, u = clamp((simT - J.t0) / J.T, 0, 1), m = sp.m, ux = (J.n.x - J.x0) / (J.L || 1), uy = (J.n.y - J.y0) / (J.L || 1);
+    sp.h += wrap(Math.atan2(uy, ux) - sp.h) * Math.min(1, dt * 10);
+    if (J.span) {
+      const grabAt = s => { const q = { x: J.n.x - uy * s * m.cw * .6, y: J.n.y + ux * s * m.cw * .6 }; return (stageEnv.snap && stageEnv.snap(q, m.legs[0] * .4)) || q; };
+      const q = spanAt({ x: J.x0, y: J.y0 }, { 1: grabAt(1), [-1]: grabAt(-1) }, u, m, ux, uy); sp.x = q.x; sp.y = q.y; ag.leapO = { lift: q.lift, over: q.over, stretch: SPAN_STRETCH };
+    } else { const q = leapAt({ x: J.x0, y: J.y0 }, J.n, u, m); sp.x = q.x; sp.y = q.y; ag.leapO = { lift: q.lift, tuck: q.tuck }; }
     if (u >= 1) { ag.leap = null; ag.leapO = null; ag.cur = J.n.id; sfx('pluck'); J.cb && J.cb(); }
   }
   if (w) {
@@ -1939,7 +1957,7 @@ function step(dt) {
     AGENTS.forEach(ag => {
       ag.opts = actionOpts(ag.A, ag.sp);
       if (ag.hang > .5) { ag.opts.lift = (ag.opts.lift || 0) + ag.hang; ag.opts.tuck = Math.max(ag.opts.tuck || 0, clamp(ag.hang / 10, 0, .85)); }
-      if (ag.leapO) { ag.opts.lift = (ag.opts.lift || 0) + ag.leapO.lift; ag.opts.tuck = Math.max(ag.opts.tuck || 0, ag.leapO.tuck); }
+      if (ag.leapO) { const J = ag.leapO; ag.opts.lift = (ag.opts.lift || 0) + J.lift; if (J.tuck) ag.opts.tuck = Math.max(ag.opts.tuck || 0, J.tuck); if (J.over) ag.opts.over = [...(ag.opts.over || []), ...J.over]; if (J.stretch) ag.opts.stretch = J.stretch; }
       ag.sp.tick(dt, simT, ag.opts);
     });
     edges.forEach(e => { if (e.trail > .3) e.trail = Math.max(.3, e.trail - dt * .03); });
