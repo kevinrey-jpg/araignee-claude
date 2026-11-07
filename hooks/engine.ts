@@ -309,7 +309,7 @@ class Spider {
       if (o.tuck > .001) { const fold = this.local(hl.x + (L.i < 2 ? m.cl * .45 : -m.cl * .2), hl.y + L.s * m.legs[L.i] * .2); F = lerp3(F, { x: fold.x, y: fold.y, z: bz - m.bodyZ * .25 + m.legs[L.i] * .12 }, o.tuck) }
       for (const ov of (o.over || [])) if (ov.w > .001 && ov.i === L.i && (!ov.s || ov.s === L.s)) F = lerp3(F, ov.p(L.s), ov.w)
       // une patte qui doit aller plus loin que sa longueur peut s'étirer un peu (o.stretch : jusqu'à combien de fois)
-      const len0 = m.legs[L.i], k = o.stretch ? clamp(Math.hypot(F.x - H.x, F.y - H.y, F.z - H.z) / (len0 * .97), 1, o.stretch) : 1, len = len0 * k, { K, A } = ik3(H, F, len * m.seg[0], len * m.seg[1], len * m.seg[2])
+      const len0 = m.legs[L.i] * (1 + LEG_JIT[L.i * 2 + (L.s > 0 ? 1 : 0)]), k = o.stretch ? clamp(Math.hypot(F.x - H.x, F.y - H.y, F.z - H.z) / (len0 * .97), 1, o.stretch) : 1, len = len0 * k, { K, A } = ik3(H, F, len * m.seg[0], len * m.seg[1], len * m.seg[2])
       return { H, K, A, F, s: L.s, i: L.i, stepping: L.p >= 0, k }
     })
     const palps = [-1, 1].map(s => {
@@ -346,6 +346,8 @@ function leapAt(from, to, u, m) {
 const leapTime = L => clamp(.55 + L / 260, .6, 1.5), spanTime = L => clamp(.9 + L / 110, 1, 1.8)
 
 /* ---------------- les skins (SVG) ---------------- */
+// les huit pattes ne sont pas parfaitement égales (quelques pour cent de longueur en plus ou en moins)
+const LEG_JIT = [.03, -.025, -.02, .035, .025, -.03, -.035, .02]
 const NEON_MORPH = { cl: 10, cw: 9, al: 15, aw: 13, legs: [46, 42, 31, 40], ang: [36, 70, 112, 150], reachF: .6, bodyZ: 6, legW: 1.2, seg: [.36, .36, .28], palp: 4, stepDur: .14 }
 const HUNTSMAN = { cl: 11, cw: 11, al: 13, aw: 10, legs: [56, 60, 54, 48], ang: [52, 82, 108, 136], reachF: .58, bodyZ: 4, legW: .95, seg: [.36, .36, .28], palp: 4.5, stepDur: .13 }
 const NEPHILA = { cl: 9, cw: 7.5, al: 22, aw: 9.5, legs: [62, 54, 35, 54], ang: [32, 62, 112, 156], reachF: .62, bodyZ: 6, legW: .85, seg: [.36, .36, .28], palp: 3.5, stepDur: .15 }
@@ -366,9 +368,29 @@ function skinDefs(id, S) {
   return `<radialGradient id="${id}g" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="${S.leg[2] || S.leg[0]}"/><stop offset=".55" stop-color="${S.leg[1] || S.leg[0]}"/><stop offset="1" stop-color="${S.leg[0]}"/></radialGradient>`
 }
 // abdomen dessiné dans son repère (x vers l'avant), rx/ry ses demi-axes
+// le contour d'un corps vivant : rond, mais pas un ovale parfait (de légères bosses), et l'abdomen s'affine vers
+// l'arrière, là où sort la soie
+function blobPath(rx, ry, taper) {
+  let d = ''; const N = 30
+  for (let k = 0; k < N; k++) {
+    const a = k / N * Math.PI * 2, c = Math.cos(a), r = 1 + .035 * Math.sin(3 * a + .7) + .022 * Math.sin(7 * a + 2.1) + .014 * Math.sin(11 * a + .4)
+    const back = c < 0 ? c * c : 0, x = rx * c * r * (1 + taper * .08 * back), y = ry * Math.sin(a) * r * (1 - taper * .24 * back)
+    d += (k ? 'L' : 'M') + f1(x) + ' ' + f1(y)
+  }
+  return d + 'Z'
+}
+// quelques poils fins qui dépassent de la silhouette, couchés vers l'arrière
+function hairsSVG(rx, ry, col, n, len) {
+  let d = ''
+  for (let k = 0; k < n; k++) {
+    const a = (k + .5) / n * Math.PI * 2 + Math.sin(k * 2.7) * .12, c = Math.cos(a), sn = Math.sin(a), x = rx * c * 1.01, y = ry * sn * 1.01, l = len * (.6 + .4 * Math.abs(Math.sin(k * 1.9)))
+    d += `M${f1(x)} ${f1(y)}l${f1((c - .45) * l)} ${f1(sn * l)}`
+  }
+  return `<path d="${d}" stroke="${col}" stroke-width=".11" stroke-opacity=".6" stroke-linecap="round" fill="none"/>`
+}
 function abdomenSVG(S, rx, ry) {
-  const B = S.body, o = []
-  const ell = (fill, stroke, sw, extra = '') => `<ellipse rx="${f1(rx)}" ry="${f1(ry)}" fill="${fill}"${stroke ? ` stroke="${stroke}" stroke-width="${sw}"` : ''} ${extra}/>`
+  const B = S.body, o = [], outline = blobPath(rx, ry, 1)
+  const ell = (fill, stroke, sw, extra = '') => `<path d="${outline}" fill="${fill}"${stroke ? ` stroke="${stroke}" stroke-width="${sw}"` : ''} ${extra}/>`
   if (B.solid) o.push(`<radialGradient id="abG" cx="38%" cy="32%" r="70%"><stop offset="0" stop-color="${B.solid[0]}"/><stop offset=".5" stop-color="${B.solid[1]}"/><stop offset="1" stop-color="${B.solid[2]}"/></radialGradient>`, ell('url(#abG)'))
   else if (B.glass) o.push(`<radialGradient id="abG" cx="38%" cy="32%" r="70%"><stop offset="0" stop-color="rgba(95,50,170,.6)"/><stop offset=".7" stop-color="rgba(30,12,60,.82)"/><stop offset="1" stop-color="rgba(12,5,28,.92)"/></radialGradient>`, ell('url(#abG)'))
   else if (B.dark) o.push(ell(B.teal ? 'rgba(6,30,40,.88)' : 'rgba(16,6,36,.9)'))
@@ -394,19 +416,25 @@ function abdomenSVG(S, rx, ry) {
   if (B.scan) o.push(`<line y1="${f1(-ry)}" y2="${f1(ry)}" stroke="#f2fdff" stroke-width=".4" filter="url(#glow)"><animate attributeName="x1" values="${f1(-rx * .9)};${f1(rx * .9)};${f1(-rx * .9)}" dur="2.8s" repeatCount="indefinite"/><animate attributeName="x2" values="${f1(-rx * .9)};${f1(rx * .9)};${f1(-rx * .9)}" dur="2.8s" repeatCount="indefinite"/></line>`)
   if (!B.wireOnly && !B.xray) o.push(`<ellipse cx="${f1(-rx * .2)}" cy="${f1(-ry * .32)}" rx="${f1(rx * .38)}" ry="${f1(ry * .22)}" fill="#fff" opacity=".18"/>`)
   o.push(ell('none', B.rim, B.wireOnly ? .2 : .26, 'filter="url(#glow)"'))
+  if (!B.wireOnly) o.push(hairsSVG(rx, ry, B.xray ? '#f2f6ff' : B.rim, 22, Math.min(rx, ry) * .2))
   return o.join('')
 }
 function carapaceSVG(S, cl, cw) {
   const B = S.body, a = cl * .5, b = cw * .5, o = []
   const path = `M${f1(a)} 0C${f1(a)} ${f1(-b * .62)} ${f1(a * .35)} ${f1(-b)} ${f1(-a * .15)} ${f1(-b)}C${f1(-a * .75)} ${f1(-b)} ${f1(-a * 1.02)} ${f1(-b * .5)} ${f1(-a)} 0C${f1(-a * 1.02)} ${f1(b * .5)} ${f1(-a * .75)} ${f1(b)} ${f1(-a * .15)} ${f1(b)}C${f1(a * .35)} ${f1(b)} ${f1(a)} ${f1(b * .62)} ${f1(a)} 0Z`
-  // chélicères
-  if (!B.wireOnly && !B.xray) for (const s of [-1, 1]) o.push(`<ellipse cx="${f1(cl * .5)}" cy="${f1(s * cw * .12)}" rx="${f1(cl * .15)}" ry="${f1(cw * .12)}" fill="${B.solid ? '#1c1030' : 'rgba(40,18,80,.9)'}"/>`)
+  // chélicères : une base trapue, puis un crochet recourbé vers l'intérieur qui finit en pointe acérée
+  if (!B.wireOnly) for (const s of [-1, 1]) {
+    const bx = cl * .44, by = s * cw * .13, fill = B.xray ? 'rgba(200,180,255,.15)' : B.solid ? '#1c1030' : 'rgba(40,18,80,.9)', edge = B.xray ? '#f2f6ff' : B.rim
+    o.push(`<path d="M${f1(bx - cl * .06)} ${f1(by - s * cw * .1)}Q${f1(bx + cl * .2)} ${f1(by - s * cw * .12)} ${f1(bx + cl * .22)} ${f1(by + s * cw * .02)}Q${f1(bx + cl * .17)} ${f1(by + s * cw * .1)} ${f1(bx - cl * .04)} ${f1(by + s * cw * .07)}Z" fill="${fill}" stroke="${edge}" stroke-width=".14" stroke-opacity=".7"/>`)
+    o.push(`<path d="M${f1(bx + cl * .18)} ${f1(by - s * cw * .04)}Q${f1(bx + cl * .36)} ${f1(by - s * cw * .02)} ${f1(bx + cl * .4)} ${f1(by - s * cw * .1)}Q${f1(bx + cl * .31)} ${f1(by + s * cw * .03)} ${f1(bx + cl * .2)} ${f1(by + s * cw * .05)}Z" fill="${edge}" fill-opacity=".85"/>`)
+  }
   const fill = B.solid ? 'url(#cpG)' : B.glass ? 'rgba(60,28,110,.75)' : B.dark ? (B.teal ? 'rgba(8,36,46,.92)' : 'rgba(18,8,40,.92)') : B.xray ? 'rgba(200,180,255,.08)' : 'rgba(120,80,255,.08)'
   if (B.solid) o.push(`<radialGradient id="cpG" cx="38%" cy="32%" r="70%"><stop offset="0" stop-color="#5a3f85"/><stop offset=".55" stop-color="#1b102c"/><stop offset="1" stop-color="#05020a"/></radialGradient>`)
   o.push(`<path d="${path}" fill="${fill}"/>`)
   let st = ''; const fx = -cl * .1; for (let k = 0; k < 10; k++) { const an = k / 10 * Math.PI * 2 + .3; st += `M${f1(fx + Math.cos(an) * cl * .07)} ${f1(Math.sin(an) * cw * .07)}L${f1(fx + Math.cos(an) * cl * .36)} ${f1(Math.sin(an) * cw * .36)}` }
   o.push(`<path d="${st}" stroke="${B.xray ? '#f2f6ff' : B.rim}" stroke-opacity="${B.xray ? .8 : .35}" stroke-width=".2" fill="none"/>`)
   o.push(`<path d="${path}" fill="none" stroke="${B.rim}" stroke-width=".28" filter="url(#glow)"/>`)
+  if (!B.wireOnly) o.push(hairsSVG(a * .95, b * .95, B.xray ? '#f2f6ff' : B.rim, 14, Math.min(a, b) * .22))
   for (const [px, py, pr] of [[.8, .075, .07], [.66, .085, .062], [.74, .21, .055], [.6, .23, .05]]) for (const s of [-1, 1]) o.push(`<circle cx="${f1(a * px)}" cy="${f1(s * cw * py)}" r="${f1(cl * pr)}" fill="${B.xray || B.wireOnly ? 'none' : '#1d4250'}" stroke="${B.eyes}" stroke-width=".18" filter="url(#glow)"/><circle cx="${f1(a * px - .15)}" cy="${f1(s * cw * py - .15)}" r="${f1(cl * pr * .3)}" fill="#fff"/>`)
   return o.join('')
 }
@@ -1360,25 +1388,31 @@ function spiderSVG(Ps, S, dur, n) {
   const flat = proj.map(L => L.flatMap(q => [q.H, q.K, q.A, q.T, q.F]))
   const keep = keepFrames(flat, .3), kts = keep.length < n ? keep.map(i => (i / Math.max(1, n - 1)).toFixed(4)).join(';') : ''
   const animK = (attr, values) => n > 1 ? `<animate attributeName="${attr}" values="${keep.map(i => values[i]).join(';')}"${kts ? ` keyTimes="${kts}"` : ''} dur="${dur}" fill="freeze"/>` : ''
+  // deux tracés par patte : cuisse et tibia (épais), puis métatarse et tarse (fins) qui finissent en griffe pointue
   const dA = proj.map(L => relPath(L.map(q => [q.H, q.K, q.A]))), dB = proj.map(L => relPath(L.map(q => [q.A, q.T, q.F])))
   // articulations et pieds : des marqueurs posés sur les sommets des tracés (genou au milieu, cheville au bout, pied au bout)
   const jc = S.xray ? '#ffffff' : S.wire ? S.leg[0] : S.leg[2] || S.leg[0], dot = (id, r, fill, extra = '') => `<marker id="${uid}${id}" viewBox="-2 -2 4 4" markerWidth="${f1(r * 2)}" markerHeight="${f1(r * 2)}" markerUnits="userSpaceOnUse">${extra}<circle r="1" fill="${fill}"/></marker>`
   const ring = S.ring && !S.wire ? `<circle r="1.35" fill="${S.ring}" opacity=".8"/>` : ''
-  o.push(`<defs><path id="${uid}a" d="${dA[0]}">${animK('d', dA)}</path><path id="${uid}b" d="${dB[0]}">${animK('d', dB)}</path>${dot('k', w * 1.25, jc, ring)}${dot('n', w * .9, jc)}${dot('f', .36, 'rgba(255,255,255,.8)')}</defs>`)
-  const both = (wa, wb) => `<use href="#${uid}a" stroke-width="${f1(wa)}"/><use href="#${uid}b" stroke-width="${f1(wb)}"/>`
+  // la griffe au bout du tarse : une pointe orientée dans le sens de la patte (et non plus un bout arrondi)
+  const legCol = S.xray ? '#e8e0ff' : S.leg[1], claw = `<marker id="${uid}g" viewBox="-1 -1.2 4.6 2.4" markerWidth="${f1(w * 2.3)}" markerHeight="${f1(w * 1.2)}" refX="0" refY="0" orient="auto" markerUnits="userSpaceOnUse"><path d="M-.6 -.9Q1.2 -.5 3.4 .25Q1.1 .2 -.6 .9Z" fill="${legCol}"/><path d="M1.4 -.18L3.4 .25" stroke="#fff" stroke-width=".3" stroke-opacity=".7"/></marker>`
+  o.push(`<defs><path id="${uid}a" d="${dA[0]}">${animK('d', dA)}</path><path id="${uid}b" d="${dB[0]}">${animK('d', dB)}</path>${dot('k', w * 1.25, jc, ring)}${dot('n', w * .9, jc)}${claw}</defs>`)
+  // épais près du corps, fins au bout ; le bout de la patte n'est pas arrondi
+  const both = (wa, wb) => `<use href="#${uid}a" stroke-width="${f1(wa)}"/><use href="#${uid}b" stroke-width="${f1(wb * .8)}" stroke-linecap="butt"/>`
   o.push(`<g fill="none" stroke="#000" stroke-opacity=".35" stroke-linecap="round" stroke-linejoin="round" transform="translate(1.4 1.1)">${both(w * 2.2, w * 1.1)}</g>`)
   if (S.wire) o.push(`<g fill="none" stroke="${S.leg[0]}" stroke-opacity=".9" stroke-dasharray=".25 .9" stroke-linecap="round">${both(w * 2.35, w * 1.1)}</g>`)
   else if (S.xray) o.push(`<g fill="none" stroke="#e8e0ff" stroke-opacity=".14" stroke-linecap="round" stroke-linejoin="round">${both(w * 2.35, w * 1.1)}</g>`)
   else o.push(`<g fill="none" stroke="${S.leg[1]}" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">${both(w * 2.35, w * 1.1)}</g>`)
+  // de petits poils raides le long des pattes (de fines rayures en travers), plus serrés vers le bout
+  if (!S.wire) o.push(`<g fill="none" stroke="${S.xray ? '#f2f6ff' : S.leg[2] || S.leg[0]}" stroke-opacity=".45"><use href="#${uid}a" stroke-width="${f1(w * 3.1)}" stroke-dasharray=".07 1.15"/><use href="#${uid}b" stroke-width="${f1(w * 1.7)}" stroke-dasharray=".06 .7"/></g>`)
   // reflet / filament lumineux le long de chaque patte
   const lineCol = S.xray ? '#f2f6ff' : S.wire ? S.leg[0] : (S.stripe || S.leg[2]), lines = `<use href="#${uid}a"/><use href="#${uid}b"/>`
   o.push(`<g fill="none" stroke="${lineCol}" stroke-width="${f1(S.xray ? w * .32 : w * .28)}" stroke-linejoin="round" stroke-linecap="round" stroke-opacity=".9" filter="url(#glow)">${lines}</g>`)
   if (S.photo) o.push(`<g fill="none" stroke="${S.photo[0]}" stroke-width="${f1(w * .7)}" stroke-linecap="round" stroke-dasharray=".01 4.5" filter="url(#glow)">${lines}<animate attributeName="stroke-dashoffset" values="0;-9" dur="1.4s" repeatCount="indefinite"/></g>`)
   if (S.mesh && !S.wire) o.push(`<g fill="none" stroke="${S.mesh}" stroke-opacity=".35" stroke-width="${f1(w * 2.2)}" stroke-dasharray=".12 1.6">${lines}</g>`)
-  o.push(`<g fill="none" stroke="none" filter="url(#glow)"><use href="#${uid}a" marker-mid="url(#${uid}k)" marker-end="url(#${uid}n)"/><use href="#${uid}b" marker-end="url(#${uid}f)"/></g>`)
+  o.push(`<g fill="none" stroke="none" filter="url(#glow)"><use href="#${uid}a" marker-mid="url(#${uid}k)" marker-end="url(#${uid}n)"/></g><g fill="none" stroke="none"><use href="#${uid}b" marker-end="url(#${uid}g)"/></g>`)
   // pédipalpes
   const dP = frames.map(f => relPath(f.P.palps.map(q => [P3(q.B), P3(q.K), P3(q.T)]))), palps = `<path d="${dP[0]}">${animK('d', dP)}</path>`
-  o.push(`<g fill="none" stroke="${S.wire ? S.leg[0] : S.xray ? '#f2f6ff' : S.leg[2] || S.leg[0]}" stroke-width="${f1(w * 1.1)}" stroke-linecap="round">${palps}</g>`)
+  o.push(`<g fill="none" stroke="${S.wire ? S.leg[0] : S.xray ? '#f2f6ff' : S.leg[2] || S.leg[0]}" stroke-width="${f1(w * 1.1)}" stroke-linecap="butt" stroke-linejoin="round">${palps}</g>`)
   // abdomen : déplacé et tourné à chaque image
   const ab = frames.map(f => { const P = f.P, c = abdC(P), p = P3({ x: c.x, y: c.y, z: P.bz + P.m.aw * .32 + P.abdUp * P.m.al * .42 }); return { x: p.x, y: p.y, r: P.abd / DEG, sx: 1 - .33 * P.abdUp } })
   const tr = (list, fn) => n > 1 ? `<animateTransform attributeName="transform" type="${fn}" values="${keep.map(i => list[i]).join(';')}"${kts ? ` keyTimes="${kts}"` : ''} dur="${dur}" fill="freeze"/>` : ''
