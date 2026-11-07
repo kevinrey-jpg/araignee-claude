@@ -308,8 +308,9 @@ class Spider {
       let F = { x: L.foot.x, y: L.foot.y, z: L.foot.z + dep(L.foot.x, L.foot.y) }
       if (o.tuck > .001) { const fold = this.local(hl.x + (L.i < 2 ? m.cl * .45 : -m.cl * .2), hl.y + L.s * m.legs[L.i] * .2); F = lerp3(F, { x: fold.x, y: fold.y, z: bz - m.bodyZ * .25 + m.legs[L.i] * .12 }, o.tuck) }
       for (const ov of (o.over || [])) if (ov.w > .001 && ov.i === L.i && (!ov.s || ov.s === L.s)) F = lerp3(F, ov.p(L.s), ov.w)
-      const len = m.legs[L.i], { K, A } = ik3(H, F, len * m.seg[0], len * m.seg[1], len * m.seg[2])
-      return { H, K, A, F, s: L.s, i: L.i, stepping: L.p >= 0 }
+      // une patte qui doit aller plus loin que sa longueur peut s'étirer un peu (o.stretch : jusqu'à combien de fois)
+      const len0 = m.legs[L.i], k = o.stretch ? clamp(Math.hypot(F.x - H.x, F.y - H.y, F.z - H.z) / (len0 * .97), 1, o.stretch) : 1, len = len0 * k, { K, A } = ik3(H, F, len * m.seg[0], len * m.seg[1], len * m.seg[2])
+      return { H, K, A, F, s: L.s, i: L.i, stepping: L.p >= 0, k }
     })
     const palps = [-1, 1].map(s => {
       const b = this.local(m.cl * .4, s * m.cw * .17), w = Math.sin(t * 3.1 + s * 1.3) * m.cw * .05
@@ -1329,7 +1330,7 @@ function spiderSVG(Ps, S, dur, n) {
   const anim = (attr, values) => n > 1 ? `<animate attributeName="${attr}" values="${values.join(';')}" dur="${dur}" fill="freeze"/>` : ''
   const P0 = frames[0].P, m = P0.m, w = m.legW, o = []
   // le bout de patte ne dépasse jamais sa vraie longueur : un pied resté loin est tiré, jamais étiré en élastique
-  const tip = (L, P) => { const mt = P.m.legs[L.i] * P.m.seg[2] * 1.1, dx = L.F.x - L.A.x, dy = L.F.y - L.A.y, dz = L.F.z - L.A.z, d = Math.hypot(dx, dy, dz); return d > mt ? { x: L.A.x + dx / d * mt, y: L.A.y + dy / d * mt, z: L.A.z + dz / d * mt } : L.F }
+  const tip = (L, P) => { const mt = P.m.legs[L.i] * (L.k || 1) * P.m.seg[2] * 1.1, dx = L.F.x - L.A.x, dy = L.F.y - L.A.y, dz = L.F.z - L.A.z, d = Math.hypot(dx, dy, dz); return d > mt ? { x: L.A.x + dx / d * mt, y: L.A.y + dy / d * mt, z: L.A.z + dz / d * mt } : L.F }
   const proj = frames.map(f => f.P.legs.map(L => { const F = tip(L, f.P); return { H: P3(L.H), K: P3(L.K), A: P3(L.A), T: P3(lerp3(L.A, F, .72)), F: P3(F), stepping: L.stepping } }))
   // quatre tracés animés pour les huit pattes : cuisse et tibia, puis métatarse et tarse, les articulations, les pieds ;
   // l'ombre, la patte, le reflet et les décors les réutilisent (<use>) au lieu de recopier les coordonnées
@@ -1503,7 +1504,7 @@ function crawlCursor(C, u) {
   return { row, col: first + (Math.max(first, last) - first) * f }
 }
 // y a-t-il un grand blanc sur le chemin (aucune lettre où poser les pieds) ? elle le franchira d'un bond
-function gapKind(cells, a, b) {
+function gapKind(cells, a, b, reach) {
   const L = Math.hypot(b.x - a.x, b.y - a.y), n = Math.ceil(L / 3); let run = 0, best = 0
   for (let i = 1; i < n; i++) {
     const x = lerp(a.x, b.x, i / n), y = lerp(a.y, b.y, i / n); let near = false
@@ -1511,7 +1512,8 @@ function gapKind(cells, a, b) {
     run = near ? 0 : run + 3; best = Math.max(best, run)
   }
   if (best < CR.LH * 1.6) return null
-  return 'leap'
+  // un blanc que ses pattes avant (un peu étirées) peuvent enjamber : elle tend les pattes et s'y hisse ; plus grand : un bond
+  return { kind: best < reach ? 'span' : 'leap', run: best }
 }
 // son trajet sur la page : les mots importants dans un ordre un peu désordonné (le plus proche, mais pas toujours),
 // avec de temps en temps un détour sur une autre ligne ; sans mot important, quelques arrêts au hasard
@@ -1544,9 +1546,9 @@ export function crawlClip(W, hurry) {
     depth: () => 0,
     onPlant: f => { if (C.phase !== 'read') return; const m = markAt(f); if (m) { m.at = ct; m.seg = C.seg } }
   }
-  let step = 0, ct = 0, lift = 0, spd = 0, tuck = 0
+  let step = 0, ct = 0, lift = 0, spd = 0, tuck = 0, stretch = 0
   // la caméra cadre la page entière, et descend un peu avec l'araignée au fil des lignes
-  const recFrame = () => { const o = { over: over.filter(r => r.w > .001), lift, tuck }, fx = lay.x + lay.w / 2, fy = lerp(lay.y + lay.h / 2 + 8, sp.y, .3); W.cam.x += (fx - W.cam.x) * .18; W.cam.y += (fy - W.cam.y) * .18; frames.push({ P: sp.pose(W.t, o), cam: { ...W.cam }, o, tAct: -1, hang: 0 }) }
+  const recFrame = () => { const o = { over: over.filter(r => r.w > .001), lift, tuck, stretch }, fx = lay.x + lay.w / 2, fy = lerp(lay.y + lay.h / 2 + 8, sp.y, .3); W.cam.x += (fx - W.cam.x) * .18; W.cam.y += (fy - W.cam.y) * .18; frames.push({ P: sp.pose(W.t, o), cam: { ...W.cam }, o, tAct: -1, hang: 0 }) }
   const tick = () => { stepPhysics(W, DT); ct += DT; if (step++ % rec === 0) recFrame() }
   const jump = (to, T) => { const x0 = sp.x, y0 = sp.y; for (let t = 0; t < T; t += DT) { const u = ease(Math.min(1, (t + DT) / T)), px = sp.x, py = sp.y; sp.x = lerp(x0, to.x, u); sp.y = lerp(y0, to.y, u); lift = Math.sin(Math.PI * u) * 9; sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT; tick() } lift = 0; sp.vx = sp.vy = 0 }
   const segStart = C.t, firstSeg = C.phase === 'in'
@@ -1570,11 +1572,30 @@ export function crawlClip(W, hurry) {
     const stand = wc
     const dx = stand.x - sp.x, dy = stand.y - sp.y, d = Math.hypot(dx, dy), px = sp.x, py = sp.y
     // un grand blanc entre elle et le mot (des paragraphes éloignés) : elle ne marche pas dans le vide, elle bondit
-    if (!C.gap && C.gapFor !== C.pi && d > 14) { C.gapFor = C.pi; const kind = gapKind(cells, sp, wc); if (kind) C.gap = { kind, from: { x: sp.x, y: sp.y }, to: { x: wc.x, y: wc.y }, t: 0, T: .55 + d / 240 } }
+    if (!C.gap && C.gapFor !== C.pi && d > 14) { C.gapFor = C.pi; const gk = gapKind(cells, sp, wc, sp.m.legs[0] * 1.45), kind = gk && gk.kind; if (kind) C.gap = { kind, from: { x: sp.x, y: sp.y }, to: { x: wc.x, y: wc.y }, t: 0, T: kind === 'span' ? 1.1 + d / 90 : .55 + d / 240, run0: gk.run } }
     if (C.gap) {
       // un bond, comme une impulsion : elle s'accroupit (pattes fléchies), se détend d'un coup, vole pattes repliées,
       // les tend vers l'avant juste avant de toucher, amortit, et repart
       const G = C.gap; G.t += DT; const u = Math.min(1, G.t / G.T), L = Math.hypot(G.to.x - G.from.x, G.to.y - G.from.y)
+      if (G.kind === 'span') {
+        // enjamber : ses pattes avant s'étirent au-dessus du blanc et attrapent les lettres du paragraphe d'en face,
+        // elle s'y hisse en tirant (le corps glisse, les pattes arrière lâchent en dernier), puis elle repart
+        const ux = (G.to.x - G.from.x) / (L || 1), uy = (G.to.y - G.from.y) / (L || 1)
+        if (!G.grab) {
+          const far = cells.filter(c => (c.x - G.from.x) * ux + (c.y - G.from.y) * uy > G.run0 * .55 && Math.hypot(c.x - G.to.x, c.y - G.to.y) < L), side = c => ((c.x - G.from.x) * -uy + (c.y - G.from.y) * ux)
+          const pick = sg => far.filter(c => side(c) * sg >= -2).sort((a, b) => Math.hypot(a.x - G.from.x, a.y - G.from.y) - Math.hypot(b.x - G.from.x, b.y - G.from.y))[0] || { x: G.to.x, y: G.to.y }
+          G.grab = { '1': pick(1), '-1': pick(-1) }
+        }
+        sp.h += wrap(Math.atan2(uy, ux) - sp.h) * Math.min(1, DT * 8)
+        const reachW = sm(0, .32, u) * (1 - sm(.82, .95, u)), lift0 = Math.sin(Math.PI * clamp(u / .32, 0, 1)) * sp.m.legs[0] * .25
+        over.length = 0
+        for (const i of [0, 1]) over.push({ i, w: reachW * (i ? .85 : 1), t0: -9, p: s => { const g = G.grab[s], off = i ? -2.2 : 0; return { x: g.x + ux * off, y: g.y + uy * off, z: u < .32 ? lift0 : 0 } } })
+        const k = sm(.3, .9, u), e = k * k * (3 - 2 * k), dest = { x: (G.grab['1'].x + G.grab['-1'].x) / 2 - ux * sp.m.legs[0] * .45, y: (G.grab['1'].y + G.grab['-1'].y) / 2 - uy * sp.m.legs[0] * .45 }
+        sp.x = lerp(G.from.x, dest.x, e); sp.y = lerp(G.from.y, dest.y, e); sp.vx = (sp.x - px) / DT; sp.vy = (sp.y - py) / DT
+        stretch = 1.6; lift = -sm(.3, .5, u) * (1 - sm(.7, .9, u)) * sp.m.bodyZ * .25
+        if (u >= 1) { C.gap = null; over.length = 0; stretch = 0; lift = 0; spd = 25 }
+        tick(); continue
+      }
       const crouch = sm(0, .22, u) * (1 - sm(.22, .3, u)), k = sm(.26, .88, u), land = sm(.86, .93, u) * (1 - sm(.93, 1, u))
       sp.h += wrap(Math.atan2(G.to.y - G.from.y, G.to.x - G.from.x) - sp.h) * Math.min(1, DT * 10)
       sp.x = lerp(G.from.x, G.to.x, k); sp.y = lerp(G.from.y, G.to.y, k)
