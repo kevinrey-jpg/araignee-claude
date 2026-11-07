@@ -1390,10 +1390,11 @@ function spiderSVG(Ps, S, dur, n) {
   o.push(`<defs><path id="${uid}a" d="${dA[0]}">${animK('d', dA)}</path><path id="${uid}b" d="${dB[0]}">${animK('d', dB)}</path>${dot('k', w * 1.05, jc, ring)}${dot('n', w * .85, jc)}${claw}</defs>`)
   // épais près du corps, fins au bout ; le bout de la patte n'est pas arrondi
   const both = (wa, wb) => `<use href="#${uid}a" stroke-width="${f1(wa)}"/><use href="#${uid}b" stroke-width="${f1(wb * .8)}" stroke-linecap="butt"/>`
-  o.push(`<g fill="none" stroke="#000" stroke-opacity=".35" stroke-linecap="round" stroke-linejoin="round" transform="translate(1.4 1.1)">${both(w * 2.2, w * 1.1)}</g>`)
+  o.push(`<g fill="none" stroke="#000" stroke-opacity=".35" stroke-linecap="butt" stroke-linejoin="bevel" transform="translate(1.4 1.1)">${both(w * 2.2, w * 1.1)}</g>`)
   if (S.wire) o.push(`<g fill="none" stroke="${S.leg[0]}" stroke-opacity=".9" stroke-dasharray=".25 .9" stroke-linecap="round">${both(w * 2.35, w * 1.1)}</g>`)
   else if (S.xray) o.push(`<g fill="none" stroke="#e8e0ff" stroke-opacity=".14" stroke-linecap="round" stroke-linejoin="round">${both(w * 2.35, w * 1.1)}</g>`)
-  else o.push(`<g fill="none" stroke="${S.leg[1]}" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">${both(w * 2.35, w * 1.1)}</g>`)
+  // une silhouette anguleuse : segments coupés net, coudes en biseau (et non plus des boudins arrondis)
+  else o.push(`<g fill="none" stroke="${S.leg[1]}" stroke-linecap="butt" stroke-linejoin="bevel" filter="url(#glow)">${both(w * 2.35, w * 1.1)}</g>`)
   // le squelette, visible à travers la patte translucide : un os pâle par segment, et à chaque articulation les deux
   // têtes d'os qui se rejoignent (les pattes en fil de fer gardent leur filament lumineux)
   const lineCol = S.xray ? '#f2f6ff' : S.wire ? S.leg[0] : (S.stripe || S.leg[2]), lines = `<use href="#${uid}a"/><use href="#${uid}b"/>`
