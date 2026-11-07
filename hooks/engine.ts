@@ -795,7 +795,7 @@ export function turnClip(W, ev) {
 //        actor?: 'main' | id d'un bébé, ok?: bool (Mood), big?: bool, pace?: rythme (1 = normal) }
 // 20 images par seconde : assez pour que la marche se lise patte après patte (à 12, l'araignée semblait glisser)
 // la limite du panneau est 131 072 caractères : on garde une petite marge (le panneau réécrit la taille du dessin)
-const FPS = 20, MAX_CHARS = 128500
+const FPS = 20, MAX_CHARS = 130000
 const ACT_DUR = { Read: 2.6, Edit: 3.3, Write: 3.3, Grep: 1.9, Bash: 2.6, Web: 3.4, Delete: 1.9, Repair: 2.8 }
 export function makeClip(W, ev) {
   const g = W.g, S = SKINS[W.skin], a = actorFor(W, ev), sp = a.sp, m = sp.m, pace = clamp(ev.pace || 1, .6, 2)
@@ -1360,9 +1360,15 @@ const r1 = v => Math.round(v * 10) / 10
 // un tracé compact : premier point absolu, les suivants relatifs (calculés sur les valeurs arrondies, sans dérive)
 function relPath(groups) {
   let d = ''
-  for (const pts of groups) { let px = 0, py = 0; pts.forEach((p, i) => { const x = r1(p.x), y = r1(p.y); d += i ? 'l' + r1(x - px) + ' ' + r1(y - py) : 'M' + x + ' ' + y; px = x; py = y }) }
+  // tout en relatif, y compris le saut d'une patte à la suivante (m) : des nombres plus courts
+  let px = 0, py = 0, first = true
+  for (const pts of groups) pts.forEach((p, i) => { const x = r1(p.x), y = r1(p.y); d += i ? 'l' + pair(r1(x - px), r1(y - py)) : first ? 'M' + pair(x, y) : 'm' + pair(r1(x - px), r1(y - py)); first = false; px = x; py = y })
   return d
 }
+// des nombres écrits au plus court (« .8 » pour 0,8 ; pas d'espace devant un signe moins) : le clip du panneau a une
+// taille limitée
+const sn = v => { const t = String(v); return t.startsWith('0.') ? t.slice(1) : t.startsWith('-0.') ? '-' + t.slice(2) : t }
+const pair = (a, b) => { const x = sn(a), y = sn(b); return x + (y[0] === '-' ? '' : ' ') + y }
 function spiderSVG(Ps, S, dur, n) {
   if (!Ps.length) return ''
   const frames = Ps.map(P => ({ P })), uid = 'q' + (SPID++).toString(36)
@@ -1376,25 +1382,35 @@ function spiderSVG(Ps, S, dur, n) {
   // les images que l'interpolation entre leurs voisines reproduit à 0,2 près ne sont pas stockées (araignée immobile :
   // presque rien ; en marche : toutes les images) ; les pattes et les palpes partagent la même liste de temps
   const flat = proj.map(L => L.flatMap(q => [q.H, q.K, q.A, q.T, q.F]))
-  const keep = keepFrames(flat, .3), kts = keep.length < n ? keep.map(i => (i / Math.max(1, n - 1)).toFixed(4)).join(';') : ''
+  const keep = keepFrames(flat, .4), kts = keep.length < n ? keep.map(i => (i / Math.max(1, n - 1)).toFixed(4)).join(';') : ''
   const animK = (attr, values) => n > 1 ? `<animate attributeName="${attr}" values="${keep.map(i => values[i]).join(';')}"${kts ? ` keyTimes="${kts}"` : ''} dur="${dur}" fill="freeze"/>` : ''
   // deux tracés par patte : cuisse et tibia (épais), puis métatarse et tarse (fins) qui finissent en griffe pointue
-  const dA = proj.map(L => relPath(L.map(q => [q.H, q.K, q.A]))), dB = proj.map(L => relPath(L.map(q => [q.A, q.T, q.F])))
+  // tracés à l'envers (cheville → hanche, pointe → cheville) : les pointillés repartent au début de chaque patte, ce
+  // qui permet d'effiler la cheville et la pointe sans aucune donnée de plus (des traits plus larges qui ne commencent
+  // qu'un peu plus loin)
+  const dA = proj.map(L => relPath(L.map(q => [q.A, q.K, q.H]))), dB = proj.map(L => relPath(L.map(q => [q.F, q.T, q.A])))
   // articulations et pieds : des marqueurs posés sur les sommets des tracés (genou au milieu, cheville au bout, pied au bout)
   const jc = S.xray ? '#ffffff' : S.wire ? S.leg[0] : S.leg[2] || S.leg[0], dot = (id, r, fill, extra = '') => `<marker id="${uid}${id}" viewBox="-2 -2 4 4" markerWidth="${f1(r * 2)}" markerHeight="${f1(r * 2)}" orient="auto" markerUnits="userSpaceOnUse">${extra}<path d="M-1.6 -.62Q-1.75 0 -1.6 .62L-.15 .82Q.05 .9 .25 .78L1.45 .5Q1.62 0 1.45 -.5L.25 -.78Q.05 -.9 -.15 -.82Z" fill="${fill}" fill-opacity=".32"/><path d="M.05 -.86L.05 .86" stroke="#0a0614" stroke-opacity=".5" stroke-width=".22"/><path d="M-1.3 -.38L-.2 -.5M.35 -.46L1.2 -.3" stroke="#fff" stroke-opacity=".4" stroke-width=".16" stroke-linecap="round"/></marker>`
   // la jointure d'une vraie patte : le bout du segment s'élargit un peu, une fine membrane sombre sépare les deux
   // segments, un reflet souligne le relief (et non plus une bille ronde)
   const ring = S.ring && !S.wire ? `<path d="M-1.85 -.8Q-2 0 -1.85 .8L1.7 .66Q1.9 0 1.7 -.66Z" fill="${S.ring}" opacity=".55"/>` : ''
   // la griffe au bout du tarse : une pointe orientée dans le sens de la patte (et non plus un bout arrondi)
-  const legCol = S.xray ? '#e8e0ff' : S.leg[1], claw = `<marker id="${uid}g" viewBox="-1 -1.2 4.6 2.4" markerWidth="${f1(w * 2.3)}" markerHeight="${f1(w * 1.2)}" refX="0" refY="0" orient="auto" markerUnits="userSpaceOnUse"><path d="M-.6 -.9Q1.2 -.5 3.4 .25Q1.1 .2 -.6 .9Z" fill="${legCol}"/><path d="M1.4 -.18L3.4 .25" stroke="#fff" stroke-width=".3" stroke-opacity=".7"/></marker>`
-  o.push(`<defs><path id="${uid}a" d="${dA[0]}">${animK('d', dA)}</path><path id="${uid}b" d="${dB[0]}">${animK('d', dB)}</path>${dot('k', w * 1.05, jc, ring)}${dot('n', w * .85, jc)}${claw}</defs>`)
+  o.push(`<defs><path id="${uid}a" d="${dA[0]}">${animK('d', dA)}</path><path id="${uid}b" d="${dB[0]}">${animK('d', dB)}</path>${dot('k', w * 1.05, jc, ring)}${dot('n', w * .85, jc)}</defs>`)
   // épais près du corps, fins au bout ; le bout de la patte n'est pas arrondi
   const both = (wa, wb) => `<use href="#${uid}a" stroke-width="${f1(wa)}"/><use href="#${uid}b" stroke-width="${f1(wb * .8)}" stroke-linecap="butt"/>`
   o.push(`<g fill="none" stroke="#000" stroke-opacity=".35" stroke-linecap="butt" stroke-linejoin="bevel" transform="translate(1.4 1.1)">${both(w * 2.2, w * 1.1)}</g>`)
   if (S.wire) o.push(`<g fill="none" stroke="${S.leg[0]}" stroke-opacity=".9" stroke-dasharray=".25 .9" stroke-linecap="round">${both(w * 2.35, w * 1.1)}</g>`)
   else if (S.xray) o.push(`<g fill="none" stroke="#e8e0ff" stroke-opacity=".14" stroke-linecap="round" stroke-linejoin="round">${both(w * 2.35, w * 1.1)}</g>`)
   // une silhouette anguleuse : segments coupés net, coudes en biseau (et non plus des boudins arrondis)
-  else o.push(`<g fill="none" stroke="${S.leg[1]}" stroke-linecap="butt" stroke-linejoin="bevel" filter="url(#glow)">${both(w * 2.35, w * 1.1)}</g>`)
+  // la cheville : un trapèze qui passe en douceur de la largeur du tibia à celle du métatarse ; le bout : un triangle
+  // effilé, une vraie pointe (posés sur les tracés, ils ne coûtent rien à l'animation)
+  else {
+    // la cheville : le tibia s'élargit en marches douces jusqu'à sa pleine largeur (un trapèze) ; la pointe : le tarse
+    // part d'une pointe fine et s'élargit de même (un triangle)
+    const W1 = w * 2.35, W2 = w * .88, sA = W1 * 1.1, sB = W2 * 3.4
+    const N = 7, lay = (id, w0, w1, s0) => Array.from({ length: N }, (_, i) => `<use href="#${uid}${id}" stroke-width="${(w0 + (w1 - w0) * (i + 1) / N).toFixed(2)}"${i ? ` stroke-dasharray="0 ${f1(s0 * i / (N - 1))} 999"` : ''}/>`).join('')
+    o.push(`<g fill="none" stroke="${S.leg[1]}" stroke-linecap="butt" stroke-linejoin="bevel" filter="url(#glow)">${lay('a', W2, W1, sA)}${lay('b', W2 * .12, W2, sB)}</g>`)
+  }
   // le squelette, visible à travers la patte translucide : un os pâle par segment, et à chaque articulation les deux
   // têtes d'os qui se rejoignent (les pattes en fil de fer gardent leur filament lumineux)
   const lineCol = S.xray ? '#f2f6ff' : S.wire ? S.leg[0] : (S.stripe || S.leg[2]), lines = `<use href="#${uid}a"/><use href="#${uid}b"/>`
@@ -1415,7 +1431,7 @@ function spiderSVG(Ps, S, dur, n) {
   }
   if (S.photo) o.push(`<g fill="none" stroke="${S.photo[0]}" stroke-width="${f1(w * .7)}" stroke-linecap="round" stroke-dasharray=".01 4.5" filter="url(#glow)">${lines}<animate attributeName="stroke-dashoffset" values="0;-9" dur="1.4s" repeatCount="indefinite"/></g>`)
   if (S.mesh && !S.wire) o.push(`<g fill="none" stroke="${S.mesh}" stroke-opacity=".35" stroke-width="${f1(w * 2.2)}" stroke-dasharray=".12 1.6">${lines}</g>`)
-  o.push(`<g fill="none" stroke="none" filter="url(#glow)"><use href="#${uid}a" marker-mid="url(#${uid}k)" marker-end="url(#${uid}n)"/></g><g fill="none" stroke="none"><use href="#${uid}b" marker-end="url(#${uid}g)"/></g>`)
+  o.push(`<g fill="none" stroke="none" filter="url(#glow)"><use href="#${uid}a" marker-mid="url(#${uid}k)" marker-end="url(#${uid}n)"/></g>`)
   // les os par-dessus les jointures translucides : on les voit au travers
   if (boneSVG) o.push(boneSVG)
   // abdomen : déplacé et tourné à chaque image
