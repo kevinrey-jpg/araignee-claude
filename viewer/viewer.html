@@ -248,14 +248,30 @@ const hexA = (h, a) => { const [r, g, b] = hexRgb(h); return `rgba(${r},${g},${b
 const glow = (c, col, b) => { c.shadowColor = col; c.shadowBlur = b * (c._px || 1) * .55; };
 const noglow = c => { c.shadowBlur = 0; c.shadowColor = 'transparent'; };
 const dot = (c, p, r) => { c.beginPath(); c.arc(p.x, p.y, Math.max(.01, r), 0, Math.PI * 2); c.fill(); };
-const ell = (c, x, y, rx, ry) => { c.beginPath(); c.ellipse(x, y, Math.max(.01, rx), Math.max(.01, ry), 0, 0, Math.PI * 2); };
+// le corps n'est pas un ovale parfait : pendant qu'on dessine l'abdomen, son contour a de légères bosses et s'affine vers
+// l'arrière (BLOB : les rayons du corps en cours)
+let BLOB = null;
+const ell = (c, x, y, rx, ry) => {
+  c.beginPath();
+  if (BLOB && !x && !y && Math.abs(rx - BLOB.rx) < 1e-6 && Math.abs(ry - BLOB.ry) < 1e-6) { const N = 30; for (let k = 0; k < N; k++) { const a = k / N * Math.PI * 2, co = Math.cos(a), r = 1 + .035 * Math.sin(3 * a + .7) + .022 * Math.sin(7 * a + 2.1) + .014 * Math.sin(11 * a + .4), bk = co < 0 ? co * co : 0, X = rx * co * r * (1 + .08 * bk), Y = ry * Math.sin(a) * r * (1 - .24 * bk); k ? c.lineTo(X, Y) : c.moveTo(X, Y); } c.closePath(); return; }
+  c.ellipse(x, y, Math.max(.01, rx), Math.max(.01, ry), 0, 0, Math.PI * 2);
+};
 function lightN(a, b) { const dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy) || 1e-3; let nx = -dy / l, ny = dx / l; if (nx * LD.x + ny * LD.y < 0) { nx = -nx; ny = -ny; } return { x: nx, y: ny, tx: dx / l, ty: dy / l, l }; }
 const offN = (p, n, d) => ({ x: p.x + n.x * d, y: p.y + n.y * d });
+// le segment de patte en cours de dessin : sa pointe (le bout de la patte finit en triangle), et la patte entière
+// (pour orienter les articulations)
+let CUR_TIP = null, CUR_LEG = null;
+// le contour d'un segment : un trapèze allongé, qui s'affine vers chaque articulation (la transition d'un segment à
+// l'autre est douce, jamais coupée net) ; le dernier segment finit en pointe
+function segOutline(a, b, w0, w1) {
+  const n = lightN(a, b), tip = b === CUR_TIP, e = Math.min(n.l * .25, Math.max(w0, w1) * 1.4), at = (t, w, s) => ({ x: a.x + n.tx * t + n.x * w * s, y: a.y + n.ty * t + n.y * w * s });
+  const side = s => tip ? [at(0, w0 * .6, s), at(e, w0, s), at(n.l * .55, (w0 + w1) / 2, s)] : [at(0, w0 * .6, s), at(e, w0, s), at(n.l - e, w1, s), at(n.l, w1 * .6, s)];
+  return { n, L: side(1), R: side(-1), tip: tip ? { x: b.x, y: b.y } : null };
+}
 function taper(c, a, b, w0, w1) {
-  const n = lightN(a, b);
-  c.beginPath(); c.moveTo(a.x + n.x * w0, a.y + n.y * w0); c.lineTo(b.x + n.x * w1, b.y + n.y * w1); c.lineTo(b.x - n.x * w1, b.y - n.y * w1); c.lineTo(a.x - n.x * w0, a.y - n.y * w0); c.closePath();
-  c.moveTo(b.x + w1, b.y); c.arc(b.x, b.y, w1, 0, Math.PI * 2); c.moveTo(a.x + w0, a.y); c.arc(a.x, a.y, w0, 0, Math.PI * 2);
-  return n;
+  const o = segOutline(a, b, w0, w1);
+  c.beginPath(); o.L.forEach((q, i) => i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y)); if (o.tip) c.lineTo(o.tip.x, o.tip.y); [...o.R].reverse().forEach(q => c.lineTo(q.x, q.y)); c.closePath();
+  return o.n;
 }
 // segment de patte en volume : dégradé perpendiculaire, côté lumière éclairci
 function limb(c, a, b, w0, w1, M) {
@@ -265,9 +281,38 @@ function limb(c, a, b, w0, w1, M) {
   c.fillStyle = g; taper(c, a, b, w0, w1); c.fill();
   return n;
 }
+// une articulation comme sur une vraie patte, et non une bille : une jointure allongée dans le sens de la patte, une
+// fine membrane sombre au milieu, un reflet
 function knob(c, p, r, M) {
-  const g = c.createRadialGradient(p.x + LD.x * r * .4, p.y + LD.y * r * .4, r * .05, p.x, p.y, r);
-  g.addColorStop(0, M.light); g.addColorStop(.55, M.base); g.addColorStop(1, M.dark); c.fillStyle = g; dot(c, p, r);
+  const q = CUR_LEG, pick = q && (p === q.K ? [q.H, q.A] : p === q.A ? [q.K, q.T] : p === q.T ? [q.A, q.F] : null);
+  if (!pick) { const g = c.createRadialGradient(p.x + LD.x * r * .4, p.y + LD.y * r * .4, r * .05, p.x, p.y, r); g.addColorStop(0, M.light); g.addColorStop(.55, M.base); g.addColorStop(1, M.dark); c.fillStyle = g; dot(c, p, r); return; }
+  const ang = Math.atan2(pick[1].y - pick[0].y, pick[1].x - pick[0].x), R = r * .82;
+  c.save(); c.translate(p.x, p.y); c.rotate(ang);
+  const g = c.createLinearGradient(0, -R, 0, R); g.addColorStop(0, M.dark); g.addColorStop(.35, M.light); g.addColorStop(.7, M.base); g.addColorStop(1, M.dark); c.fillStyle = g;
+  c.beginPath(); c.moveTo(-1.5 * R, -.62 * R); c.quadraticCurveTo(-1.7 * R, 0, -1.5 * R, .62 * R); c.lineTo(-.15 * R, .82 * R); c.quadraticCurveTo(.05 * R, .9 * R, .25 * R, .78 * R); c.lineTo(1.45 * R, .5 * R); c.quadraticCurveTo(1.6 * R, 0, 1.45 * R, -.5 * R); c.lineTo(.25 * R, -.78 * R); c.quadraticCurveTo(.05 * R, -.9 * R, -.15 * R, -.82 * R); c.closePath(); c.fill();
+  c.strokeStyle = 'rgba(10,6,20,.55)'; c.lineWidth = R * .22; c.beginPath(); c.moveTo(.05 * R, -.86 * R); c.lineTo(.05 * R, .86 * R); c.stroke();
+  c.strokeStyle = 'rgba(255,255,255,.4)'; c.lineWidth = R * .16; c.beginPath(); c.moveTo(-1.3 * R, -.38 * R); c.lineTo(-.2 * R, -.5 * R); c.moveTo(.35 * R, -.46 * R); c.lineTo(1.2 * R, -.3 * R); c.stroke();
+  c.restore();
+}
+// le squelette vu à travers la patte : de vrais os (une tige qui s'évase en deux bosses arrondies à chaque bout,
+// cerclée de sombre, un reflet), reliés à chaque articulation par une rotule
+function boneEnd(c, P, ang, s, R) {
+  c.save(); c.translate(P.x, P.y); c.rotate(ang); c.scale(s * R, R);
+  c.beginPath(); c.moveTo(-3, -.17); c.bezierCurveTo(-2, -.17, -1.55, -.3, -1.3, -.64); c.arc(-.85, -.42, .5, Math.PI * 1.15, Math.PI * 2.25); c.quadraticCurveTo(-.62, 0, -.42, .38); c.arc(-.85, .42, .5, Math.PI * -.25, Math.PI * .85); c.bezierCurveTo(-1.55, .3, -2, .17, -3, .17); c.closePath();
+  c.fill(); c.stroke(); c.restore();
+}
+function drawBones(c, p, w) {
+  const segs = [[p.H, p.K, 1.45], [p.K, p.A, 1.45], [p.A, p.T, 1.1], [p.T, p.F, .85]];
+  c.fillStyle = '#f4f0e6'; c.strokeStyle = '#1a1024'; c.lineJoin = 'round';
+  segs.forEach(([a, b, k], i) => {
+    const R = w * k * .42, ang = Math.atan2(b.y - a.y, b.x - a.x), len = Math.hypot(b.x - a.x, b.y - a.y), sw = R * .32;
+    if (len < R * 3) return;
+    c.lineWidth = sw + .12; c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.strokeStyle = '#1a1024'; c.stroke(); c.lineWidth = sw; c.strokeStyle = '#f4f0e6'; c.stroke();
+    c.strokeStyle = '#1a1024'; c.lineWidth = .1;
+    const back = R * .42; boneEnd(c, { x: a.x + Math.cos(ang) * back, y: a.y + Math.sin(ang) * back }, ang, -1, R)
+    if (i < 3) boneEnd(c, { x: b.x - Math.cos(ang) * back, y: b.y - Math.sin(ang) * back }, ang, 1, R);
+    if (i > 0) { c.beginPath(); c.arc(a.x, a.y, R * .42, 0, Math.PI * 2); c.fill(); c.stroke(); c.fillStyle = 'rgba(255,255,255,.8)'; dot(c, { x: a.x - R * .12, y: a.y - R * .14 }, R * .12); c.fillStyle = '#f4f0e6'; }
+  });
 }
 function hairs(c, a, b, w, n, len) {
   const d = lightN(a, b);
@@ -337,7 +382,8 @@ function chel(c, cl, cw, Ll, cols, fang) {
     const x = cl * .5, y = s * cw * .12, rx = cl * .15, ry = cw * .12;
     const g = c.createRadialGradient(x + Ll.x * rx * .4, y + Ll.y * ry * .4, .05, x, y, Math.max(rx, ry));
     g.addColorStop(0, cols[0]); g.addColorStop(.6, cols[1]); g.addColorStop(1, cols[2]); c.fillStyle = g; ell(c, x, y, rx, ry); c.fill();
-    c.strokeStyle = fang || '#0a0610'; c.lineWidth = cl * .035; c.beginPath(); c.moveTo(x + rx * .6, y); c.quadraticCurveTo(x + rx * 1.3, y, x + rx * 1.1, y - s * ry * .7); c.stroke();
+    // le crochet : recourbé vers l'intérieur, effilé jusqu'à une pointe acérée
+    c.fillStyle = fang || '#0a0610'; c.beginPath(); c.moveTo(x + rx * .5, y - s * ry * .45); c.quadraticCurveTo(x + rx * 1.6, y - s * ry * .3, x + rx * 1.75, y - s * ry * 1.05); c.quadraticCurveTo(x + rx * 1.25, y + s * ry * .15, x + rx * .55, y + s * ry * .4); c.closePath(); c.fill();
   });
 }
 function foliumPath(c, rx, ry) {
@@ -353,6 +399,8 @@ const sm = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t
 // franchir un écart (les mêmes gestes que dans le panneau) : enjamber, pattes avant étirées jusqu'à l'autre bord puis
 // elle s'y hisse ; ou bondir, accroupie, détente, vol pattes repliées, réception amortie
 const SPAN_STRETCH = 1.6;
+// les huit pattes ne sont pas parfaitement égales (quelques pour cent de longueur en plus ou en moins)
+const LEG_JIT = [.03, -.025, -.02, .035, .025, -.03, -.035, .02];
 function spanAt(from, grab, u, m, ux, uy) {
   const reachW = sm(0, .3, u) * (1 - sm(.66, .8, u)), z0 = Math.sin(Math.PI * clamp(u / .3, 0, 1)) * m.legs[0] * .25;
   const k = sm(.24, .76, u), e = k * k * (3 - 2 * k), back = m.legs[0] * .45;
@@ -454,7 +502,7 @@ class Spider {
       if (o.tuck > .001) { const fold = this.local(hl.x + (L.i < 2 ? m.cl * .45 : -m.cl * .2), hl.y + L.s * m.legs[L.i] * .2); F = lerp3(F, { x: fold.x, y: fold.y, z: bz - m.bodyZ * .25 + m.legs[L.i] * .12 }, o.tuck); }
       for (const ov of (o.over || [])) if (ov.w > .001 && ov.i === L.i && (!ov.s || ov.s === L.s)) F = lerp3(F, ov.p(L.s), ov.w);
       // une patte qui doit aller plus loin que sa longueur peut s'étirer un peu (o.stretch : jusqu'à combien de fois)
-      const len0 = m.legs[L.i], k = o.stretch ? clamp(Math.hypot(F.x - Hh.x, F.y - Hh.y, F.z - Hh.z) / (len0 * .97), 1, o.stretch) : 1, len = len0 * k, { K, A } = ik3(Hh, F, len * m.seg[0], len * m.seg[1], len * m.seg[2]);
+      const len0 = m.legs[L.i] * (1 + LEG_JIT[L.i * 2 + (L.s > 0 ? 1 : 0)]), k = o.stretch ? clamp(Math.hypot(F.x - Hh.x, F.y - Hh.y, F.z - Hh.z) / (len0 * .97), 1, o.stretch) : 1, len = len0 * k, { K, A } = ik3(Hh, F, len * m.seg[0], len * m.seg[1], len * m.seg[2]);
       return { H: Hh, K, A, F, s: L.s, i: L.i, stepping: L.p >= 0, k };
     });
     const palps = [-1, 1].map(s => {
@@ -495,15 +543,12 @@ function renderSpider(c, P, S, I) {
   if (S.shadow !== false) drawShadow(c, P, S.shadowA || .5);
   if (S.before) S.before(c, P, I);
   const legs = P.legs.map(L => ({ ...L, p: { H: P3(L.H), K: P3(L.K), A: P3(L.A), F: P3(L.F), T: P3(lerp3(L.A, L.F, .72)) } })).sort((a, b) => a.p.K.y - b.p.K.y);
-  legs.forEach(L => { if (S.leg) S.leg(c, L, I); else { paintLeg(c, L, S.mat, I); if (S.legDeco) S.legDeco(c, L, I); } noglow(c); c.globalAlpha = 1; });
-  P.palps.forEach(pp => {
-    const B = P3(pp.B), K = P3(pp.K), T = P3(pp.T);
-    if (S.palp) S.palp(c, B, K, T, I); else { const M = S.mat; limb(c, B, K, .8 * m.legW, .7 * m.legW, M); limb(c, K, T, .7 * m.legW, .8 * m.legW, M); knob(c, T, .85 * m.legW, M); }
-    noglow(c);
-  });
+  legs.forEach(L => { CUR_TIP = L.p.F; CUR_LEG = L.p; if (S.leg) S.leg(c, L, I); else { paintLeg(c, L, S.mat, I); if (S.legDeco) S.legDeco(c, L, I); } noglow(c); c.globalAlpha = 1; if (!S.noBones) drawBones(c, L.p, m.legW); });
+  CUR_TIP = null; CUR_LEG = null;
   const up = P.abdUp || 0, ac = abdC(P), ap = P3({ x: ac.x, y: ac.y, z: P.bz + m.aw * .32 + up * m.al * .42 });
   c.save(); c.translate(ap.x, ap.y); c.rotate(P.abd); I.Ll = rot(LD, -P.abd);
-  S.abdomen(c, I, m.al * .5 * P.breathe * (1 - .33 * up), m.aw * .5 * P.breathe, I.Ll); c.restore(); noglow(c); c.globalAlpha = 1;
+  const arx = m.al * .5 * P.breathe * (1 - .33 * up), ary = m.aw * .5 * P.breathe; BLOB = { rx: arx, ry: ary };
+  S.abdomen(c, I, arx, ary, I.Ll); BLOB = null; c.restore(); noglow(c); c.globalAlpha = 1;
   const cp = P3({ x: P.x, y: P.y, z: P.bz + m.cw * .2 });
   c.save(); c.translate(cp.x, cp.y); c.rotate(P.h); I.Ll = rot(LD, -P.h);
   S.carapace(c, I, m.cl, m.cw, I.Ll); c.restore(); noglow(c); c.globalAlpha = 1;
@@ -618,7 +663,7 @@ const STYLES = [
       eyesOrb(c, cl, cw, Ll, { iris: 'rgba(125,249,255,.8)', glow: '#7df9ff', gb: 7, inner: '#1d4250' });
     } },
 
-  { id: 'holo', name: 'Holographique', species: "Inspirée de l'araignée paon (Maratus)", accent: '#6fd6ff', display: true,
+  { id: 'holo', noBones: true, name: 'Holographique', species: "Inspirée de l'araignée paon (Maratus)", accent: '#6fd6ff', display: true,
     desc: "Abdomen en éventail aux reflets irisés qui changent avec l'angle. Quand elle modifie un fichier, elle déploie l'éventail et lève les pattes, comme pendant sa parade.",
     morph: { cl: 10, cw: 9, al: 10.5, aw: 9.5, legs: [27, 25, 24, 31], ang: [40, 75, 112, 148], reachF: .62, bodyZ: 4.5, legW: 1.3, seg: [.37, .35, .28], palp: 3.5, stepDur: .085, speed: .85 },
     mat: { dark: '#090605', base: '#2b1d17', light: '#8a6a58', hair: 'rgba(255,240,220,.45)', hairN: 5 },
@@ -652,7 +697,8 @@ const STYLES = [
       eyesSalt(c, cl, cw, Ll, { iris: '#ffb347', inner: '#5a3b1c' });
     } },
 
-  { id: 'wire', name: 'Filaire', species: 'Inspirée de la huntsman (Sparassidae)', accent: '#7df9ff', shadow: false,
+  // les os ne se voient qu'à travers des pattes translucides (ni sur les pattes opaques, ni sur le fil de fer ou le métal)
+  { id: 'wire', noBones: true, name: 'Filaire', species: 'Inspirée de la huntsman (Sparassidae)', accent: '#7df9ff', shadow: false,
     desc: "Rendu plan technique : maillage 3D des pattes, lignes d'aplomb sous chaque genou, viseur qui la suit et balayage laser sur le corps.",
     morph: { cl: 11, cw: 11, al: 13, aw: 10, legs: [56, 60, 54, 48], ang: [52, 82, 108, 136], reachF: .58, bodyZ: 4, legW: .95, seg: [.36, .36, .28], palp: 4.5, stepDur: .09, speed: 1.1 },
     ground(c, P, I) {
@@ -705,7 +751,7 @@ const STYLES = [
       c.fillStyle = 'rgba(160,245,255,.55)'; c.fillText(`x ${P.x.toFixed(0)}  y ${P.y.toFixed(0)}  θ ${deg}°`, x - R, y + R + fs * 1.1);
     } },
 
-  { id: 'cristal', name: 'Cristal', species: 'Inspirée de la thomise (araignée-crabe)', accent: '#d9c6ff', shadowA: .22,
+  { id: 'cristal', noBones: true, name: 'Cristal', species: 'Inspirée de la thomise (araignée-crabe)', accent: '#d9c6ff', shadowA: .22,
     desc: "Corps taillé comme une gemme, pattes en prismes facettés. La lumière qui la traverse se diffracte en arc-en-ciel sur la toile.",
     morph: { cl: 10.5, cw: 11, al: 13, aw: 14, legs: [50, 48, 25, 25], ang: [56, 86, 122, 150], reachF: .58, bodyZ: 5, legW: 1.25, seg: [.36, .36, .28], palp: 3.5, stepDur: .11, speed: .85 },
     ground(c, P, I) {
@@ -729,7 +775,7 @@ const STYLES = [
       [-1, 1].forEach(s => { glow(c, '#ff5aa8', 6); c.fillStyle = '#ff7ac0'; dot(c, { x: cl * .36, y: s * cw * .2 }, cl * .05); dot(c, { x: cl * .42, y: s * cw * .08 }, cl * .04); noglow(c); });
     } },
 
-  { id: 'pixel', name: 'Pixel 8-bit', species: 'Inspirée de la mygale à genoux roses', accent: '#c08bff',
+  { id: 'pixel', noBones: true, name: 'Pixel 8-bit', species: 'Inspirée de la mygale à genoux roses', accent: '#c08bff',
     desc: "Une vraie mygale poilue, avec ses genoux colorés, rendue en pixel art : palette limitée, contour de sprite et ombre tramée.",
     morph: { cl: 13, cw: 12, al: 15, aw: 12.5, legs: [44, 40, 38, 48], ang: [34, 68, 110, 150], reachF: .58, bodyZ: 6, legW: 2, seg: [.38, .35, .27], palp: 6, stepDur: .13, speed: .8 },
     pixel: { block: 3, pal: pal(['#120a22', '#2a1a4a', '#45307a', '#6a4bb8', '#9b7cf0', '#d2c0ff', '#ff6fb5', '#ffc2e2', '#ffffff']), outline: [10, 5, 20] },
@@ -786,7 +832,7 @@ const STYLES = [
       eyesOrb(c, cl, cw, Ll, { glow: '#7dffe0', gb: 8, inner: '#2fb39a', outer: '#04221f' });
     } },
 
-  { id: 'cyber', name: 'Mécanique', species: 'Mygale robot', accent: '#a78bfa',
+  { id: 'cyber', noBones: true, name: 'Mécanique', species: 'Mygale robot', accent: '#a78bfa',
     desc: "Vérins hydrauliques sur chaque patte, servomoteurs vissés, carapace en plaques rivetées et cœur incandescent. Des étincelles jaillissent à chaque pas.",
     morph: { cl: 13, cw: 12, al: 14, aw: 12, legs: [44, 42, 40, 46], ang: [34, 68, 110, 150], reachF: .58, bodyZ: 7, legW: 1.7, seg: [.38, .35, .27], palp: 5, stepDur: .1, speed: .95 },
     before(c, P, I) {
@@ -858,7 +904,7 @@ const STYLES = [
       [-1, 1].forEach(s => { glow(c, '#9d5cff', 6); c.fillStyle = '#2a1745'; dot(c, { x: cl * .38, y: s * cw * .1 }, cl * .06); dot(c, { x: cl * .3, y: s * cw * .2 }, cl * .05); noglow(c); });
     } },
 
-  { id: 'kawaii', name: 'Kawaii', species: 'Inspirée de la saltique (Phidippus)', accent: '#d2b4ff',
+  { id: 'kawaii', noBones: true, name: 'Kawaii', species: 'Inspirée de la saltique (Phidippus)', accent: '#d2b4ff',
     desc: "Grands yeux brillants, chélicères vert irisé comme la vraie, petites chaussettes rayées. Elle sautille en marchant et fait des étincelles quand elle travaille.",
     morph: { cl: 12, cw: 11, al: 12.5, aw: 11.5, legs: [31, 27, 25, 30], ang: [36, 70, 110, 148], reachF: .6, bodyZ: 4.8, legW: 1.4, seg: [.37, .35, .28], palp: 4, stepDur: .085, speed: .9, hop: true },
     mat: { dark: '#6f52c8', base: '#b79cff', light: '#f1e9ff', tar: { dark: '#c75a98', base: '#ff9ad5', light: '#ffe3f2' } },
@@ -907,7 +953,7 @@ function meshRings(c, a, b, w0, w1, col, lw, step = 2.2) {
   for (let k = 0; k <= cnt; k++) { const f = k / cnt, q = lerp2(a, b, f), ww = lerp(w0, w1, f); c.moveTo(q.x + Math.cos(ang) * ww * .3, q.y + Math.sin(ang) * ww * .3); c.ellipse(q.x, q.y, ww * .3, ww, ang, 0, Math.PI * 2); }
   c.stroke();
 }
-function sideLines(c, a, b, w0, w1) { const n = lightN(a, b); c.moveTo(a.x + n.x * w0, a.y + n.y * w0); c.lineTo(b.x + n.x * w1, b.y + n.y * w1); c.moveTo(a.x - n.x * w0, a.y - n.y * w0); c.lineTo(b.x - n.x * w1, b.y - n.y * w1); }
+function sideLines(c, a, b, w0, w1) { const o = segOutline(a, b, w0, w1); for (const S of [o.L, o.R]) { S.forEach((q, i) => i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y)); if (o.tip) c.lineTo(o.tip.x, o.tip.y); } }
 const legSegs = L => { const p = L.p; return [[p.H, p.K, 1.5, 1.25], [p.K, p.A, 1.18, .88], [p.A, p.T, .74, .56], [p.T, p.F, .52, .28]]; };
 function photophores(c, L, I, cols, sz = .42) {
   const p = L.p, t = I.t, w = I.m.legW; let k = 0;
@@ -981,7 +1027,7 @@ const HYBRIDS = [
       specEll(c, cl * .45, cw * .4, Ll, .22); eyesOrb(c, cl, cw, Ll, { iris: 'rgba(125,249,255,.8)', glow: '#7df9ff', gb: 8, inner: '#1d4250' });
     } },
 
-  { id: 'holov', name: 'Hologramme vivant', species: 'Dominante filaire, organes lumineux', accent: '#a98bff', shadow: false, mat: GLASS,
+  { id: 'holov', noBones: true, name: 'Hologramme vivant', species: 'Dominante filaire, organes lumineux', accent: '#a98bff', shadow: false, mat: GLASS,
     desc: "Une projection filaire violette, mais vivante : on voit à travers le maillage le cœur, l'intestin et les nerfs qui s'allument à chaque pas. Un viseur la suit partout.",
     morph: NEON_MORPH,
     ground(c, P, I) {
