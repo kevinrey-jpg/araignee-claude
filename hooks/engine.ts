@@ -381,6 +381,8 @@ function blobPath(rx, ry, taper) {
 }
 function abdomenSVG(S, rx, ry) {
   const B = S.body, o = [], outline = blobPath(rx, ry, 1)
+  // un fond opaque sous le corps translucide : les os et les pattes qui passent dessous restent cachés
+  o.push(`<path d="${outline}" fill="#0b0716"/>`)
   const ell = (fill, stroke, sw, extra = '') => `<path d="${outline}" fill="${fill}"${stroke ? ` stroke="${stroke}" stroke-width="${sw}"` : ''} ${extra}/>`
   if (B.solid) o.push(`<radialGradient id="abG" cx="38%" cy="32%" r="70%"><stop offset="0" stop-color="${B.solid[0]}"/><stop offset=".5" stop-color="${B.solid[1]}"/><stop offset="1" stop-color="${B.solid[2]}"/></radialGradient>`, ell('url(#abG)'))
   else if (B.glass) o.push(`<radialGradient id="abG" cx="38%" cy="32%" r="70%"><stop offset="0" stop-color="rgba(95,50,170,.6)"/><stop offset=".7" stop-color="rgba(30,12,60,.82)"/><stop offset="1" stop-color="rgba(12,5,28,.92)"/></radialGradient>`, ell('url(#abG)'))
@@ -418,6 +420,7 @@ function carapaceSVG(S, cl, cw) {
     o.push(`<path d="M${f1(bx - cl * .06)} ${f1(by - s * cw * .1)}Q${f1(bx + cl * .2)} ${f1(by - s * cw * .12)} ${f1(bx + cl * .22)} ${f1(by + s * cw * .02)}Q${f1(bx + cl * .17)} ${f1(by + s * cw * .1)} ${f1(bx - cl * .04)} ${f1(by + s * cw * .07)}Z" fill="${fill}" stroke="${edge}" stroke-width=".14" stroke-opacity=".7"/>`)
     o.push(`<path d="M${f1(bx + cl * .18)} ${f1(by - s * cw * .04)}Q${f1(bx + cl * .36)} ${f1(by - s * cw * .02)} ${f1(bx + cl * .4)} ${f1(by - s * cw * .1)}Q${f1(bx + cl * .31)} ${f1(by + s * cw * .03)} ${f1(bx + cl * .2)} ${f1(by + s * cw * .05)}Z" fill="${edge}" fill-opacity=".85"/>`)
   }
+  o.push(`<path d="${path}" fill="#0b0716"/>`)
   const fill = B.solid ? 'url(#cpG)' : B.glass ? 'rgba(60,28,110,.75)' : B.dark ? (B.teal ? 'rgba(8,36,46,.92)' : 'rgba(18,8,40,.92)') : B.xray ? 'rgba(200,180,255,.08)' : 'rgba(120,80,255,.08)'
   if (B.solid) o.push(`<radialGradient id="cpG" cx="38%" cy="32%" r="70%"><stop offset="0" stop-color="#5a3f85"/><stop offset=".55" stop-color="#1b102c"/><stop offset="1" stop-color="#05020a"/></radialGradient>`)
   o.push(`<path d="${path}" fill="${fill}"/>`)
