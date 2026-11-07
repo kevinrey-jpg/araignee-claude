@@ -98,6 +98,10 @@ Le bouton **Plongée** de la grande toile choisit qui plonge : les agents seulem
 
 
 Pendant qu'elle lit, l'araignée avance à un rythme qu'on peut suivre des yeux, lettre après lettre, et les mots importants qu'elle remarque s'allument à son passage : ce qui est défini (fonctions, classes, titres) en doré, les erreurs et les TODO en rouge, les modules importés en bleu, les constantes en rose. Tout s'efface quand la page se referme.
+### Une araignée vivante, pas un jouet
+
+Ses pattes sont faites de segments rigides qui s'affinent en trapèze vers chaque articulation et finissent en pointe ; les articulations sont de vraies jointures (et non des billes), les crochets sont acérés, le corps n'est pas un ovale parfait et les huit pattes ne sont pas tout à fait égales. À travers les pattes translucides, on voit son squelette : de vrais os, reliés par des rotules.
+
 ### Le crawler (panneau)
 
 Quand Claude ou un agent lit un fichier, l'araignée rapetisse, saute sur la page et la parcourt comme un robot d'indexation : elle marche de mot important en mot important, dans un ordre un peu désordonné, chaque pied posé sur une lettre. Un pied posé sur un mot important l'attrape : il est entouré (ce qui est défini), barré (erreurs, TODO), encadré (modules importés) ou souligné (constantes), et un fil le relie au précédent. Sous la page, un tableau de bord compte les mots lus et liste les mots-clés. La lecture dure quelques secondes ; si d'autres actions attendent, elle finit plus vite.
