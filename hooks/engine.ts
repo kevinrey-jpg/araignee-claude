@@ -1381,7 +1381,7 @@ function spiderSVG(Ps, S, dur, n) {
   // deux tracés par patte : cuisse et tibia (épais), puis métatarse et tarse (fins) qui finissent en griffe pointue
   const dA = proj.map(L => relPath(L.map(q => [q.H, q.K, q.A]))), dB = proj.map(L => relPath(L.map(q => [q.A, q.T, q.F])))
   // articulations et pieds : des marqueurs posés sur les sommets des tracés (genou au milieu, cheville au bout, pied au bout)
-  const jc = S.xray ? '#ffffff' : S.wire ? S.leg[0] : S.leg[2] || S.leg[0], dot = (id, r, fill, extra = '') => `<marker id="${uid}${id}" viewBox="-2 -2 4 4" markerWidth="${f1(r * 2)}" markerHeight="${f1(r * 2)}" orient="auto" markerUnits="userSpaceOnUse">${extra}<path d="M-1.6 -.62Q-1.75 0 -1.6 .62L-.15 .82Q.05 .9 .25 .78L1.45 .5Q1.62 0 1.45 -.5L.25 -.78Q.05 -.9 -.15 -.82Z" fill="${fill}" fill-opacity=".55"/><path d="M.05 -.86L.05 .86" stroke="#0a0614" stroke-opacity=".5" stroke-width=".22"/><path d="M-1.3 -.38L-.2 -.5M.35 -.46L1.2 -.3" stroke="#fff" stroke-opacity=".4" stroke-width=".16" stroke-linecap="round"/></marker>`
+  const jc = S.xray ? '#ffffff' : S.wire ? S.leg[0] : S.leg[2] || S.leg[0], dot = (id, r, fill, extra = '') => `<marker id="${uid}${id}" viewBox="-2 -2 4 4" markerWidth="${f1(r * 2)}" markerHeight="${f1(r * 2)}" orient="auto" markerUnits="userSpaceOnUse">${extra}<path d="M-1.6 -.62Q-1.75 0 -1.6 .62L-.15 .82Q.05 .9 .25 .78L1.45 .5Q1.62 0 1.45 -.5L.25 -.78Q.05 -.9 -.15 -.82Z" fill="${fill}" fill-opacity=".32"/><path d="M.05 -.86L.05 .86" stroke="#0a0614" stroke-opacity=".5" stroke-width=".22"/><path d="M-1.3 -.38L-.2 -.5M.35 -.46L1.2 -.3" stroke="#fff" stroke-opacity=".4" stroke-width=".16" stroke-linecap="round"/></marker>`
   // la jointure d'une vraie patte : le bout du segment s'élargit un peu, une fine membrane sombre sépare les deux
   // segments, un reflet souligne le relief (et non plus une bille ronde)
   const ring = S.ring && !S.wire ? `<path d="M-1.85 -.8Q-2 0 -1.85 .8L1.7 .66Q1.9 0 1.7 -.66Z" fill="${S.ring}" opacity=".55"/>` : ''
@@ -1397,15 +1397,22 @@ function spiderSVG(Ps, S, dur, n) {
   // le squelette, visible à travers la patte translucide : un os pâle par segment, et à chaque articulation les deux
   // têtes d'os qui se rejoignent (les pattes en fil de fer gardent leur filament lumineux)
   const lineCol = S.xray ? '#f2f6ff' : S.wire ? S.leg[0] : (S.stripe || S.leg[2]), lines = `<use href="#${uid}a"/><use href="#${uid}b"/>`
+  let boneSVG = ''
   if (S.wire) o.push(`<g fill="none" stroke="${lineCol}" stroke-width="${f1(w * .28)}" stroke-linejoin="round" stroke-linecap="round" stroke-opacity=".9" filter="url(#glow)">${lines}</g>`)
   else {
-    const bone = S.xray ? '#f2f6ff' : '#efe8ff', heads = `<marker id="${uid}o" viewBox="-2 -1 4 2" markerWidth="${f1(w * 1.5)}" markerHeight="${f1(w * .75)}" orient="auto" markerUnits="userSpaceOnUse"><circle cx="-.95" r=".66" fill="${bone}"/><circle cx=".95" r=".66" fill="${bone}"/></marker>`
-    o.push(`<defs>${heads}</defs><g fill="none" stroke="${bone}" stroke-opacity="${S.xray ? .75 : .62}" stroke-linejoin="round" stroke-linecap="round"><use href="#${uid}a" stroke-width="${f1(w * .58)}" marker-mid="url(#${uid}o)" marker-end="url(#${uid}o)"/><use href="#${uid}b" stroke-width="${f1(w * .32)}" marker-mid="url(#${uid}o)"/></g>`)
+    // de vrais os : fins sur toute leur longueur, et qui s'épaississent à chaque bout en une tête à deux bosses
+    // (les condyles) ; à chaque articulation, deux têtes se font face, avec un petit espace entre elles
+    const bone = S.xray ? '#f2f6ff' : '#efe8ff', end = sg => { const k = v => f1(v * sg); return `M${k(-3)} -.2C${k(-1.7)} -.2 ${k(-1.25)} -.5 ${k(-1)} -.88Q${k(-.68)} -1.18 ${k(-.38)} -.9Q${k(-.2)} -.56 ${k(-.32)} -.22Q${k(-.48)} 0 ${k(-.32)} .22Q${k(-.2)} .56 ${k(-.38)} .9Q${k(-.68)} 1.18 ${k(-1)} .88C${k(-1.25)} .5 ${k(-1.7)} .2 ${k(-3)} .2Z` }
+    const mk = (id, d, wd) => `<marker id="${uid}${id}" viewBox="-3 -1.4 6 2.8" markerWidth="${f1(wd * 2.6)}" markerHeight="${f1(wd * 1.21)}" orient="auto" markerUnits="userSpaceOnUse"><path d="${d}" fill="${bone}"/></marker>`
+    o.push(`<defs>${mk('o', end(1) + end(-1), w)}${mk('p', end(1), w)}${mk('q', end(-1), w)}${mk('r', end(1) + end(-1), w * .72)}${mk('s', end(-1), w * .72)}${mk('t', end(1), w * .6)}</defs>`)
+    boneSVG = (`<g fill="none" stroke="${bone}" stroke-opacity="${S.xray ? .8 : .7}" stroke-linecap="butt"><use href="#${uid}a" stroke-width="${f1(w * .17)}" marker-start="url(#${uid}q)" marker-mid="url(#${uid}o)" marker-end="url(#${uid}p)"/><use href="#${uid}b" stroke-width="${f1(w * .12)}" marker-start="url(#${uid}s)" marker-mid="url(#${uid}r)" marker-end="url(#${uid}t)"/></g>`)
     o.push(`<g fill="none" stroke="${lineCol}" stroke-width="${f1(w * .12)}" stroke-linecap="round" stroke-opacity=".55">${lines}</g>`)
   }
   if (S.photo) o.push(`<g fill="none" stroke="${S.photo[0]}" stroke-width="${f1(w * .7)}" stroke-linecap="round" stroke-dasharray=".01 4.5" filter="url(#glow)">${lines}<animate attributeName="stroke-dashoffset" values="0;-9" dur="1.4s" repeatCount="indefinite"/></g>`)
   if (S.mesh && !S.wire) o.push(`<g fill="none" stroke="${S.mesh}" stroke-opacity=".35" stroke-width="${f1(w * 2.2)}" stroke-dasharray=".12 1.6">${lines}</g>`)
   o.push(`<g fill="none" stroke="none" filter="url(#glow)"><use href="#${uid}a" marker-mid="url(#${uid}k)" marker-end="url(#${uid}n)"/></g><g fill="none" stroke="none"><use href="#${uid}b" marker-end="url(#${uid}g)"/></g>`)
+  // les os par-dessus les jointures translucides : on les voit au travers
+  if (boneSVG) o.push(boneSVG)
   // abdomen : déplacé et tourné à chaque image
   const ab = frames.map(f => { const P = f.P, c = abdC(P), p = P3({ x: c.x, y: c.y, z: P.bz + P.m.aw * .32 + P.abdUp * P.m.al * .42 }); return { x: p.x, y: p.y, r: P.abd / DEG, sx: 1 - .33 * P.abdUp } })
   const tr = (list, fn) => n > 1 ? `<animateTransform attributeName="transform" type="${fn}" values="${keep.map(i => list[i]).join(';')}"${kts ? ` keyTimes="${kts}"` : ''} dur="${dur}" fill="freeze"/>` : ''
