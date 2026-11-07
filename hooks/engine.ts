@@ -1394,15 +1394,18 @@ function spiderSVG(Ps, S, dur, n) {
   if (S.wire) o.push(`<g fill="none" stroke="${S.leg[0]}" stroke-opacity=".9" stroke-dasharray=".25 .9" stroke-linecap="round">${both(w * 2.35, w * 1.1)}</g>`)
   else if (S.xray) o.push(`<g fill="none" stroke="#e8e0ff" stroke-opacity=".14" stroke-linecap="round" stroke-linejoin="round">${both(w * 2.35, w * 1.1)}</g>`)
   else o.push(`<g fill="none" stroke="${S.leg[1]}" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">${both(w * 2.35, w * 1.1)}</g>`)
-  // reflet / filament lumineux le long de chaque patte
+  // le squelette, visible à travers la patte translucide : un os pâle par segment, et à chaque articulation les deux
+  // têtes d'os qui se rejoignent (les pattes en fil de fer gardent leur filament lumineux)
   const lineCol = S.xray ? '#f2f6ff' : S.wire ? S.leg[0] : (S.stripe || S.leg[2]), lines = `<use href="#${uid}a"/><use href="#${uid}b"/>`
-  o.push(`<g fill="none" stroke="${lineCol}" stroke-width="${f1(S.xray ? w * .32 : w * .28)}" stroke-linejoin="round" stroke-linecap="round" stroke-opacity=".9" filter="url(#glow)">${lines}</g>`)
+  if (S.wire) o.push(`<g fill="none" stroke="${lineCol}" stroke-width="${f1(w * .28)}" stroke-linejoin="round" stroke-linecap="round" stroke-opacity=".9" filter="url(#glow)">${lines}</g>`)
+  else {
+    const bone = S.xray ? '#f2f6ff' : '#efe8ff', heads = `<marker id="${uid}o" viewBox="-2 -1 4 2" markerWidth="${f1(w * 1.5)}" markerHeight="${f1(w * .75)}" orient="auto" markerUnits="userSpaceOnUse"><circle cx="-.95" r=".66" fill="${bone}"/><circle cx=".95" r=".66" fill="${bone}"/></marker>`
+    o.push(`<defs>${heads}</defs><g fill="none" stroke="${bone}" stroke-opacity="${S.xray ? .75 : .62}" stroke-linejoin="round" stroke-linecap="round"><use href="#${uid}a" stroke-width="${f1(w * .58)}" marker-mid="url(#${uid}o)" marker-end="url(#${uid}o)"/><use href="#${uid}b" stroke-width="${f1(w * .32)}" marker-mid="url(#${uid}o)"/></g>`)
+    o.push(`<g fill="none" stroke="${lineCol}" stroke-width="${f1(w * .12)}" stroke-linecap="round" stroke-opacity=".55">${lines}</g>`)
+  }
   if (S.photo) o.push(`<g fill="none" stroke="${S.photo[0]}" stroke-width="${f1(w * .7)}" stroke-linecap="round" stroke-dasharray=".01 4.5" filter="url(#glow)">${lines}<animate attributeName="stroke-dashoffset" values="0;-9" dur="1.4s" repeatCount="indefinite"/></g>`)
   if (S.mesh && !S.wire) o.push(`<g fill="none" stroke="${S.mesh}" stroke-opacity=".35" stroke-width="${f1(w * 2.2)}" stroke-dasharray=".12 1.6">${lines}</g>`)
   o.push(`<g fill="none" stroke="none" filter="url(#glow)"><use href="#${uid}a" marker-mid="url(#${uid}k)" marker-end="url(#${uid}n)"/></g><g fill="none" stroke="none"><use href="#${uid}b" marker-end="url(#${uid}g)"/></g>`)
-  // pédipalpes
-  const dP = frames.map(f => relPath(f.P.palps.map(q => [P3(q.B), P3(q.K), P3(q.T)]))), palps = `<path d="${dP[0]}">${animK('d', dP)}</path>`
-  o.push(`<g fill="none" stroke="${S.wire ? S.leg[0] : S.xray ? '#f2f6ff' : S.leg[2] || S.leg[0]}" stroke-width="${f1(w * 1.1)}" stroke-linecap="butt" stroke-linejoin="round">${palps}</g>`)
   // abdomen : déplacé et tourné à chaque image
   const ab = frames.map(f => { const P = f.P, c = abdC(P), p = P3({ x: c.x, y: c.y, z: P.bz + P.m.aw * .32 + P.abdUp * P.m.al * .42 }); return { x: p.x, y: p.y, r: P.abd / DEG, sx: 1 - .33 * P.abdUp } })
   const tr = (list, fn) => n > 1 ? `<animateTransform attributeName="transform" type="${fn}" values="${keep.map(i => list[i]).join(';')}"${kts ? ` keyTimes="${kts}"` : ''} dur="${dur}" fill="freeze"/>` : ''
