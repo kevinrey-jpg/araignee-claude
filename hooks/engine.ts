@@ -1358,18 +1358,6 @@ function keepFrames(F, tol) {
 }
 const r1 = v => Math.round(v * 10) / 10
 // un tracé compact : premier point absolu, les suivants relatifs (calculés sur les valeurs arrondies, sans dérive)
-// la même chose en courbe douce : la cuisse se cambre un peu (bow : de combien, et de quel côté) et le tibia prolonge
-// la courbe, comme une vraie patte, au lieu de traits droits
-function bowPath(groups, bows) {
-  let d = ''
-  groups.forEach((pts, g) => { let px = 0, py = 0; pts.forEach((p, i) => { const x = r1(p.x), y = r1(p.y)
-    if (!i) d += 'M' + x + ' ' + y
-    else if (i === 1) { const dx = x - px, dy = y - py, b = bows[g]; d += 'q' + Math.round(dx / 2 - dy * b) + ' ' + Math.round(dy / 2 + dx * b) + ' ' + r1(dx) + ' ' + r1(dy) }
-    // le segment suivant prolonge la courbe en douceur (t : il ne coûte qu'un point)
-    else d += 't' + r1(x - px) + ' ' + r1(y - py)
-    px = x; py = y }) })
-  return d
-}
 function relPath(groups) {
   let d = ''
   for (const pts of groups) { let px = 0, py = 0; pts.forEach((p, i) => { const x = r1(p.x), y = r1(p.y); d += i ? 'l' + r1(x - px) + ' ' + r1(y - py) : 'M' + x + ' ' + y; px = x; py = y }) }
@@ -1391,14 +1379,15 @@ function spiderSVG(Ps, S, dur, n) {
   const keep = keepFrames(flat, .3), kts = keep.length < n ? keep.map(i => (i / Math.max(1, n - 1)).toFixed(4)).join(';') : ''
   const animK = (attr, values) => n > 1 ? `<animate attributeName="${attr}" values="${keep.map(i => values[i]).join(';')}"${kts ? ` keyTimes="${kts}"` : ''} dur="${dur}" fill="freeze"/>` : ''
   // deux tracés par patte : cuisse et tibia (épais), puis métatarse et tarse (fins) qui finissent en griffe pointue
-  const bowA = P0.legs.map(L => L.s * (.08 + LEG_JIT[L.i * 2 + (L.s > 0 ? 1 : 0)]))
-  const dA = proj.map(L => bowPath(L.map(q => [q.H, q.K, q.A]), bowA)), dB = proj.map(L => relPath(L.map(q => [q.A, q.T, q.F])))
+  const dA = proj.map(L => relPath(L.map(q => [q.H, q.K, q.A]))), dB = proj.map(L => relPath(L.map(q => [q.A, q.T, q.F])))
   // articulations et pieds : des marqueurs posés sur les sommets des tracés (genou au milieu, cheville au bout, pied au bout)
-  const jc = S.xray ? '#ffffff' : S.wire ? S.leg[0] : S.leg[2] || S.leg[0], dot = (id, r, fill, extra = '') => `<marker id="${uid}${id}" viewBox="-2 -2 4 4" markerWidth="${f1(r * 2)}" markerHeight="${f1(r * 2)}" orient="auto" markerUnits="userSpaceOnUse">${extra}<path d="M1.05 0Q.95 .62 .2 .74Q-.7 .82 -.98 .1Q-1.02 -.58 -.3 -.76Q.7 -.86 1.05 0Z" fill="${fill}"/></marker>`
-  const ring = S.ring && !S.wire ? `<path d="M1.3 0Q1.2 .8 .2 .95Q-.9 1.02 -1.25 .1Q-1.3 -.75 -.35 -.98Q.85 -1.08 1.3 0Z" fill="${S.ring}" opacity=".8"/>` : ''
+  const jc = S.xray ? '#ffffff' : S.wire ? S.leg[0] : S.leg[2] || S.leg[0], dot = (id, r, fill, extra = '') => `<marker id="${uid}${id}" viewBox="-2 -2 4 4" markerWidth="${f1(r * 2)}" markerHeight="${f1(r * 2)}" orient="auto" markerUnits="userSpaceOnUse">${extra}<path d="M-1.6 -.62Q-1.75 0 -1.6 .62L-.15 .82Q.05 .9 .25 .78L1.45 .5Q1.62 0 1.45 -.5L.25 -.78Q.05 -.9 -.15 -.82Z" fill="${fill}" fill-opacity=".55"/><path d="M.05 -.86L.05 .86" stroke="#0a0614" stroke-opacity=".5" stroke-width=".22"/><path d="M-1.3 -.38L-.2 -.5M.35 -.46L1.2 -.3" stroke="#fff" stroke-opacity=".4" stroke-width=".16" stroke-linecap="round"/></marker>`
+  // la jointure d'une vraie patte : le bout du segment s'élargit un peu, une fine membrane sombre sépare les deux
+  // segments, un reflet souligne le relief (et non plus une bille ronde)
+  const ring = S.ring && !S.wire ? `<path d="M-1.85 -.8Q-2 0 -1.85 .8L1.7 .66Q1.9 0 1.7 -.66Z" fill="${S.ring}" opacity=".55"/>` : ''
   // la griffe au bout du tarse : une pointe orientée dans le sens de la patte (et non plus un bout arrondi)
   const legCol = S.xray ? '#e8e0ff' : S.leg[1], claw = `<marker id="${uid}g" viewBox="-1 -1.2 4.6 2.4" markerWidth="${f1(w * 2.3)}" markerHeight="${f1(w * 1.2)}" refX="0" refY="0" orient="auto" markerUnits="userSpaceOnUse"><path d="M-.6 -.9Q1.2 -.5 3.4 .25Q1.1 .2 -.6 .9Z" fill="${legCol}"/><path d="M1.4 -.18L3.4 .25" stroke="#fff" stroke-width=".3" stroke-opacity=".7"/></marker>`
-  o.push(`<defs><path id="${uid}a" d="${dA[0]}">${animK('d', dA)}</path><path id="${uid}b" d="${dB[0]}">${animK('d', dB)}</path>${dot('k', w * .82, jc, ring)}${dot('n', w * .62, jc)}${claw}</defs>`)
+  o.push(`<defs><path id="${uid}a" d="${dA[0]}">${animK('d', dA)}</path><path id="${uid}b" d="${dB[0]}">${animK('d', dB)}</path>${dot('k', w * 1.05, jc, ring)}${dot('n', w * .85, jc)}${claw}</defs>`)
   // épais près du corps, fins au bout ; le bout de la patte n'est pas arrondi
   const both = (wa, wb) => `<use href="#${uid}a" stroke-width="${f1(wa)}"/><use href="#${uid}b" stroke-width="${f1(wb * .8)}" stroke-linecap="butt"/>`
   o.push(`<g fill="none" stroke="#000" stroke-opacity=".35" stroke-linecap="round" stroke-linejoin="round" transform="translate(1.4 1.1)">${both(w * 2.2, w * 1.1)}</g>`)
