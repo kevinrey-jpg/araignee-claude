@@ -573,7 +573,7 @@ function proj3(W, p, yaw, pitch, F, id) {
   const S = W.sph, f = F || S.F || { x: 0, y: 0, z: 0 }, cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), spp = Math.sin(pitch), RS = S.R / 100
   const px = p.x - f.x, py = p.y - f.y, pz = p.z - f.z
   const x = px * cy + pz * sy, z0 = -px * sy + pz * cy, y = py * cp - z0 * spp, z = py * spp + z0 * cp, k = S.D / (S.D - Math.min(z, S.D * .7))
-  const d3 = Math.hypot(px, py, pz), zd = S.boost && S.boost.has(id) ? Math.max(.92, depthOf(z)) : depthOf(z) * (.2 + .8 * Math.exp(-d3 / 46))
+  const d3 = Math.hypot(px, py, pz), zd = S.boost && S.boost.has(id) ? Math.max(.92, depthOf(z)) : depthOf(z) * (.5 + .5 * Math.exp(-d3 / 55))
   return { x: x * RS * k, y: y * RS * k, zd, k }
 }
 function placeAll(W, yaw, pitch, F) { const m = new Map(); W.g.nodes.forEach(n => { if (n.p3) m.set(n.id, proj3(W, n.p3, yaw, pitch, F, n.id)) }); return m }
@@ -1034,7 +1034,7 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
   ;[...groups.values()].sort((p, q) => p.lvl - q.lvl).forEach(gr => {
     // des fils pleins (jamais transparents) : fins et sombres au fond, épais et lumineux devant
     const d = (gr.lvl + .5) / 4, a0 = Math.min(1, (.18 + .4 * d) * (gr.spoke ? .55 : 1) * (gr.dep ? .6 : 1) * (gr.hot ? 1.5 : Math.max(.5, S.edens) * .5 + .5)), w = (gr.hot ? .5 : gr.dep ? .26 : .38) * Math.min(RS, 3) * (.22 + 1.4 * d * d), id = 'w' + wi++
-    const lum = gr.hot ? Math.min(1, a0 * 1.55) : Math.min(1, (.1 + .9 * d * d) * 1.5 * (gr.spoke ? .6 : 1) * (gr.dep ? .75 : 1))
+    const lum = gr.hot ? Math.min(1, a0 * 1.55) : Math.min(1, (.3 + .7 * d) * 1.5 * (gr.spoke ? .65 : 1) * (gr.dep ? .8 : 1))
     wdefs += `<path id="${id}" d="${tr ? 'M0 0' : gr.dB}">${tr ? `<animate attributeName="d" values="${gr.dA};${gr.dM};${gr.dB}" ${TD} fill="freeze"/>` : ''}</path>`
     if ((gr.lvl >= 2 && lod < 1) || gr.hot) o.push(`<use href="#${id}" stroke="${gr.col}" stroke-opacity="${(.12 * a0).toFixed(3)}" stroke-width="${f1(w * 3)}"/>`)
     o.push(`<use href="#${id}" stroke="${mixHex(mixHex(gr.col, '#ffffff', gr.hot ? .4 : .1), '#06040c', 1 - lum)}" stroke-width="${(w).toFixed(2)}"/>`)
@@ -1055,7 +1055,7 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
     else {
       used.add(n.comm)
       // loin de l'araignée : plus petite et plus discrète ; près d'elle, pleine
-      const r = nebR(g, n) * RS * k * .62 * (.5 + .5 * zd) * (isT ? 1.25 : 1), touched = (n.heat || 0) > .01 || n.visited || n.mod, op = Math.min(1, (.12 + .88 * zd * zd) * (touched ? 1 : .72) * S.dens + (isT ? .3 : 0))
+      const r = nebR(g, n) * RS * k * .62 * (.6 + .4 * zd) * (isT ? 1.25 : 1), touched = (n.heat || 0) > .01 || n.visited || n.mod, op = Math.min(1, (.3 + .7 * zd) * (touched ? 1 : .72) * S.dens + (isT ? .3 : 0))
       // les dossiers : une étoile à huit branches qui tourne ; les fichiers : quatre branches qui scintillent
       const dir = n.kind === 'dir' || n.kind === 'concept'; if (dir) used8.add(n.comm)
       body = `<use href="#${dir ? 's8' : 's4'}${n.comm}" transform="translate(${Math.round(n.x)} ${Math.round(n.y)})${dir ? `rotate(${hash(n.id) % 45})` : ''}scale(${(r * (dir ? 1.25 : .95) / 16).toFixed(2)})" opacity="${op.toFixed(2)}"/>`
