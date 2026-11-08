@@ -61,6 +61,7 @@ Par défaut, la toile est une sphère qui tourne, comme une carte Graphify : une
 - **Les fils** : pleins, colorés et finement tressés, ils ondulent comme des câbles posés (un, deux ou trois virages, dans tous les sens) et brillent moins que les étoiles. La même boule, aux mêmes places, dans le panneau et dans la grande toile.
 
 - **La foudre** : à chaque action de Claude (au plus toutes les 5 secondes), et de temps en temps au repos, un éclair part de l'endroit où se trouve l'araignée et suit les fils dans tout le réseau. Chaque nébuleuse atteinte s'illumine.
+- **Fils droits ou ondulés** : bouton **Fils** de la grande toile et du panneau (le choix est gardé).
 - **À la souris** (grande toile) : faire glisser fait tourner la vue autour de l'araignée, avec de l'élan ; la molette zoome.
 - **À plat, comme avant** : bouton **Toile** de la grande toile, et `/araignee-toile` pour le panneau.
 - **L'apparence** de l'araignée est la même dans le panneau et dans la grande toile : la changer d'un côté la change de l'autre.

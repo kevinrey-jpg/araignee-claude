@@ -123,7 +123,11 @@ function layout(g) {
 const SEGC = 24
 // les fils de la boule ondulent comme des câbles posés : un, deux ou trois virages, dans tous les sens
 // (les mêmes que dans la grande vue), avec à peine de poids ; l'araignée marche sur ces courbes
+// les fils droits (une option) : plus d'ondulation ni de poids
+let STRAIGHT = false
+export function setStraightWires(W, on) { STRAIGHT = !!on; W.straightWires = STRAIGHT; buildGeometry(W.g) }
 function wavePt(e, a, b, u) {
+  if (STRAIGHT) return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u }
   if (!e.wv) { const R = rng(hash(e.a + '|' + e.b)), k = R() < .45 ? 1 : R() < .7 ? 2 : 3; e.wv = { k, amp: (R() < .5 ? -1 : 1) * (.05 + R() * .07) / Math.sqrt(k), ph: R() * 6.28, k2: k + 1 + Math.floor(R() * 2), a2: (R() - .5) * .05 } }
   const W = e.wv, dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || .01, env = Math.sin(Math.PI * u)
   const off = env * L * (W.amp * Math.sin(Math.PI * W.k * u + (W.k > 1 ? W.ph * .3 : 0)) + W.a2 * Math.sin(Math.PI * W.k2 * u + W.ph))
@@ -132,6 +136,7 @@ function wavePt(e, a, b, u) {
 // dans le panneau, un fil est une seule courbe de Bézier qui passe par la vague au tiers et aux deux tiers
 // (un ou deux virages) : bien plus court à écrire, et l'araignée marche exactement sur la courbe dessinée
 function waveCubic(e, a, b) {
+  if (STRAIGHT) return [{ x: a.x + (b.x - a.x) / 3, y: a.y + (b.y - a.y) / 3 }, { x: a.x + (b.x - a.x) * 2 / 3, y: a.y + (b.y - a.y) * 2 / 3 }]
   const w1 = wavePt(e, a, b, 1 / 3), w2 = wavePt(e, a, b, 2 / 3), A = { x: 27 * w1.x - 8 * a.x - b.x, y: 27 * w1.y - 8 * a.y - b.y }, B = { x: 27 * w2.x - a.x - 8 * b.x, y: 27 * w2.y - a.y - 8 * b.y }
   return [{ x: (2 * A.x - B.x) / 18, y: (2 * A.y - B.y) / 18 }, { x: (2 * B.x - A.x) / 18, y: (2 * B.y - A.y) / 18 }]
 }

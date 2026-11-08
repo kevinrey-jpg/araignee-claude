@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface } from 'claude-code'
 
 import type { Clip, Status, Recap } from '../types'
-import { crawlAbort, crawlBegin, crawlClip, crawling, setZoom, setFollow, applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, importsOf, readsImports, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
+import { setStraightWires, crawlAbort, crawlBegin, crawlClip, crawling, setZoom, setFollow, applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, importsOf, readsImports, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
 
 const PANE = 'araignee'
 // Changer l'étiquette quand la forme d'une valeur change : elle survit aux rechargements.
@@ -172,6 +172,7 @@ async function ensureWorld($: EngineInterface) {
     mem = m && typeof m === 'object' ? m as Mem : {}
     applyMemory(world, mem, sizes)
     soundOn = (await $.store.get('son').catch(() => false)) === true
+    if ((await $.store.get('fils').catch(() => undefined)) === 'droits') setStraightWires(world, true)
     await $.state.set({ plugin: 'araignee', key: 'sound' }, soundOn)
   })()
   await loading
@@ -212,9 +213,11 @@ function scheduleSleep($: EngineInterface) {
   })
 }
 // les boutons de caméra du panneau : le zoom reste tel quel ; « suivre » bascule entre suivre l'araignée active et rester sur place
-async function camera($: EngineInterface, what: 'plus' | 'moins' | 'suivre') {
+async function camera($: EngineInterface, what: 'plus' | 'moins' | 'suivre' | 'fils') {
   await ensureWorld($).catch(() => undefined); if (!world) return
-  if (what === 'suivre') setFollow(world, !!world.free)
+  // fils ondulés ou droits (gardé d'une discussion à l'autre)
+  if (what === 'fils') { setStraightWires(world, !world.straightWires); await $.store.set('fils', world.straightWires ? 'droits' : 'ondules').catch(() => undefined) }
+  else if (what === 'suivre') setFollow(world, !!world.free)
   else { const z = setZoom(world, (world.zoom || 1) * (what === 'plus' ? 1.3 : 1 / 1.3)); await $.store.set('zoom', z).catch(() => undefined) }
   if (!playing) await showClip($, idleClip(world))
 }
@@ -774,6 +777,7 @@ export const register: Register = on => {
             <Button key="zoom-moins" onPress={() => { void camera($, 'moins') }}>Zoom −</Button>
             <Button key="zoom-plus" onPress={() => { void camera($, 'plus') }}>Zoom +</Button>
             <Button key="suivre" variant={world.free ? undefined : 'primary'} onPress={() => { void camera($, 'suivre') }}>{world.free ? 'Caméra : libre' : "Caméra : suit l'araignée"}</Button>
+            <Button key="fils" onPress={() => { void camera($, 'fils') }}>{world.straightWires ? 'Fils : droits' : 'Fils : ondulés'}</Button>
           </Box>
         )}
         {clip.svg

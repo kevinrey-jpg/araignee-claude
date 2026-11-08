@@ -160,6 +160,7 @@ html.grand .window.max { inset: 0; border: 0; border-radius: 0; box-shadow: none
           <button id="b-min" title="Réduire le panneau" aria-pressed="false">Réduire</button>
           <button id="b-cam" aria-pressed="true" title="Clic sur une araignée : la caméra la suit. Clic dans le vide : la caméra reste sur place. La molette zoome, et le zoom reste.">Caméra : suit</button>
           <button id="b-dive" title="Quand un agent travaille sur un fichier, la toile plonge dans la page" aria-pressed="true">Plongée : agents</button>
+          <button id="b-fils" title="Les fils de la toile : ondulés comme des câbles, ou droits" aria-pressed="false">Fils : ondulés</button>
           <button id="b-toile" title="La toile en sphère qui tourne, ou à plat comme avant" aria-pressed="true">Toile : sphère</button>
           <button id="b-sound" title="Les petits sons de l'araignée" aria-pressed="false">♪ Son : non</button>
           <button id="b-max" title="Agrandir le panneau" aria-pressed="false">Agrandir</button>
@@ -1418,6 +1419,7 @@ function place3(n, anchor) {
   n.p3 = p;
 }
 const SEGS = 16;
+let STRAIGHT = false; try { STRAIGHT = localStorage.getItem('araignee-fils') === 'droits'; } catch (e) {}
 function sphereEdge(e) { e.pts2 = e.pts2 || e.pts; e.sp = Array.from({ length: SEGS + 1 }, () => ({ x: 0, y: 0 })); if (SPH) e.pts = e.sp; }
 // la caméra à la troisième personne : elle vise le point F (l'araignée suivie, en 3D) et se tient toujours à la même
 // distance D de lui ; la boule ne tourne plus d'elle-même, c'est la caméra qui accompagne l'araignée, même quand elle
@@ -1440,9 +1442,9 @@ function projectAll() {
   for (const e of edges) {
     if (!e.sp) sphereEdge(e); const a = byId[e.a], b = byId[e.b], P = e.sp, dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || .01;
     if (!e.wv) { const R = rng(hash(e.a + '|' + e.b)), k = R() < .45 ? 1 : R() < .7 ? 2 : 3; e.wv = { k, amp: (R() < .5 ? -1 : 1) * (.05 + R() * .07) / Math.sqrt(k), ph: R() * 6.28, k2: k + 1 + Math.floor(R() * 2), a2: (R() - .5) * .05 }; }
-    const W = e.wv, nx = -dy / L, ny = dx / L, sw = Math.sin(simT * .45 + W.ph) * .25, sag = Math.min(L * .03, 6 * S3.R / 100);
+    const W = e.wv, nx = -dy / L, ny = dx / L, sw = Math.sin(simT * .45 + W.ph) * .25, sag = STRAIGHT ? 0 : Math.min(L * .03, 6 * S3.R / 100), wk = STRAIGHT ? 0 : 1;
     for (let j = 0; j <= SEGS; j++) {
-      const u = j / SEGS, env = Math.sin(Math.PI * u), off = env * L * (W.amp * (1 + sw) * Math.sin(Math.PI * W.k * u + (W.k > 1 ? W.ph * .3 : 0)) + W.a2 * Math.sin(Math.PI * W.k2 * u + W.ph));
+      const u = j / SEGS, env = Math.sin(Math.PI * u), off = wk * env * L * (W.amp * (1 + sw) * Math.sin(Math.PI * W.k * u + (W.k > 1 ? W.ph * .3 : 0)) + W.a2 * Math.sin(Math.PI * W.k2 * u + W.ph));
       P[j].x = a.x + dx * u + nx * off; P[j].y = a.y + dy * u + ny * off + env * sag;
     }
   }
@@ -2584,6 +2586,9 @@ showNode(null);
 /* ---------- commandes ---------- */
 const playBtn = document.getElementById('b-play'), camBtn = document.getElementById('b-cam'), toileBtn = document.getElementById('b-toile');
 toileBtn.textContent = SPH ? 'Toile : sphère' : 'Toile : à plat'; toileBtn.setAttribute('aria-pressed', String(SPH));
+// les fils : ondulés comme des câbles, ou droits (gardé d'une ouverture à l'autre)
+const filsBtn = document.getElementById('b-fils'), paintFils = () => { filsBtn.textContent = STRAIGHT ? 'Fils : droits' : 'Fils : ondulés'; filsBtn.setAttribute('aria-pressed', String(STRAIGHT)); };
+filsBtn.addEventListener('click', () => { STRAIGHT = !STRAIGHT; try { localStorage.setItem('araignee-fils', STRAIGHT ? 'droits' : 'ondules'); } catch (e) {} paintFils(); }); paintFils();
 toileBtn.addEventListener('click', () => { try { localStorage.setItem('araignee-toile', SPH ? 'classique' : 'sphere'); } catch (e) {} location.replace(location.href.replace(/([?&])toile=classique&?/, '$1')); });
 function setPaused(v) { paused = v; playBtn.textContent = v ? 'Lecture' : 'Pause'; playBtn.setAttribute('aria-pressed', String(v)); }
 playBtn.addEventListener('click', () => setPaused(!paused));
