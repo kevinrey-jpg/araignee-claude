@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface } from 'claude-code'
 
 import type { Clip, Status, Recap } from '../types'
-import { setStraightWires, crawlAbort, crawlBegin, crawlClip, crawling, setZoom, setFollow, applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, importsOf, readsImports, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
+import { setWireStyle, setStraightWires, crawlAbort, crawlBegin, crawlClip, crawling, setZoom, setFollow, applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, importsOf, readsImports, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
 
 const PANE = 'araignee'
 // Changer l'étiquette quand la forme d'une valeur change : elle survit aux rechargements.
@@ -173,6 +173,7 @@ async function ensureWorld($: EngineInterface) {
     applyMemory(world, mem, sizes)
     soundOn = (await $.store.get('son').catch(() => false)) === true
     if ((await $.store.get('fils').catch(() => undefined)) === 'droits') setStraightWires(world, true)
+    const ws = await $.store.get('fils-style').catch(() => undefined); if (ws && typeof ws === 'object') setWireStyle(world, ws)
     await $.state.set({ plugin: 'araignee', key: 'sound' }, soundOn)
   })()
   await loading
@@ -219,6 +220,18 @@ async function camera($: EngineInterface, what: 'plus' | 'moins' | 'suivre' | 'f
   if (what === 'fils') { setStraightWires(world, !world.straightWires); await $.store.set('fils', world.straightWires ? 'droits' : 'ondules').catch(() => undefined) }
   else if (what === 'suivre') setFollow(world, !!world.free)
   else { const z = setZoom(world, (world.zoom || 1) * (what === 'plus' ? 1.3 : 1 / 1.3)); await $.store.set('zoom', z).catch(() => undefined) }
+  if (!playing) await showClip($, idleClip(world))
+}
+// le réglage des fils dans le panneau : lumière, épaisseur, opacité (gardé d'une discussion à l'autre)
+const WIRE_SETTINGS: [string, string, [number, string][]][] = [
+  ['lum', 'Lumière des fils ', [[.5, 'faible'], [.75, 'douce'], [1, 'normale'], [1.5, 'vive'], [2.2, 'éclatante']]],
+  ['width', 'Épaisseur ', [[.5, 'fine'], [.75, 'légère'], [1, 'normale'], [1.5, 'épaisse'], [2.2, 'très épaisse']]],
+  ['alpha', 'Opacité ', [[.3, 'très transparents'], [.55, 'transparents'], [.8, 'légers'], [1, 'pleins']]],
+]
+async function wireSetting($: EngineInterface, k: string, v: number) {
+  await ensureWorld($).catch(() => undefined); if (!world) return
+  const st = { lum: 1, width: 1, alpha: 1, ...(world.wireStyle || {}), [k]: v }
+  setWireStyle(world, st); await $.store.set('fils-style', st).catch(() => undefined)
   if (!playing) await showClip($, idleClip(world))
 }
 // une seule ligne, pas trop longue (un chemin, une commande)
@@ -778,6 +791,15 @@ export const register: Register = on => {
             <Button key="zoom-plus" onPress={() => { void camera($, 'plus') }}>Zoom +</Button>
             <Button key="suivre" variant={world.free ? undefined : 'primary'} onPress={() => { void camera($, 'suivre') }}>{world.free ? 'Caméra : libre' : "Caméra : suit l'araignée"}</Button>
             <Button key="fils" onPress={() => { void camera($, 'fils') }}>{world.straightWires ? 'Fils : droits' : 'Fils : ondulés'}</Button>
+          </Box>
+        )}
+        {Select && world && (
+          <Box flexDirection="row" flexWrap="wrap" gap={1}>
+            {WIRE_SETTINGS.map(([k, label, levels]) => (
+              <Select key={'fils-' + k} label={label} value={String((world.wireStyle || {})[k] ?? 1)}
+                options={levels.map(([v, name]) => ({ value: String(v), label: name }))}
+                onSelect={(value: string) => { void wireSetting($, k, +value) }} />
+            ))}
           </Box>
         )}
         {clip.svg

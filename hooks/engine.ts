@@ -125,6 +125,11 @@ const SEGC = 24
 // (les mêmes que dans la grande vue), avec à peine de poids ; l'araignée marche sur ces courbes
 // les fils droits (une option) : plus d'ondulation ni de poids
 let STRAIGHT = false
+// le réglage des fils : lumière, épaisseur, opacité (1 = normal)
+let WIRE = { lum: 1, width: 1, alpha: 1 }
+export function setWireStyle(W, st) { WIRE = { lum: clamp(+st.lum || 1, .3, 2.5), width: clamp(+st.width || 1, .3, 3), alpha: clamp(+st.alpha || 1, .1, 1) }; W.wireStyle = WIRE }
+// une couleur éclaircie (k > 1 : vers le blanc) ou assombrie vers le fond (k < 1)
+const lumCol = (col, k) => k >= 1 ? mixHex(col, '#ffffff', Math.min(.85, (k - 1) * .6)) : mixHex(col, '#06040c', 1 - k)
 export function setStraightWires(W, on) { STRAIGHT = !!on; W.straightWires = STRAIGHT; buildGeometry(W.g) }
 function wavePt(e, a, b, u) {
   if (STRAIGHT) return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u }
@@ -1038,15 +1043,15 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
   let wdefs = '', wi = 0
   ;[...groups.values()].sort((p, q) => p.lvl - q.lvl).forEach(gr => {
     // des fils pleins (jamais transparents) : fins et sombres au fond, épais et lumineux devant
-    const d = (gr.lvl + .5) / 4, a0 = Math.min(1, (.18 + .4 * d) * (gr.spoke ? .55 : 1) * (gr.dep ? .6 : 1) * (gr.hot ? 1.5 : Math.max(.5, S.edens) * .5 + .5)), w = (gr.hot ? .5 : gr.dep ? .26 : .38) * Math.min(RS, 3) * (.22 + 1.4 * d * d), id = 'w' + wi++
+    const d = (gr.lvl + .5) / 4, a0 = Math.min(1, (.18 + .4 * d) * (gr.spoke ? .55 : 1) * (gr.dep ? .6 : 1) * (gr.hot ? 1.5 : Math.max(.5, S.edens) * .5 + .5)), w = (gr.hot ? .5 : gr.dep ? .26 : .38) * Math.min(RS, 3) * (.22 + 1.4 * d * d) * WIRE.width, id = 'w' + wi++
     const lum = gr.hot ? Math.min(1, a0 * 1.55) : Math.min(1, (.3 + .7 * d) * 1.5 * (gr.spoke ? .65 : 1) * (gr.dep ? .8 : 1))
     wdefs += `<path id="${id}" d="${tr ? 'M0 0' : gr.dB}">${tr ? `<animate attributeName="d" values="${gr.dA};${gr.dM};${gr.dB}" ${TD} fill="freeze"/>` : ''}</path>`
     if ((gr.lvl >= 2 && lod < 1) || gr.hot) o.push(`<use href="#${id}" stroke="${gr.col}" stroke-opacity="${(.12 * a0).toFixed(3)}" stroke-width="${f1(w * 3)}"/>`)
-    o.push(`<use href="#${id}" stroke="${mixHex(mixHex(gr.col, '#ffffff', gr.hot ? .4 : .1), '#06040c', 1 - lum)}" stroke-width="${(w).toFixed(2)}"/>`)
-    if (d > .3 && !gr.dep && lod < 1) o.push(`<use href="#${id}" stroke="${mixHex(mixHex(gr.col, '#ffffff', .45), '#06040c', 1 - lum * .8)}" stroke-width="${(w * 1.4).toFixed(2)}" stroke-dasharray="${(w * .35).toFixed(2)} ${(w * 2.4).toFixed(2)}"><animate attributeName="stroke-dashoffset" values="0;${(-w * 2.75 * 4).toFixed(2)}" dur="${(4 / 1.8 * 2.75).toFixed(1)}s" repeatCount="indefinite"/></use>`)
+    o.push(`<use href="#${id}" stroke="${lumCol(mixHex(gr.col, '#ffffff', gr.hot ? .4 : .1), lum * WIRE.lum)}" stroke-width="${(w).toFixed(2)}"/>`)
+    if (d > .3 && !gr.dep && lod < 1) o.push(`<use href="#${id}" stroke="${lumCol(mixHex(gr.col, '#ffffff', .45), lum * .8 * WIRE.lum)}" stroke-width="${(w * 1.4).toFixed(2)}" stroke-dasharray="${(w * .35).toFixed(2)} ${(w * 2.4).toFixed(2)}"><animate attributeName="stroke-dashoffset" values="0;${(-w * 2.75 * 4).toFixed(2)}" dur="${(4 / 1.8 * 2.75).toFixed(1)}s" repeatCount="indefinite"/></use>`)
   })
   // le style passe par le groupe : un tracé repris par <use> hérite de son <use>, pas de ses <defs>
-  const wl = o.splice(1); o.push(`<defs>${wdefs}</defs><g fill="none" stroke-linecap="round">${wl.join('')}</g>`)
+  const wl = o.splice(1); o.push(`<defs>${wdefs}</defs><g fill="none" stroke-linecap="round"${WIRE.alpha < 1 ? ` opacity="${WIRE.alpha.toFixed(2)}"` : ''}>${wl.join('')}</g>`)
   const named = new Set(list.filter(n => n.label && n.kind !== 'leaf' && (n.zd || 0) > .55 && (n.kind === 'dir' || n.kind === 'file' || n.kind === 'term' || n === X.target)).sort((p, q) => Math.hypot(p.x - cEnd.x, p.y - cEnd.y) - Math.hypot(q.x - cEnd.x, q.y - cEnd.y)).slice(0, lod >= 3 ? 8 : 22))
   if (X.target) named.add(X.target)
   let nodes = ''

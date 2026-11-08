@@ -49,6 +49,8 @@ h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: .02em; }
 .window.max { position: fixed; inset: calc(12px + env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) calc(12px + env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px)); z-index: 50; }
 .window.max .viewport { aspect-ratio: auto; flex: 1; }
 .window.min .viewport, .window.min .controls { display: none; }
+.wset { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted, #b9b0d8); }
+.wset input { width: 90px; accent-color: #b46cff; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; border-top: 1px solid var(--line); align-items: center; }
 .controls .sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
 .controls .label { font-family: var(--mono); font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
@@ -170,6 +172,10 @@ html.grand .window.max { inset: 0; border: 0; border-radius: 0; box-shadow: none
       <div class="viewport" id="vp"><canvas id="stage" aria-label="Toile des fichiers du projet avec l'araignée"></canvas><section class="recap" id="recap" aria-live="polite"></section><div class="tip" id="tip" hidden></div><div class="toast" id="toast" role="status" hidden></div></div>
       <div class="controls">
         <button id="b-play" aria-pressed="false">Pause</button>
+        <span class="label">Fils</span>
+        <label class="wset">Lumière <input type="range" id="w-lum" min="0.3" max="2.5" step="0.05" value="1"></label>
+        <label class="wset">Épaisseur <input type="range" id="w-width" min="0.3" max="3" step="0.05" value="1"></label>
+        <label class="wset">Opacité <input type="range" id="w-alpha" min="0.1" max="1" step="0.05" value="1"></label>
         <span class="label">Vitesse</span>
         <button data-speed="0.5" aria-pressed="false">×0,5</button>
         <button data-speed="1" aria-pressed="true">×1</button>
@@ -1419,6 +1425,9 @@ function place3(n, anchor) {
   n.p3 = p;
 }
 const SEGS = 16;
+// le réglage des fils : lumière, épaisseur, opacité (1 = normal), gardé d'une ouverture à l'autre
+const WIRE = { lum: 1, width: 1, alpha: 1 }; try { Object.assign(WIRE, JSON.parse(localStorage.getItem('araignee-fils-style') || '{}')); } catch (e) {}
+const lumCol = (col, k) => k >= 1 ? mix(col, '#ffffff', Math.min(.85, (k - 1) * .6)) : mix(col, '#06040c', 1 - k);
 let STRAIGHT = false; try { STRAIGHT = localStorage.getItem('araignee-fils') === 'droits'; } catch (e) {}
 function sphereEdge(e) { e.pts2 = e.pts2 || e.pts; e.sp = Array.from({ length: SEGS + 1 }, () => ({ x: 0, y: 0 })); if (SPH) e.pts = e.sp; }
 // la caméra à la troisième personne : elle vise le point F (l'araignée suivie, en 3D) et se tient toujours à la même
@@ -1649,11 +1658,13 @@ function drawSphereStage(c, targets) {
     const d = (g.lvl + .5) / 6, a0 = (.18 + .4 * d) * (g.spoke ? .55 : 1) * (g.mesh ? .6 : 1) * (g.hot ? 1.5 : EDGE_DENS * .5 + .5), w = (g.hot ? .5 : g.mesh ? .26 : .38) * RS, bright = mix(g.col, '#ffffff', g.hot ? .4 : .1);
     // des fils pleins (jamais transparents) : la profondeur se lit à l'épaisseur (fins au fond, épais devant) et à la
     // couleur, qui s'assombrit vers le fond au lieu de s'effacer
-    const lum = g.hot ? Math.min(1, a0 * 1.55) : Math.min(1, (.3 + .7 * d) * 1.5 * (g.spoke ? .65 : 1) * (g.mesh ? .8 : 1)), ww = w * (.35 + 1.2 * d * d), BG = '#06040c';
+    const lum = g.hot ? Math.min(1, a0 * 1.55) : Math.min(1, (.3 + .7 * d) * 1.5 * (g.spoke ? .65 : 1) * (g.mesh ? .8 : 1)), ww = w * (.35 + 1.2 * d * d) * WIRE.width, BG = '#06040c';
+    c.globalAlpha = WIRE.alpha;
     c.globalCompositeOperation = 'lighter'; c.strokeStyle = hexA(g.col, (.06 * a0).toFixed(3)); c.lineWidth = ww * 3; c.stroke(g.P);
-    c.globalCompositeOperation = 'source-over'; c.strokeStyle = mix(bright, BG, 1 - lum); c.lineWidth = ww; c.stroke(g.P);
-    if (d > .3 && !g.mesh) { c.setLineDash([ww * .35, ww * 2.4]); c.lineDashOffset = -simT * ww * 1.8 - gi * ww; c.strokeStyle = mix(mix(g.col, '#ffffff', .45), BG, 1 - lum * .8); c.lineWidth = ww * 1.4; c.stroke(g.P); c.setLineDash([]); }
+    c.globalCompositeOperation = 'source-over'; c.strokeStyle = lumCol(bright, lum * WIRE.lum); c.lineWidth = ww; c.stroke(g.P);
+    if (d > .3 && !g.mesh) { c.setLineDash([ww * .35, ww * 2.4]); c.lineDashOffset = -simT * ww * 1.8 - gi * ww; c.strokeStyle = lumCol(mix(g.col, '#ffffff', .45), lum * .8 * WIRE.lum); c.lineWidth = ww * 1.4; c.stroke(g.P); c.setLineDash([]); }
   });
+  c.globalAlpha = 1;
   if (selNode) { c.strokeStyle = 'rgba(255,255,255,.9)'; c.lineWidth = 1.2 * RS; c.beginPath(); adj[selNode.id].forEach(v => { const o = byId[v], e = edges[edgeIdx[selNode.id + '|' + v]]; if (!o.gone) { if (e && e.sp) wirePath(c, e.sp); else { c.moveTo(selNode.x, selNode.y); c.lineTo(o.x, o.y); } } }); c.stroke(); }
   c.restore();
   const boost = drawBolt(c) || new Map();
@@ -2586,6 +2597,8 @@ showNode(null);
 /* ---------- commandes ---------- */
 const playBtn = document.getElementById('b-play'), camBtn = document.getElementById('b-cam'), toileBtn = document.getElementById('b-toile');
 toileBtn.textContent = SPH ? 'Toile : sphère' : 'Toile : à plat'; toileBtn.setAttribute('aria-pressed', String(SPH));
+// le réglage des fils (lumière, épaisseur, opacité)
+[['lum', 'w-lum'], ['width', 'w-width'], ['alpha', 'w-alpha']].forEach(([k, id]) => { const el = document.getElementById(id); el.value = WIRE[k]; el.addEventListener('input', () => { WIRE[k] = +el.value; try { localStorage.setItem('araignee-fils-style', JSON.stringify(WIRE)); } catch (e) {} }); });
 // les fils : ondulés comme des câbles, ou droits (gardé d'une ouverture à l'autre)
 const filsBtn = document.getElementById('b-fils'), paintFils = () => { filsBtn.textContent = STRAIGHT ? 'Fils : droits' : 'Fils : ondulés'; filsBtn.setAttribute('aria-pressed', String(STRAIGHT)); };
 filsBtn.addEventListener('click', () => { STRAIGHT = !STRAIGHT; try { localStorage.setItem('araignee-fils', STRAIGHT ? 'droits' : 'ondules'); } catch (e) {} paintFils(); }); paintFils();
