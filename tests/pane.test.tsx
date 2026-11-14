@@ -178,7 +178,8 @@ test("une modification : l'araignée saute sur la page et tisse les vraies ligne
   for (const c of clips) { expect(c.svg.length).toBeLessThan(131072); expect(c.svg).not.toContain('NaN') }
   expect(all).toContain('crawler · modification')
   expect(all).toContain('return items.reduce(add, 0)')
-  expect(all).toContain('  return 0')
+  // l'indentation reste visible (espaces insécables : un dessin efface les espaces en tête de ligne)
+  expect(all).toContain('\u00a0\u00a0return 0')
   expect(all).toContain('tissage')
 })
 
@@ -290,7 +291,7 @@ test("la caméra du panneau : le zoom reste, elle suit l'agent qui travaille, et
   const W: any = E.createWorld(g, 'fusion')
   W.aspect = .63
   E.sphereInit(W)
-  const vb = (svg: string) => +svg.match(/viewBox="[-\d.]+ [-\d.]+ ([\d.]+)/)![1]
+  const vb = (svg: string) => +svg.match(/viewBox="[-\d.]+ [-\d.]+ ([\d.]+)/)![1]!
   const w1 = vb(E.idleClip(W).svg)
   E.setZoom(W, 2)
   expect(Math.abs(vb(E.idleClip(W).svg) - w1 / 2)).toBeLessThan(1)
@@ -374,4 +375,127 @@ test("fermée avec /araignee-fermer, l'araignée ne se rouvre pas toute seule ; 
   expect(['vide', 'laissé']).toContain(band)
   await $.command.run({ command: 'araignee', args: '' } as any)
   expect(opens).toBe(before + 1)
+})
+
+// un petit projet en dossiers, lu par le plugin comme sur le disque (sans Graphify)
+function treeProject(on: any, files: Record<string, string>) {
+  on('command.register', () => ({ value: { command: 'araignee' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [] }))
+  on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/proj' }))
+  on('session.id', () => ({ value: 'sess-test' }))
+  on('env.get', (_: any, e: any) => ({ value: e.name === 'HOME' || e.key === 'HOME' ? '/home/u' : undefined }) as any)
+  on('fs.read', (_: any, e: any) => {
+    const p = String(e.path)
+    if (p.endsWith('/viewer/viewer.html')) return { value: '<!--SID-->' }
+    const rel = p.replace(/^\/proj\//, '')
+    return rel in files ? { value: files[rel] } : { deny: 'absent' } as any
+  })
+  on('fs.list', (_: any, e: any) => {
+    const dir = String(e.path).replace(/^\/proj\/?/, ''), pre = dir ? dir + '/' : '', seen = new Map<string, any>()
+    for (const [p, t] of Object.entries(files)) if (p.startsWith(pre)) { const rest = p.slice(pre.length), name = rest.split('/')[0]!; seen.set(name, rest.includes('/') ? { name, kind: 'dir', size: 0, mtimeMs: 1, isLink: false } : { name, kind: 'file', size: t.length, mtimeMs: 1, isLink: false }) }
+    return { value: [...seen.values()] }
+  })
+  on('store.get', () => ({ value: undefined }))
+  on('store.set', () => ({ value: undefined }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as any)
+  on('clock.after', () => ({ value: undefined }))
+  on('clock.every', () => ({ value: undefined }))
+}
+// les événements que la grande toile a reçus (le dernier fichier live-<session>.js écrit)
+const liveOf = (writes: any[]) => { const w = writes.filter(x => /live-[^/]*\.js$/.test(x.path)).pop(); const m = w && /__araigneeLive\((.*)\);\s*$/s.exec(w.text); return m ? JSON.parse(m[1]!).events : [] }
+
+test("un fichier créé par Claude : ses imports deviennent de nouveaux fils ; une modification n'ajoute que les imports qu'elle apporte", async ($, on) => {
+  const files: Record<string, string> = { 'src/a.ts': 'export const a = 1\n', 'src/b.ts': 'export const b = 2\n', 'README.md': '# projet\n' }
+  treeProject(on, files)
+  const writes: any[] = []
+  on('fs.write', (_: any, e: any) => { writes.push(e); return { value: undefined } })
+  on('tool.call', (_: any, e: any) => {
+    if (e.tool === 'Write') files[String(e.file_path).replace('/proj/', '')] = String(e.content)
+    if (e.tool === 'Edit') { const k = String(e.file_path).replace('/proj/', ''); files[k] = (files[k] || '').replace(e.old_string, e.new_string) }
+    return { result: {}, text: 'ok' }
+  })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'araignee-plein-ecran', args: '' } as any)
+  // un nouveau fichier qui importe a et b : son nœud part vers la grande toile avec ses deux fils
+  await $.tool.call({ tool: 'Write', file_path: '/proj/src/c.ts', content: "import { a } from './a'\nimport { b } from './b'\nexport const c = a + b\n" })
+  await flush()
+  let ev = liveOf(writes).filter((x: any) => x.tool === 'Write').pop()
+  expect(ev).toBeDefined()
+  expect(ev.nodes.map((n: any) => n.id)).toContain('src/c.ts')
+  expect(ev.edges).toEqual([['src/c.ts', 'src/a.ts'], ['src/c.ts', 'src/b.ts']])
+  // une modification qui ajoute un import : un seul nouveau fil
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/src/b.ts', old_string: 'export const b = 2', new_string: "import { a } from './a'\nexport const b = a + 2", replace_all: false })
+  await flush()
+  ev = liveOf(writes).filter((x: any) => x.tool === 'Edit').pop()
+  expect(ev.edges).toEqual([['src/b.ts', 'src/a.ts']])
+  // une modification qui ne touche pas aux imports : aucun nouveau fil
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/src/c.ts', old_string: 'a + b', new_string: 'b + a', replace_all: false })
+  await flush()
+  ev = liveOf(writes).filter((x: any) => x.tool === 'Edit').pop()
+  expect(ev.label).toContain('c.ts')
+  expect(ev.edges).toBeUndefined()
+  // un nouveau README dans un sous-dossier n'est pas pris pour celui de la racine
+  await $.tool.call({ tool: 'Write', file_path: '/proj/docs/README.md', content: '# docs\n' })
+  await flush()
+  ev = liveOf(writes).filter((x: any) => x.tool === 'Write').pop()
+  expect(ev.t).toBe('docs/README.md')
+})
+
+test("un geste de l'araignée elle-même (réfléchir, une ronde) : vers un fichier même loin, jamais un fichier supprimé ramené", () => {
+  const g: any = E.graphFromTree(['README.md', 'src/a.ts', 'src/b.ts', 'docs/d.md'], 'proj')
+  const W: any = E.createWorld(g, 'fusion')
+  // depuis README (aucun fichier voisin direct) comme depuis le terminal, elle trouve un fichier où aller
+  for (const here of ['README.md', '::terminal']) {
+    W.actors.main.cur = here
+    for (let k = 0; k < 20; k++) { const p = E.wanderTarget(W, 'pense'); expect(typeof p).toBe('string'); expect(p).not.toBe(here) }
+  }
+  // un fichier supprimé reste supprimé, même s'il vient d'être modifié
+  const b = g.byId['src/b.ts']; b.gone = true
+  W.actors.main.cur = 'README.md'
+  for (let k = 0; k < 30; k++) expect(E.wanderTarget(W, 'ronde', ['src/b.ts'])).not.toBe('src/b.ts')
+  expect(b.gone).toBe(true)
+  // ni de nouveau fil vers lui ; un fil vers un fichier vivant, par son chemin
+  expect(E.addDeps(W, [['src/a.ts', 'src/b.ts']])).toEqual([])
+  expect(E.addDeps(W, [['src/a.ts', 'docs/d.md']])).toEqual([['src/a.ts', 'docs/d.md']])
+  // un nouveau fichier s'accroche à son dossier
+  const n = E.nodeForPath(g, 'src/neuf.ts')
+  expect(g.adj[n.id]).toEqual(['src/'])
+})
+
+test("une écriture plus longue que six lignes : toutes ses lignes finissent écrites ; pressée, elle abrège ; les lignes barrées restent sur la page", () => {
+  const g: any = E.graphFromTree(['src/a.ts', 'src/b.ts', 'docs/d.md'], 'proj')
+  const mk = () => { const W: any = E.createWorld(g, 'fusion'); W.aspect = .63; E.sphereInit(W); return W }
+  const lines = ["import { a } from './a'", "import { b } from './b'", '', 'export function main() {', '  const x = a()', '  const y = b(x)', '  log(x, y)', '  return x + y', '}', '', 'export const LIMIT = 10', 'export default main']
+  const run = (hurry: boolean, ev: any) => { const W = mk(); expect(E.crawlBegin(W, ev)).toBe(true); E.makeClip(W, ev); const clips: any[] = []; for (let k = 0; k < 14 && E.crawling(W); k++) clips.push(E.crawlClip(W, hurry)); expect(E.crawling(W)).toBe(false); return clips }
+  const write = () => ({ tool: 'Write', path: 'src/c.ts', label: 'Write', lines: ['+'], page: { kind: 'write', start: 1, lines, hi: [0, lines.length - 1] } })
+  const calm = run(false, write()), last = calm[calm.length - 1].svg
+  for (const c of calm) { expect(c.svg.length).toBeLessThan(131072); expect(c.svg).not.toContain('NaN') }
+  // les lignes au-delà des six tissées apparaissent quand elle a fini
+  for (const l of ['\u00a0\u00a0return x + y', 'export const LIMIT = 10', 'export default main']) expect(last).toContain(l)
+  const dur = (cs: any[]) => cs.reduce((s, c) => s + c.dur, 0)
+  const hurried = run(true, write())
+  expect(dur(hurried)).toBeLessThan(dur(calm) * .6)
+  expect(hurried[hurried.length - 1].svg).toContain('export default main')
+  // quatre lignes remplacées par une seule : une seule ligne barrée, à la place de la nouvelle
+  const edit = { tool: 'Edit', path: 'src/b.ts', label: 'Edit', lines: ['+'], page: { kind: 'edit', start: 1, lines: ['const k1 = 1', 'const k2 = 2', 'function f() {', '  return total', '}', 'const k3 = 3', 'const k4 = 4', 'const k5 = 5'], hi: [3, 3], del: ['  if (x) {', '    total += 1', '  }', '  return total + 0'] } }
+  const first = run(false, edit)[0].svg
+  expect(first).toContain('\u00a0\u00a0if (x) {')
+  expect(first).not.toContain('total += 1')
+  expect(first).toContain('−4')
+})
+
+test("le texte d'une page reste un dessin valide : ni caractères de contrôle, ni moitié d'émoji", () => {
+  const g: any = E.graphFromTree(['logs/run.log', 'src/a.ts'], 'proj')
+  const W: any = E.createWorld(g, 'fusion'); W.aspect = .63
+  const lines = ['\u001b[32mok\u001b[0m tout passe', 'nul \u0000 ici', 'émoji coupé ' + '😀'.repeat(20), 'fin']
+  const ev: any = { tool: 'Read', path: 'logs/run.log', label: 'Read · run.log\u0007', lines: ['x'], page: { kind: 'read', start: 1, lines } }
+  expect(E.crawlBegin(W, ev)).toBe(true)
+  const all = [E.makeClip(W, ev).svg]
+  for (let k = 0; k < 8 && E.crawling(W); k++) all.push(E.crawlClip(W, false)!.svg)
+  const svg = all.join('')
+  expect(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(svg)).toBe(false)
+  expect(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(svg)).toBe(false)
+  expect(svg).toContain('tout passe')
 })

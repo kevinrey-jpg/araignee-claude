@@ -13,7 +13,7 @@ const lerp2 = (a, b, t) => ({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t) })
 const lerp3 = (a, b, t) => ({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t) })
 const P3 = p => ({ x: p.x, y: p.y - p.z * TILT })
 const f1 = v => (Math.round(v * 10) / 10).toString()
-const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+const esc = s => String(s).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 } }
 function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) } return h >>> 0 }
 
@@ -38,7 +38,7 @@ export function applyMemory(W, mem, sizes, now = Date.now()) {
 // la taille du cocon suit le nombre de lignes du fichier
 export const cocoonScale = n => clamp(.75 + Math.log10(1 + (n.lines || 20)) * .32, .75, 1.85)
 
-export const TOOL_COLOR = { Read: '#7df9ff', Edit: '#ff6be6', Write: '#ff6be6', MultiEdit: '#ff6be6', NotebookEdit: '#ff6be6', Grep: '#ffd36b', Glob: '#ffd36b', Bash: '#9dff8a', WebSearch: '#a8b4ff', WebFetch: '#a8b4ff', Web: '#a8b4ff', Mood: '#9dff8a', Delete: '#ff6b8a', Repair: '#ffffff', Leave: '#c89bff' }
+export const TOOL_COLOR = { Read: '#7df9ff', Edit: '#ff6be6', Write: '#ff6be6', MultiEdit: '#ff6be6', NotebookEdit: '#ff6be6', Grep: '#ffd36b', Glob: '#ffd36b', Bash: '#9dff8a', WebSearch: '#a8b4ff', WebFetch: '#a8b4ff', Web: '#a8b4ff', Mood: '#9dff8a', Delete: '#ff6b8a', Repair: '#ffffff', Leave: '#c89bff', 'Réfléchit': '#c89bff', Ronde: '#c89bff', Relit: '#c89bff' }
 const PALETTE = ['#ff6b8a', '#ffb347', '#c77dff', '#7df9ff', '#9dff8a', '#ff6be6', '#ffd36b', '#a8b4ff', '#e8e4ff', '#5ef0c8', '#ff8a5c', '#8fb3ff']
 
 /* ---------------- la toile ---------------- */
@@ -62,7 +62,7 @@ export function graphFromGraphify(json, maxNodes = 650) {
   rawE.forEach(e => { const a = eid(e.source ?? e.from), b = eid(e.target ?? e.to); if (ids.has(a) && ids.has(b) && a !== b) edges.push({ a, b, kind: /contain|define|has|member/.test(String(e.relation || e.type || '')) ? 'tree' : 'dep' }) })
   return finishGraph(nodes, edges, comms)
 }
-export function graphFromTree(paths, projectName, deps = []) {
+export function graphFromTree(paths, projectName, deps: [string, string][] = []) {
   const nodes = [], edges = [], comms = [], seen = new Set(), commOf = {}
   const add = n => { if (!seen.has(n.id)) { seen.add(n.id); nodes.push(n) } }
   add({ id: '.', label: projectName || 'projet', kind: 'dir', comm: 0 }); comms.push({ name: projectName || 'Projet' })
@@ -77,7 +77,8 @@ export function graphFromTree(paths, projectName, deps = []) {
   // les vraies relations : qui importe qui
   for (const [a, b] of deps) if (seen.has(a) && seen.has(b) && a !== b) edges.push({ a, b, kind: 'dep' })
   const uniq = new Set(), E = edges.filter(e => { const k = e.a + '|' + e.b, k2 = e.b + '|' + e.a; if (uniq.has(k) || uniq.has(k2)) return false; uniq.add(k); return true })
-  return finishGraph(nodes, E, comms)
+  const g = finishGraph(nodes, E, comms); g.exactPaths = true
+  return g
 }
 function finishGraph(nodes, edges, comms) {
   const g = { nodes, edges, comms, byId: {}, adj: {}, edgeIdx: {} }
@@ -211,21 +212,31 @@ function route(g, path) {
   return { pts, cum, total, edgesUsed }
 }
 function along(r, d) { d = clamp(d, 0, r.total); let i = 1; while (i < r.cum.length - 1 && r.cum[i] < d) i++; const a = r.pts[i - 1], b = r.pts[i], s = (r.cum[i] - r.cum[i - 1]) || 1; return lerp2(a, b, (d - r.cum[i - 1]) / s) }
+// le nœud d'un chemin, sans rien y changer : ni un fichier supprimé ramené, ni un nouveau cocon
+export function lookPath(g, rel) {
+  if (!rel) return null
+  rel = rel.replace(/\\/g, '/').replace(/^\.\//, '')
+  // (sous Windows, un chemin peut arriver avec une autre casse : même fichier)
+  const base = rel.split('/').pop(), low = rel.toLowerCase(), exact = g.nodes.find(x => x.path === rel) || g.nodes.find(x => x.path && x.path.toLowerCase() === low)
+  if (exact || g.exactPaths) return exact || null
+  return g.nodes.find(x => x.path && (x.path.endsWith('/' + rel) || rel.endsWith('/' + x.path))) || g.nodes.find(x => x.kind === 'file' && x.label === base) || null
+}
 // trouve (ou ajoute) le nœud d'un fichier touché par Claude
 export function nodeForPath(g, rel) {
   if (!rel) return null
   rel = rel.replace(/\\/g, '/').replace(/^\.\//, '')
   const base = rel.split('/').pop()
-  let n = g.nodes.find(x => x.path === rel) || g.nodes.find(x => x.path && (x.path.endsWith('/' + rel) || rel.endsWith('/' + x.path))) || g.nodes.find(x => x.kind === 'file' && x.label === base)
+  let n = lookPath(g, rel)
   if (n) {
     if (n.gone) { n.gone = false; n.isNew = true; g.adj[n.id].forEach(v => { const e = g.edges[g.edgeIdx[n.id + '|' + v]]; if (e) { e.broken = null; e.hidden = false } }) }
     return n
   }
-  // fichier inconnu : un nouveau cocon, accroché au nœud le plus proche par le nom de dossier
-  const dir = rel.split('/').slice(0, -1).join('/')
-  // jamais accroché à un fichier supprimé : il ne serait pas joignable
-  const alive = g.nodes.filter(x => x.kind === 'file' && !x.gone)
-  const anchor = g.nodes.find(x => !x.gone && x.path && dir && x.path.startsWith(dir + '/')) || alive[hash(rel) % Math.max(1, alive.length)] || g.nodes[0]
+  // fichier inconnu : un nouveau cocon, accroché à son dossier (ou au plus proche dossier parent connu, ou à un fichier
+  // voisin quand la toile n'a pas de dossiers) ; jamais à un fichier supprimé : il ne serait pas joignable
+  const parts = rel.split('/').slice(0, -1), alive = g.nodes.filter(x => x.kind === 'file' && !x.gone)
+  let anchor = null
+  for (let k = parts.length; k > 0 && !anchor; k--) { const d = parts.slice(0, k).join('/'), dn = g.byId[d + '/']; anchor = (dn && !dn.gone ? dn : null) || g.nodes.find(x => !x.gone && x.path && x.path.startsWith(d + '/')) || null }
+  anchor = anchor || (g.exactPaths && g.byId['.']) || alive[hash(rel) % Math.max(1, alive.length)] || g.nodes[0]
   const a = hash(rel) % 360 * DEG
   n = { id: rel, label: base, kind: 'file', comm: anchor.comm, path: rel, x: anchor.x + Math.cos(a) * 55, y: anchor.y + Math.sin(a) * 55, ang: a, visited: false, mod: false, wrap: 0, lang: langColor(rel), heat: 0, edits: 0 }
   if (g.W && g.W.sph) place3(g.W, n, anchor)
@@ -626,7 +637,7 @@ function joinPath(dir, rel) {
   return out.join('/')
 }
 // les fichiers qu'un fichier utilise, parmi ceux du projet (all : ensemble des chemins ; byBase : nom de fichier → chemins)
-export function importsOf(path, text, all, byBase) {
+export function importsOf(path, text, all, byBase): string[] {
   const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '', found = new Set(), src = String(text || '').slice(0, 200000)
   const add = p => { if (p && p !== path && all.has(p)) found.add(p) }
   // un module par son nom seul : on préfère celui qui est dans le même dossier de premier niveau
@@ -828,7 +839,7 @@ export function makeClip(W, ev) {
   }
   const walkTo = ['Read', 'Edit', 'Write', 'Bash', 'Repair'].includes(ev.tool) ? target : null
   // une lecture parcourue en crawler : l'araignée ne s'attarde pas sur le fichier, elle saute ensuite sur la page
-  const actDur = ev.crawl ? .5 : ev.tool === 'Mood' ? (ev.ok ? (ev.big ? 2.6 : 1.7) : 2.3) : (ACT_DUR[ev.tool] || 1.5) / Math.sqrt(pace)
+  const actDur = ev.crawl ? .5 : ev.auto ? .9 : ev.tool === 'Mood' ? (ev.ok ? (ev.big ? 2.6 : 1.7) : 2.3) : (ACT_DUR[ev.tool] || 1.5) / Math.sqrt(pace)
   const act = { tool: ev.tool, n: target, dur: actDur, ok: ev.ok, at }
   const frames = [], DT = 1 / 60, rec = Math.round(60 / FPS), edgeNear = new Set(), sounds = []
   let step = 0
@@ -1571,34 +1582,46 @@ export function crawlBegin(W, ev) {
   const rows = pg.lines.slice(s0, s0 + R).map(l => String(l ?? '').replace(/\t/g, '  ').slice(0, CR.MAXC))
   let c = 0; const cum = [0, ...rows.map(l => (c += Math.max(4, l.trimEnd().length - Math.max(0, l.search(/\S/)))))]
   const words = rows.reduce((s, l) => s + (l.match(/[\wÀ-ÿ]+/g) || []).length, 0)
-  let marks = findMarks(rows, pg.kind || 'read', CR.MAXC, /\.(md|markdown|txt)$/i.test(ev.path))
   // les lignes à tisser (celles qui sont nouvelles et visibles, au plus 6 non vides), et ce qui en est déjà tissé
   const wrows = weave ? rows.map((_, i) => i).filter(i => s0 + i >= pg.hi[0] && s0 + i <= pg.hi[1]) : []
   const typeRows = wrows.filter(i => rows[i].trim()).slice(0, 6)
-  if (weave) { marks = marks.filter(m => typeRows.includes(m.row)) }
-  const typed = rows.map((l, i) => wrows.includes(i) && typeRows.includes(i) ? 0 : l.length)
-  W.crawl = { pi: 0, weave, wrows, typeRows, typed, del: weave && pg.kind === 'edit' ? (pg.del || []).slice(0, 4).map(l => String(l ?? '').replace(/\t/g, '  ').slice(0, CR.MAXC)) : [], kind: pg.kind, actor: ev.actor || 'main', n, pg, s0, rows, cum, tot: c || 1, words, marks, t: 0, readT: clamp(R * .5, 3, 7), phase: 'in', seg: 0, hit: [], rowAt: rows.map(() => -1) }
+  // les mots-clés : en tissant, seulement ceux des lignes nouvelles
+  const marks = findMarks(weave ? rows.map((l, i) => wrows.includes(i) ? l : '') : rows, pg.kind || 'read', CR.MAXC, /\.(md|markdown|txt)$/i.test(ev.path))
+  // les lignes nouvelles ne sont pas encore là : six se tissent sous ses pas, les autres apparaissent quand elle a fini
+  const typed = rows.map((l, i) => wrows.includes(i) ? 0 : l.length)
+  // les anciennes lignes, barrées, s'affichent à la place des nouvelles : jamais plus qu'il n'y a de lignes nouvelles
+  // visibles (sinon elles recouvriraient d'autres lignes, ou déborderaient de la page)
+  W.crawl = { pi: 0, auto: !!ev.auto, weave, wrows, typeRows, typed, del: weave && pg.kind === 'edit' ? (pg.del || []).slice(0, Math.min(4, wrows.length)).map(l => String(l ?? '').replace(/\t/g, '  ').slice(0, CR.MAXC)) : [], kind: pg.kind, actor: ev.actor || 'main', n, pg, s0, rows, cum, tot: c || 1, words, marks, t: 0, readT: clamp(R * .5, 3, 7), phase: 'in', seg: 0, hit: [], rowAt: rows.map(() => -1) }
   ev.crawl = true
   return true
 }
 export const crawling = W => !!W.crawl
 // où aller quand Claude réfléchit ou quand tout est calme : un fichier voisin de l'araignée (réflexion), ou l'un des
 // fichiers les plus actifs de la séance (ronde) ; jamais celui où elle est déjà
-export function wanderTarget(W, mode, recent = []) {
+export function wanderTarget(W, mode, recent: string[] = []) {
   const g = W.g, a = W.actors.main, here = a.cur, ok = n => n && !n.gone && n.kind === 'file' && n.id !== here && n.path
   if (mode === 'ronde') {
     const hot = g.nodes.filter(ok).sort((p, q) => ((q.heat || 0) + (q.visited ? .2 : 0)) - ((p.heat || 0) + (p.visited ? .2 : 0)))
-    const fromRecent = recent.map(p => nodeForPath(g, p)).filter(ok)
+    const fromRecent = recent.map(p => lookPath(g, p)).filter(ok)
     const pool = [...fromRecent, ...hot.slice(0, 6)]; return pool.length ? pool[Math.floor(Math.random() * Math.min(pool.length, 5))].path : null
   }
-  const near = (g.adj[here] || []).map(id => g.byId[id]).filter(ok), two = near.flatMap(n => g.adj[n.id].map(id => g.byId[id])).filter(ok)
-  const pool = near.length ? near : two; return pool.length ? pool[Math.floor(Math.random() * pool.length)].path : null
+  // les fichiers les plus proches dans la toile : un voisin direct, sinon en passant par un dossier, un symbole ou le
+  // terminal (jamais par un fichier supprimé)
+  let ring = [here]; const seen = new Set(ring)
+  for (let d = 0; d < 4 && ring.length; d++) {
+    const nx = []; for (const id of ring) for (const v of g.adj[id] || []) if (!seen.has(v) && g.byId[v] && !g.byId[v].gone) { seen.add(v); nx.push(v) }
+    const pool = nx.map(id => g.byId[id]).filter(ok); if (pool.length) return pool[Math.floor(Math.random() * pool.length)].path
+    ring = nx
+  }
+  return null
 }
 // de nouvelles relations entre fichiers (un import ajouté pendant que Claude écrit) : de nouveaux fils, tout chauds
+// (chaque bout : l'identifiant d'un nœud ou le chemin d'un fichier ; jamais vers un fichier supprimé)
 export function addDeps(W, pairs) {
-  const g = W.g, added = []
-  for (const [a, b] of pairs) {
-    if (!g.byId[a] || !g.byId[b] || a === b || g.edgeIdx[a + '|' + b] !== undefined) continue
+  const g = W.g, added = [], byPath = new Map(g.nodes.filter(n => n.path).map(n => [n.path, n])), node = k => g.byId[k] || byPath.get(k)
+  for (const [pa, pb] of pairs) {
+    const A = node(pa), B = node(pb); if (!A || !B || A.gone || B.gone || A === B) continue
+    const a = A.id, b = B.id; if (g.edgeIdx[a + '|' + b] !== undefined) continue
     const e = { a, b, kind: 'dep', trail: 1, trailAt: Date.now() }; g.edges.push(e); const i = g.edges.length - 1; g.edgeIdx[a + '|' + b] = i; g.edgeIdx[b + '|' + a] = i; g.adj[a].push(b); g.adj[b].push(a); added.push([a, b])
   }
   if (added.length) buildGeometry(g)
@@ -1653,7 +1676,7 @@ function crawlPath(C, lay, sp) {
 export function crawlClip(W, hurry) {
   const C = W.crawl; if (!C) return null
   const a = W.actors[C.actor]; if (!a || C.n.gone) { W.crawl = null; return null }
-  const sp = a.sp, g = W.g, frames = [], DT = 1 / 60, rec = Math.round(60 / FPS), lay = crawlLayout(C), S = SKINS[W.skin], sounds = [], over = []
+  const sp = a.sp, g = W.g, frames = [], DT = 1 / 60, rec = Math.round(60 / FPS), lay = crawlLayout(C), S = SKINS[W.skin], sounds = [], over = [], SEG = C.auto ? CR.SEG / 2 : CR.SEG
   // d'autres actions attendent, ou la lecture dure : elle finit vite (encore un ou deux mots)
   if (C.seg >= 6) hurry = true
   // chaque patte se pose sur une lettre du texte (jamais sur un blanc ni une ligne vide) ; un pied posé sur un mot
@@ -1666,7 +1689,7 @@ export function crawlClip(W, hurry) {
   const pageEnv = {
     snap: p => { let b = null, bd = Infinity; for (const c of cells) { if (!solid(c)) continue; const d = (c.x - p.x) ** 2 + (c.y - p.y) ** 2 * 1.6; if (d < bd) { bd = d; b = c } } return b ? { x: b.x, y: b.y } : p },
     depth: () => 0,
-    onPlant: f => { if (C.phase !== 'read') return; const m = markAt(f); if (m) { m.at = ct; m.seg = C.seg } }
+    onPlant: f => { if (C.phase !== 'read') return; const m = markAt(f); if (m && (!C.weave || C.typed[m.row] >= m.c1)) { m.at = ct; m.seg = C.seg } }
   }
   let step = 0, ct = 0, lift = 0, spd = 0, tuck = 0, stretch = 0
   // la caméra cadre la page entière, et descend un peu avec l'araignée au fil des lignes
@@ -1687,11 +1710,17 @@ export function crawlClip(W, hurry) {
   // Les lignes s'éclairent là où elle passe.
   if (!C.path) C.path = crawlPath(C, lay, sp)
   const VMAX = C.weave ? (hurry ? 160 : 85) : 105, wordAt = m => ({ x: lay.tx + (m.c0 + m.c1) / 2 * CR.CW, y: lay.row(m.row) })
-  while (C.phase === 'read' && ct < CR.SEG) {
+  while (C.phase === 'read' && ct < SEG) {
     C.t += DT
-    if (hurry && !C.hurried && !C.weave) { C.hurried = true; C.path = C.path.slice(0, C.pi + 2) }
+    if (hurry && !C.hurried) { C.hurried = true; C.path = C.path.slice(0, !C.weave ? C.pi + 2 : C.pi % 2 ? C.pi + 1 : Math.max(2, C.pi)) }
     const tgt = C.path[C.pi]
-    if (!tgt) { for (let i = 0; i < C.rows.length; i++) if (C.rowAt[i] < 0) C.rowAt[i] = 1, C.hit.push({ row: i, at: ct, seg: C.seg }); C.typeRows.forEach(r => { if (C.typed[r] < C.rows[r].length) { const w = C.tw[r] || (C.tw[r] = { t0: ct, c0: C.typed[r] }); C.typed[r] = C.rows[r].length; w.t1 = ct + .2; w.c1 = C.typed[r] } }); C.phase = 'out'; break }
+    if (!tgt) {
+      for (let i = 0; i < C.rows.length; i++) if (C.rowAt[i] < 0) C.rowAt[i] = 1, C.hit.push({ row: i, at: ct, seg: C.seg })
+      C.typeRows.forEach(r => { if (C.typed[r] < C.rows[r].length) { const w = C.tw[r] || (C.tw[r] = { t0: ct, c0: C.typed[r] }); C.typed[r] = C.rows[r].length; w.t1 = ct + .2; w.c1 = C.typed[r] } })
+      // le tissage fini : les autres lignes nouvelles apparaissent, et les mots-clés qu'elle n'a pas encore marqués
+      if (C.weave) { C.wrows.forEach(r => { C.typed[r] = C.rows[r].length }); C.restAt = { at: ct + .1, seg: C.seg }; for (const m of C.marks) if (m.at === undefined) { m.at = ct + .2; m.seg = C.seg } }
+      C.phase = 'out'; break
+    }
     // où se poser : juste avant le mot, du côté d'où elle arrive, pour que sa patte l'atteigne
     const wc = tgt.m ? wordAt(tgt.m) : tgt
     const stand = wc
@@ -1756,8 +1785,10 @@ export function crawlClip(W, hurry) {
     tick()
   }
   let fadeOut = -1
-  if (C.phase === 'out' && ct < CR.SEG + .1) {
-    for (let k = 0; k < 6; k++) tick()
+  if (C.phase === 'out' && ct < SEG + .1) {
+    // les lignes qui viennent d'apparaître d'un coup : elle les laisse voir un instant avant de repartir
+    const rest = C.weave && C.wrows.some(r => !C.typeRows.includes(r) && C.rows[r].trim())
+    for (let k = 0; k < (rest ? 45 : 6); k++) tick()
     const home = restSpot(W, a) || C.n; fadeOut = ct; jump(home, .6)
     sp.env = C.env0; sp.setMorph(C.m0); sp.x = home.x; sp.y = home.y; sounds.push({ at: ct, name: 'pluck' })
     for (let k = 0; k < 4; k++) tick()
@@ -1774,11 +1805,17 @@ export function crawlClip(W, hurry) {
 function weaveSVG(C, lay, seg, firstSeg, at) {
   let s = '', added = 0
   C.rows.forEach((ln, i) => {
-    const y = lay.row(i) + CR.FS * .35, isNew = C.wrows.includes(i), txt = esc(ln).replace(/^ +/, m => ' '.repeat(m.length))
+    const y = lay.row(i) + CR.FS * .35, isNew = C.wrows.includes(i), txt = esc(ln).replace(/^ +/, m => '\u00a0'.repeat(m.length))
     s += `<text x="${f1(lay.tx - 3)}" y="${f1(y)}" font-size="3.6" text-anchor="end" fill="${isNew ? 'rgba(157,255,138,.75)' : 'rgba(150,140,190,.5)'}">${C.pg.start + C.s0 + i}</text>`
     if (!isNew) { s += `<text x="${f1(lay.tx)}" y="${f1(y)}" font-size="${CR.FS}" fill="rgba(205,198,235,.55)">${txt}</text>`; return }
     s += `<rect x="${f1(lay.tx - 1.5)}" y="${f1(lay.row(i) - CR.LH * .5)}" width="${f1(CR.MAXC * CR.CW + 2)}" height="${f1(CR.LH)}" fill="#9dff8a" fill-opacity=".08"/>`
-    if (!C.typeRows.includes(i)) return
+    if (!C.typeRows.includes(i)) {
+      const R = C.restAt; if (!R || R.seg > seg || !ln.trim()) return
+      // (l'apparition sur un groupe autour du texte : un élément avant le texte lui ferait perdre son indentation)
+      const t = `<text x="${f1(lay.tx)}" y="${f1(y)}" font-size="${CR.FS}" fill="#e6ffe0">${txt}</text>`
+      s += R.seg === seg ? `<g opacity="0"><animate attributeName="opacity" values="0;1" dur=".35s" ${at(R.at)} fill="freeze"/>${t}</g>` : t
+      return
+    }
     const w0 = (C.tStart[i] || 0) * CR.CW, w = C.tw[i], id = 'wv' + seg + '_' + i
     if (C.tStart[i] >= ln.length) added++
     else if (w) added += w.c1 >= ln.length ? 1 : 0
@@ -1787,8 +1824,8 @@ function weaveSVG(C, lay, seg, firstSeg, at) {
   })
   // les anciennes lignes, barrées, à la place des nouvelles, qui s'effacent avant le tissage
   if (firstSeg && C.del.length) C.del.forEach((ln, k) => {
-    const i = C.wrows[k] ?? (C.wrows[0] ?? 0) + k, y = lay.row(i) + CR.FS * .35, len = Math.min(ln.length, CR.MAXC) * CR.CW
-    s += `<g><text x="${f1(lay.tx)}" y="${f1(y)}" font-size="${CR.FS}" fill="#ff8a9e">${esc(ln).replace(/^ +/, m => ' '.repeat(m.length))}</text><path d="M${f1(lay.tx)} ${f1(lay.row(i))}h${f1(len)}" stroke="#ff6b8a" stroke-width=".7" stroke-dasharray="${f1(len)}" stroke-dashoffset="${f1(len)}"><animate attributeName="stroke-dashoffset" values="${f1(len)};0" dur=".35s" begin=".75s" fill="freeze"/></path><animate attributeName="opacity" values="1;0" dur=".5s" begin="1.25s" fill="freeze"/></g>`
+    const i = C.wrows[k], y = lay.row(i) + CR.FS * .35, len = Math.min(ln.length, CR.MAXC) * CR.CW
+    s += `<g><text x="${f1(lay.tx)}" y="${f1(y)}" font-size="${CR.FS}" fill="#ff8a9e">${esc(ln).replace(/^ +/, m => '\u00a0'.repeat(m.length))}</text><path d="M${f1(lay.tx)} ${f1(lay.row(i))}h${f1(len)}" stroke="#ff6b8a" stroke-width=".7" stroke-dasharray="${f1(len)}" stroke-dashoffset="${f1(len)}"><animate attributeName="stroke-dashoffset" values="${f1(len)};0" dur=".35s" begin=".75s" fill="freeze"/></path><animate attributeName="opacity" values="1;0" dur=".5s" begin="1.25s" fill="freeze"/></g>`
   })
   const hits = C.marks.filter(m => m.at !== undefined && m.seg <= seg)
   hits.forEach(m => {
@@ -1802,7 +1839,7 @@ function weaveSVG(C, lay, seg, firstSeg, at) {
   })
   const hx = lay.x, hy = lay.y + lay.h + 3
   s += `<rect x="${f1(hx)}" y="${f1(hy)}" width="${f1(lay.w)}" height="15" fill="#1d3cff" fill-opacity=".85"/>`
-  s += `<text x="${f1(hx + 3)}" y="${f1(hy + 5.4)}" font-size="3.6" fill="#e8f0ff">CRAWLER/01 · tissage · ${String(added).padStart(2, '0')} / ${String(C.typeRows.length).padStart(2, '0')} lignes · <tspan fill="#9dff8a">+${C.wrows.length}</tspan>${C.del.length ? ` <tspan fill="#ff8a9e">−${(C.pg.del || []).length}</tspan>` : ''}</text>`
+  s += `<text x="${f1(hx + 3)}" y="${f1(hy + 5.4)}" font-size="3.6" fill="#e8f0ff">CRAWLER/01 · tissage · ${String(added).padStart(2, '0')} / ${String(C.typeRows.length).padStart(2, '0')} lignes · <tspan fill="#9dff8a">+${C.wrows.length}</tspan>${C.kind === 'edit' && (C.pg.del || []).length ? ` <tspan fill="#ff8a9e">−${C.pg.del.length}</tspan>` : ''}</text>`
   s += `<text x="${f1(hx + 3)}" y="${f1(hy + 11.6)}" font-size="3.6" fill="#e8f0ff">MOTS-CLÉS ${String(hits.length).padStart(2, '0')}${hits.length ? ' ·' : ''}`
   hits.forEach(m => { s += `<tspan fill="${MARK_COL[m.k]}"${m.seg === seg ? ` opacity="0"><set attributeName="opacity" to="1" ${at(m.at)}/` : ''}> ${esc(m.word.slice(0, 14).toUpperCase())}</tspan>` })
   return s + '</text>'

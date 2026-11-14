@@ -81,7 +81,7 @@ Par défaut, la toile est une sphère qui tourne, comme une carte Graphify : une
 - **Les fils qui cassent** : un fil cassé pend dans le vide et se balance, puis l'araignée revient le retisser. Quand un fichier est supprimé, ses fils claquent et son cocon tombe.
 - **Le texte tissé** : quand Claude ajoute des lignes, le vrai texte file lettre par lettre le long de la soie, puis s'enroule autour du cocon.
 - **Le rythme** : elle trotte quand Claude enchaîne vite, et marche posément quand il travaille lentement.
-- **Le sommeil** : après trois minutes sans rien, elle remonte au centre, se suspend à un fil et se balance doucement. Au premier geste de Claude, elle se réveille et redescend.
+- **Le sommeil** : après trois minutes sans rien (ni geste de Claude, ni message), elle remonte au centre, se suspend à un fil et se balance doucement. Au premier geste de Claude, ou dès que tu lui écris, elle se réveille et redescend.
 
 ### Les bébés araignées
 
@@ -107,6 +107,20 @@ Ses pattes sont faites de segments rigides qui s'affinent en trapèze vers chaqu
 ### Le crawler (panneau)
 
 Quand Claude ou un agent lit un fichier, l'araignée rapetisse, saute sur la page et la parcourt comme un robot d'indexation : elle marche de mot important en mot important, dans un ordre un peu désordonné, chaque pied posé sur une lettre. Un pied posé sur un mot important l'attrape : il est entouré (ce qui est défini), barré (erreurs, TODO), encadré (modules importés) ou souligné (constantes), et un fil le relie au précédent. Sous la page, un tableau de bord compte les mots lus et liste les mots-clés. La lecture dure quelques secondes ; si d'autres actions attendent, elle finit plus vite.
+
+### Elle tisse ce que Claude écrit
+
+Quand Claude ou un agent écrit ou modifie un fichier, l'araignée saute sur la page et tisse les lignes nouvelles : elles apparaissent lettre après lettre sous ses pas, sur fond vert, avec leur vraie indentation. Pour une modification, les anciennes lignes s'affichent d'abord à leur place, barrées en rouge, puis s'effacent (le tableau de bord compte les lignes ajoutées et retirées). Elle tisse jusqu'à six lignes ; les autres apparaissent quand elle a fini, et elle les laisse voir un instant avant de repartir. Ce qui est défini s'entoure d'or (avec un petit éclat), un TODO ou une erreur se barre de rouge, un import s'encadre ; chaque mot se marque une fois tissé en entier. Si Claude enchaîne déjà une autre action, elle se presse : elle finit la ligne en cours, et le reste apparaît d'un coup.
+
+- **De nouveaux fils** : quand Claude ajoute un import (ou crée un fichier qui en a), un nouveau fil relie aussitôt les deux fichiers, tout brillant, dans le panneau et dans la grande toile en sphère. Seuls les imports vraiment ajoutés comptent : une modification qui n'y touche pas ne tisse rien. Un nouveau fichier s'accroche à son dossier, comme les autres.
+
+### Entre les actions de Claude
+
+Elle ne reste plus plantée à attendre :
+
+- **Pendant que Claude réfléchit** (un message en cours, sans action depuis quelques secondes), elle va jeter un coup d'œil aux fichiers voisins, même depuis un fichier isolé comme le README (« Réfléchit »), ou relit ce que Claude vient d'écrire (« Relit »). Ces gestes à elle s'affichent en violet. Dès que Claude agit, elle les abandonne pour le suivre. Après une minute et demie de silence, elle attend.
+- **Entre deux messages**, elle relit les derniers fichiers modifiés (trois au plus), fait trois rondes sur les fichiers les plus actifs, puis s'endort au bout de trois minutes. Elle ne relit jamais un fichier binaire (image, base de données…), et un fichier supprimé ne revient pas.
+- **Dans la grande toile**, ces gestes ne ferment pas le bilan du tour et n'entrent pas dans le journal des actions de Claude.
 
 ### Franchir un écart
 

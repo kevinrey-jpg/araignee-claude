@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface } from 'claude-code'
 
 import type { Clip, Status, Recap } from '../types'
-import { addDeps, wanderTarget, setWireStyle, setStraightWires, crawlAbort, crawlBegin, crawlClip, crawling, setZoom, setFollow, applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, importsOf, readsImports, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
+import { addDeps, lookPath, wanderTarget, setWireStyle, setStraightWires, crawlAbort, crawlBegin, crawlClip, crawling, setZoom, setFollow, applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, importsOf, readsImports, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
 
 const PANE = 'araignee'
 // Changer l'étiquette quand la forme d'une valeur change : elle survit aux rechargements.
@@ -29,6 +29,8 @@ let cwd = ''
 let source = ''
 let queue: Ev[] = []
 let playing = false
+// le numéro de l'événement en train de se jouer : un rappel d'un événement abandonné ne fait plus rien
+let playGen = 0
 let playUntil = 0
 let guarding = false
 let lastIdleAt = 0
@@ -56,6 +58,7 @@ let mem: Mem = {}
 let memKey = ''
 let memDirty = false
 const sizes: Record<string, number> = {}
+const scanned = new Set<string>()
 // le rythme de Claude et le sommeil de l'araignée
 const SLEEP_MS = 180000
 let eventTimes: number[] = []
@@ -152,9 +155,10 @@ async function ensureWorld($: EngineInterface) {
       const all = new Set(files), byBase = new Map<string, string[]>(), deps: [string, string][] = []
       files.forEach(f => { const b = f.split('/').pop()!; byBase.set(b, [...(byBase.get(b) || []), f]) })
       const code = files.filter(f => readsImports(f) && (sizes[f] ?? 0) < 150000).slice(0, 250)
+      scanned.clear()
       for (let i = 0; i < code.length; i += 16) await Promise.all(code.slice(i, i + 16).map(async f => {
         const txt = await $.fs.read(`${cwd}/${f}`).catch(() => null)
-        if (typeof txt === 'string') try { importsOf(f, txt, all, byBase).forEach(t => deps.push([f, t])) } catch {}
+        if (typeof txt === 'string') try { importsOf(f, txt, all, byBase).forEach(t => deps.push([f, t])); scanned.add(f) } catch {}
       }))
       graph = graphFromTree(files, project, deps)
       source = 'dossiers'
@@ -201,7 +205,7 @@ function playSounds($: EngineInterface, list: { at: number; name: string }[]) {
 // au bout de trois minutes sans rien, l'araignée remonte au centre et s'endort sur son fil
 function scheduleSleep($: EngineInterface) {
   $.clock.after(SLEEP_MS, () => {
-    if (playing || queue.length || !world || world.sleeping || Date.now() - lastEventAt < SLEEP_MS - 1000) return
+    if (playing || queue.length || !world || world.sleeping || Date.now() - Math.max(lastEventAt, lastTurnAt) < SLEEP_MS - 1000) return
     playing = true
     try {
       const clip = sleepClip(world)
@@ -247,10 +251,16 @@ function guard($: EngineInterface) {
   $.clock.every(3000, () => {
     if (playing && Date.now() > playUntil + 5000) playing = false
     if (!playing && queue.length) void pump($)
-    else if (!playing) void lifeTick($).catch(() => undefined)
-    else if (!playing && world && world.sph && !world.sleeping && Date.now() - lastIdleAt > 8800 && Date.now() - lastEventAt > 2500) { lastIdleAt = Date.now(); try { void showClip($, idleClip(world)) } catch { /* rien à montrer */ } }
+    else if (!playing) void lifeTick($).then(started => { if (!started) idleRefresh($) }).catch(() => undefined)
   })
 }
+// au repos, la sphère se remet à jour de temps en temps : un éclair part de l'araignée, la caméra revient sur elle
+function idleRefresh($: EngineInterface) {
+  if (playing || queue.length || !world || !world.sph || world.sleeping || Date.now() - lastIdleAt <= 8800 || Date.now() - lastEventAt <= 2500) return
+  lastIdleAt = Date.now(); try { void showClip($, idleClip(world)) } catch { /* rien à montrer */ }
+}
+// une vraie action de Claude attend-elle ?
+const realWaiting = () => queue.some(q => !q.auto)
 async function pump($: EngineInterface) {
   guard($)
   if (playing) return
@@ -260,6 +270,8 @@ async function pump($: EngineInterface) {
   if (!ev) { if (world) { lastIdleAt = Date.now(); await showClip($, idleClip(world)); scheduleSleep($) } return }
   if (rebuild) await ensureWorld($).catch(() => undefined)
   playing = true; playUntil = Date.now() + 15000
+  const gen = ++playGen, stale = () => gen !== playGen
+  if (world && crawling(world)) crawlAbort(world)
   try {
     await ensureWorld($)
     await update($, statusAtom, () => ({ tool: ev.toolName, path: ev.label, source }))
@@ -270,8 +282,9 @@ async function pump($: EngineInterface) {
       const clip = makeClip(world, ev)
       await showClip($, clip)
       playSounds($, clip.sounds || [])
-      const stop = () => { if (world) crawlAbort(world); playing = false; void pump($) }
+      const stop = () => { if (stale()) return; if (world) crawlAbort(world); playing = false; void pump($) }
       const next = () => {
+        if (stale()) return
         let c: any = null
         try { c = world && crawling(world) ? crawlClip(world, queue.length > 0) : null } catch (err) { $.ui.log(`araignee crawler : ${String(err)}`); stop(); return }
         if (!c) { playing = false; void pump($); return }
@@ -285,7 +298,12 @@ async function pump($: EngineInterface) {
     if (pre) {
       await showClip($, pre)
       const ms = Math.max(200, pre.dur * 1000); playUntil = Date.now() + ms + 15000
-      $.clock.after(ms, () => { void main().catch(err => { playing = false; $.ui.log(`araignee : ${String(err)}`); $.clock.after(300, () => { void pump($) }) }) })
+      $.clock.after(ms, () => {
+        if (stale()) return
+        // l'araignée allait voir un fichier d'elle-même, et Claude agit : elle y renonce pour le suivre
+        if (ev.auto && realWaiting()) { playing = false; void pump($); return }
+        void main().catch(err => { playing = false; $.ui.log(`araignee : ${String(err)}`); $.clock.after(300, () => { void pump($) }) })
+      })
     } else await main()
   } catch (err) {
     // cet événement ne se joue pas : on passe au suivant au lieu de rester figé
@@ -338,9 +356,9 @@ async function showOnce($: EngineInterface) {
   await $.store.set(key, true)
   await openViewer($)
 }
-async function pushLive($: EngineInterface, toolName: string, ev: Ev, e: any) {
+async function pushLive($: EngineInterface, toolName: string, ev: Ev, e: any, since?: number) {
   if (!viewerDir) return
-  const g = world.g, before = g.nodes.length
+  const g = world.g, before = Math.min(since ?? g.nodes.length, g.nodes.length)
   let t: any
   if (ev.tool === 'Bash') t = '::terminal'
   else if (ev.tool === 'Grep') t = (ev.targets || []).map(p => nodeForPath(g, p)?.id).filter(Boolean)
@@ -350,7 +368,7 @@ async function pushLive($: EngineInterface, toolName: string, ev: Ev, e: any) {
   const info = ev.path ? infoOf(nodeForPath(g, ev.path)) : undefined
   liveSeq += 1
   const now = Date.now()
-  liveEvents.push({ seq: liveSeq, at: now, tool: VIEWER_TOOL[toolName] || VIEWER_TOOL[ev.tool] || ev.tool, t, d, label: ev.label, lines: ev.lines, nodes, actor: ev.actor || 'main', ok: ev.ok, big: ev.big, pace: ev.pace, info, page: ev.page, edges: ev.edges && ev.edges.length ? ev.edges : undefined })
+  liveEvents.push({ seq: liveSeq, at: now, tool: VIEWER_TOOL[toolName] || VIEWER_TOOL[ev.tool] || ev.tool, t, d, label: ev.label, lines: ev.lines, nodes, actor: ev.actor || 'main', ok: ev.ok, big: ev.big, pace: ev.pace, info, page: ev.page, edges: ev.edges && ev.edges.length ? ev.edges : undefined, auto: ev.auto || undefined, name: ev.auto ? ev.toolName : undefined })
   if (liveEvents.length > 30) liveEvents = liveEvents.slice(-30)
   // seules les pages récentes voyagent (la grande toile relit le fichier toutes les 0,7 s) : il reste léger
   liveEvents.forEach((x, i) => { if (x.page && i < liveEvents.length - 3 && now - (x.at || 0) > 20000) delete x.page })
@@ -403,6 +421,7 @@ async function startWatch($: EngineInterface) {
       for (const c of changed) {
         const name = c.path.split('/').pop() || c.path
         if (c.deleted) {
+          recentEdits.delete(c.path); rereadAt.delete(c.path)
           // le fichier a disparu : son fil claque, le cocon tombe, puis une araignée retisse
           const who = Date.now() - lastMainAt < 5000 ? 'main' : 'bg'
           const ev: Ev = { tool: 'Delete', toolName: 'Delete', path: c.path, label: 'Supprimé · ' + name, lines: ['✗ ' + c.path], actor: 'main' }
@@ -414,13 +433,13 @@ async function startWatch($: EngineInterface) {
         }
         let lines = [c.created ? '+ nouveau fichier' : '~ modifié en arrière-plan'], page: Page | undefined
         const txt = (sizes[c.path] ?? 0) < 400000 ? await $.fs.read(`${cwd}/${c.path}`).catch(() => null) : null
-        if (typeof txt === 'string' && txt.length < 400000 && !txt.includes('\u0000')) {
+        if (typeof txt === 'string' && txt.length < 400000 && !looksBinary(txt)) {
           if (c.created) { lines = firstLines(txt, 3).map(l => '+ ' + l.slice(0, 60)); const n = Math.min(PAGE_ROWS, txt.split('\n').length); page = { start: 1, lines: txt.split('\n').slice(0, PAGE_ROWS).map(clipLine), hi: [0, n - 1], kind: 'write' } }
           else { page = diffPage(snapshots.get(c.path), txt); const added = page?.hi ? page.lines.slice(page.hi[0], page.hi[1] + 1).filter(l => l.trim()) : []; if (added.length) lines = added.slice(0, 3).map(l => '+ ' + l.trim().slice(0, 60)) }
           keepSnapshot(c.path, txt)
         }
         const ev: Ev = { tool: c.created ? 'Write' : 'Edit', toolName: 'Arrière-plan', path: c.path, label: 'Arrière-plan · ' + name, lines, actor: 'bg', page }
-        bgLast = Date.now(); noteEdit(c.path, page)
+        bgLast = Date.now(); if (page) noteEdit(c.path, page)
         touch($, c.path, 'e')
         await pushLive($, c.created ? 'Write' : 'Edit', ev, {}).catch(() => undefined)
         enqueue($, ev)
@@ -437,28 +456,72 @@ const KEEP = new Set(['Mood', 'Delete', 'Repair', 'Leave'])
 let lastMainAt = 0
 // la vie entre les actions : Claude est-il en train de répondre, les fichiers modifiés récemment (et la zone touchée),
 // ceux déjà relus, les rondes faites depuis le dernier vrai événement
-let turnActive = false, lastAutoAt = 0, rounds = 0
+let turnActive = false, lastTurnAt = 0, lastAutoAt = 0, rounds = 0, rereads = 0
+// elle réfléchit pendant la première minute et demie de silence d'un tour ; au-delà, elle attend (et finit par dormir)
+const THINK_MS = 90000
 const recentEdits = new Map<string, { t: number, a: number, b: number }>(), rereadAt = new Map<string, number>()
+// un fichier binaire (une image, une base de données, un .o) ne se relit pas comme une page
+function looksBinary(t: string) { const s = t.slice(0, 4000); if (s.includes('\u0000')) return true; const bad = (s.match(/[\ufffd\u0001-\u0008\u000e-\u001a\u001c-\u001f]/g) || []).length; return bad > s.length * .02 }
 function noteEdit(path: string, pg?: Page) { const a = pg && pg.hi ? pg.start - 1 + pg.hi[0] : 0; recentEdits.set(path, { t: Date.now(), a, b: pg && pg.hi ? pg.start - 1 + pg.hi[1] : a + 10 }); if (recentEdits.size > 20) { const k = recentEdits.keys().next().value; if (k !== undefined) recentEdits.delete(k) } }
 // quand rien ne se passe : pendant que Claude réfléchit, l'araignée va voir un fichier voisin ou relit ce qui vient d'être
 // écrit ; entre deux messages, elle relit les derniers fichiers modifiés puis fait quelques rondes, avant de s'endormir
-async function lifeTick($: EngineInterface) {
-  if (playing || queue.length || !world || world.sleeping) return
-  const now = Date.now(), quiet = now - lastEventAt, sinceAuto = now - lastAutoAt
-  if (turnActive ? (quiet < 4000 || sinceAuto < 6000) : (quiet < 12000 || sinceAuto < 14000)) return
-  const fresh = [...recentEdits.entries()].filter(([p, r]) => (rereadAt.get(p) || 0) < r.t).sort((x, y) => y[1].t - x[1].t)[0]
+// (endormie, elle se réveille quand Claude se remet au travail : un nouveau message)
+async function lifeTick($: EngineInterface): Promise<boolean> {
+  if (playing || queue.length || !world) return false
+  const now = Date.now(), quiet = now - Math.max(lastEventAt, lastTurnAt), sinceAuto = now - lastAutoAt
+  if (world.sleeping && !(turnActive && now - lastTurnAt < THINK_MS)) return false
+  if (turnActive ? (quiet < 4000 || sinceAuto < 6000 || quiet > THINK_MS) : (quiet < 12000 || sinceAuto < 14000)) return false
+  // au plus trois relectures, les plus récentes, depuis la dernière vraie action
+  const fresh = rereads < 3 ? [...recentEdits.entries()].filter(([p, r]) => (rereadAt.get(p) || 0) < r.t).sort((x, y) => y[1].t - x[1].t)[0] : undefined
   let ev: Ev | null = null
   if (fresh && (!turnActive || Math.random() < .5)) {
-    const [path, r] = fresh, txt = await $.fs.read(`${cwd}/${path}`).catch(() => null)
-    rereadAt.set(path, now)
-    if (typeof txt === 'string' && txt.length < 400000) ev = { tool: 'Read', toolName: 'Relit', path, label: 'Relit · ' + path.split('/').pop(), lines: [], actor: 'main', auto: true, page: { ...windowPage(txt, r.a, r.b, [], 'read') } }
+    const [path, r] = fresh
+    rereadAt.set(path, now); rereads++
+    const txt = (sizes[path] ?? 0) < 400000 ? await $.fs.read(`${cwd}/${path}`).catch(() => null) : null
+    if (typeof txt === 'string' && txt.length < 400000 && !looksBinary(txt)) ev = { tool: 'Read', toolName: 'Relit', path, label: 'Relit · ' + path.split('/').pop(), lines: [], actor: 'main', auto: true, page: { ...windowPage(txt, r.a, r.b, [], 'read') } }
   } else if (turnActive || rounds < 3) {
     const path = wanderTarget(world, turnActive ? 'pense' : 'ronde', [...recentEdits.keys()].reverse())
     if (path) { ev = { tool: 'Read', toolName: turnActive ? 'Réfléchit' : 'Ronde', path, label: (turnActive ? 'Réfléchit · ' : 'Ronde · ') + path.split('/').pop(), lines: [], actor: 'main', auto: true }; if (!turnActive) rounds++ }
   }
-  if (!ev) return
+  // pendant la lecture du fichier, Claude a pu agir : son action passe d'abord
+  if (!ev || playing || queue.length || !world) return false
+  lastAutoAt = now; queue.push(ev); void pump($)
   // la grande toile fait la même chose
-  lastAutoAt = now; await pushLive($, 'Read', ev, {}).catch(() => undefined); queue.push(ev); void pump($)
+  void pushLive($, 'Read', ev, {}).catch(() => undefined)
+  return true
+}
+// les imports qu'une écriture ou une modification ajoute deviennent de nouveaux fils : un nouveau fichier les apporte
+// tous ; une modification, ceux de ses lignes nouvelles qui n'étaient pas dans les anciennes (les lignes entières autour
+// du changement : un chemin changé au milieu d'une ligne compte aussi) ; un fichier réécrit, ceux qui n'étaient pas dans
+// sa version d'avant (sans elle : ceux qui n'ont pas encore de fil, si ses imports ont été lus au départ)
+async function newDeps($: EngineInterface, ev: Ev, e: any, prev: string | undefined): Promise<[string, string][]> {
+  const g = world.g, path = ev.path!, known = lookPath(g, path), existed = !!known && !known.gone
+  // le nœud du fichier d'abord (un nouveau fichier n'en a pas encore) : ses fils partent de lui
+  const self = nodeForPath(g, path); if (!self) return []
+  const all = new Set<string>(g.nodes.filter((n: any) => n.kind === 'file' && n.path && !n.gone).map((n: any) => n.path)), byBase = new Map<string, string[]>()
+  all.forEach(f => { const b = f.split('/').pop()!; byBase.set(b, [...(byBase.get(b) || []), f]) })
+  const imp = (t: string): string[] => importsOf(self.path || path, t, all, byBase)
+  const out = new Set<string>()
+  if (ev.tool === 'Write') {
+    const now = imp(String(e.content ?? ''))
+    if (!existed) now.forEach(t => out.add(t))
+    else if (prev !== undefined) { const had = new Set(imp(prev)); now.forEach(t => { if (!had.has(t)) out.add(t) }) }
+    else if (scanned.has(self.path || path)) now.forEach(t => out.add(t))
+  } else {
+    const txt = await $.fs.read(`${cwd}/${path}`).catch(() => null)
+    for (const ed of Array.isArray(e.edits) ? e.edits : [e]) {
+      const neu = String(ed?.new_string ?? ''), old = String(ed?.old_string ?? '')
+      if (!neu.trim()) continue
+      let a = neu, b = old
+      const idx = typeof txt === 'string' ? txt.indexOf(neu) : -1
+      if (idx >= 0 && typeof txt === 'string') {
+        const s0 = idx > 0 ? txt.lastIndexOf('\n', idx - 1) + 1 : 0, e0 = txt.indexOf('\n', idx + neu.length), e1 = e0 < 0 ? txt.length : e0
+        a = txt.slice(s0, e1); b = txt.slice(s0, idx) + old + txt.slice(idx + neu.length, e1)
+      }
+      const had = new Set(imp(b)); imp(a).forEach(t => { if (!had.has(t)) out.add(t) })
+    }
+  }
+  return out.size ? addDeps(world, [...out].map(t => [self.id, t]) as any) as [string, string][] : []
 }
 function enqueue($: EngineInterface, ev: Ev) {
   const now = Date.now()
@@ -467,7 +530,7 @@ function enqueue($: EngineInterface, ev: Ev) {
     eventTimes = eventTimes.filter(t => now - t < 30000); eventTimes.push(now)
     ev.pace = Math.min(1.9, Math.max(.75, .75 + eventTimes.length * .07))
   }
-  lastEventAt = now; rounds = 0
+  lastEventAt = now; rounds = 0; rereads = 0
   if (!ev.actor || ev.actor === 'main') lastMainAt = now
   // une humeur remplace la précédente pas encore jouée ; deux retissages en attente suffisent
   if (ev.tool === 'Mood') queue = queue.filter(q => q.tool !== 'Mood' || q.actor !== ev.actor)
@@ -668,7 +731,7 @@ export const register: Register = on => {
 
   // le tour commence : nouveau bilan à zéro
   on('turn.start', async ($, e, next) => {
-    if (!(e as any).agentId) { turnActive = true; lastEventAt = Date.now(); turn = newTurn(); await update($, recapAtom, old => ({ ...old, at: 0 })).catch(() => undefined) }
+    if (!(e as any).agentId) { turnActive = true; lastTurnAt = Date.now(); turn = newTurn(); await update($, recapAtom, old => ({ ...old, at: 0 })).catch(() => undefined) }
     return next(e)
   })
 
@@ -677,7 +740,8 @@ export const register: Register = on => {
     const done = await next(e)
     if (e.agentId && world && (hasActor(world, 'agent:' + e.agentId) || queue.some(q => q.actor === 'agent:' + e.agentId))) leave($, 'agent:' + e.agentId)
     if (!e.agentId) {
-      turnActive = false
+      // fin du tour : elle s'endormira trois minutes plus tard, si rien d'autre n'arrive
+      turnActive = false; lastTurnAt = Date.now(); scheduleSleep($)
       try {
         const r = recapOf(e.answer || '', e.durationMs || 0, !!e.isAborted)
         turn = newTurn()
@@ -736,6 +800,8 @@ export const register: Register = on => {
     const play = async (ran: any) => {
       try {
         await ensureWorld($)
+        // les nœuds créés à partir d'ici (un nouveau fichier) partent aussi vers la grande toile
+        const since = world.g.nodes.length
         await showOnce($).catch(() => undefined)
         void startWatch($).catch(() => undefined)
         const ev = eventFor(toolName, e, ran)
@@ -746,16 +812,15 @@ export const register: Register = on => {
         if (agent) { ev.toolName = 'Agent ' + ev.toolName; ev.label = agent + ev.label }
         if (ev.path && (ev.tool === 'Edit' || ev.tool === 'Write')) { ownWrites.set(ev.path, Date.now()); touch($, ev.path, 'e', ev.tool === 'Write' ? countLines((e as any).content) : undefined) }
         if (ev.path && ev.tool === 'Read') { const all = !(e as any).offset && !(e as any).limit, n = ran && typeof ran.text === 'string' ? ran.text.split('\n').length : 0; touch($, ev.path, 'r', all && n > 1 && n < 2000 ? n : undefined) }
+        // la version d'avant d'un fichier réécrit (pageFor garde la nouvelle)
+        const prev = ev.path && ev.tool === 'Write' ? snapshots.get(ev.path) : undefined
         ev.page = await pageFor($, ev, e, ran).catch(() => undefined)
         // un import ajouté : de nouvelles relations entre fichiers, donc de nouveaux fils dans la toile
         if (ev.path && (ev.tool === 'Edit' || ev.tool === 'Write') && readsImports(ev.path) && world) {
-          const txt = ev.tool === 'Write' ? String((e as any).content ?? '') : await $.fs.read(`${cwd}/${ev.path}`).catch(() => '')
-          const all = new Set<string>(world.g.nodes.filter((n: any) => n.kind === 'file' && n.path).map((n: any) => n.path)), byBase = new Map<string, string[]>()
-          all.forEach(f => { const b = f.split('/').pop()!; byBase.set(b, [...(byBase.get(b) || []), f]) })
-          try { ev.edges = addDeps(world, importsOf(ev.path, String(txt || ''), all, byBase).map(t => [ev.path!, t])) } catch { /* rien */ }
+          try { ev.edges = await newDeps($, ev, e, prev) } catch { /* rien */ }
         }
         if (ev.path && (ev.tool === 'Edit' || ev.tool === 'Write')) noteEdit(ev.path, ev.page)
-        track(toolName, e, ev); await pushLive($, toolName, ev, e).catch(() => undefined); enqueue($, ev)
+        track(toolName, e, ev); await pushLive($, toolName, ev, e, since).catch(() => undefined); enqueue($, ev)
       } catch { /* l'araignée ne doit jamais gêner Claude */ }
     }
     // une commande peut durer longtemps : l'araignée part au terminal dès qu'elle commence,
