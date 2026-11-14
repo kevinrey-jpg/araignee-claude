@@ -162,18 +162,24 @@ test("un sous-agent a son bébé araignée, qui remonte quand l'agent a fini", a
   await ui.unmount()
 })
 
-test("un agent qui modifie un fichier ouvre une petite page avec les vraies lignes", async ($, on) => {
-  base(on, path => path.endsWith('b.ts') ? 'const a = 1\nfunction total(items) {\n  return items.reduce(add, 0)\n}\n' : JSON.stringify(GRAPH), true)
-  on('tool.call', () => ({ result: {}, text: 'ok' }))
-  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  await $.tool.call({ tool: 'Edit', file_path: '/proj/src/b.ts', old_string: '  return 0', new_string: '  return items.reduce(add, 0)', replace_all: false, agentId: 'a1' } as any)
-  for (let i = 0; i < 200; i++) await Promise.resolve()
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const svg: any = await ui.find({ type: 'Svg' })
-  const src = String(svg?.props?.source ?? svg?.source ?? '')
-  expect(src).toContain('agent · modification')
-  expect(src).toContain('return items.reduce(add, 0)')
-  await ui.unmount()
+test("une modification : l'araignée saute sur la page et tisse les vraies lignes nouvelles, les anciennes barrées", () => {
+  const g: any = E.graphFromTree(['src/a.ts', 'src/b.ts', 'docs/d.md'], 'proj')
+  const W: any = E.createWorld(g, 'fusion')
+  W.aspect = .63
+  E.sphereInit(W)
+  const lines = ['const a = 1', 'function total(items) {', '  return items.reduce(add, 0)', '}', '']
+  const ev: any = { tool: 'Edit', path: 'src/b.ts', label: 'Edit', lines: ['+'], actor: 'agent:a1', page: { kind: 'edit', start: 1, lines, hi: [1, 2], del: ['  return 0'] } }
+  expect(E.crawlBegin(W, ev)).toBe(true)
+  E.makeClip(W, ev)
+  const clips: any[] = []
+  for (let k = 0; k < 10 && E.crawling(W); k++) clips.push(E.crawlClip(W, false))
+  expect(E.crawling(W)).toBe(false)
+  const all = clips.map(c => c.svg).join('')
+  for (const c of clips) { expect(c.svg.length).toBeLessThan(131072); expect(c.svg).not.toContain('NaN') }
+  expect(all).toContain('crawler · modification')
+  expect(all).toContain('return items.reduce(add, 0)')
+  expect(all).toContain('  return 0')
+  expect(all).toContain('tissage')
 })
 
 test('sur un très gros projet, chaque animation reste sous la taille que le panneau accepte', async () => {

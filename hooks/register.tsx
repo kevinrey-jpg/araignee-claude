@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface } from 'claude-code'
 
 import type { Clip, Status, Recap } from '../types'
-import { setWireStyle, setStraightWires, crawlAbort, crawlBegin, crawlClip, crawling, setZoom, setFollow, applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, importsOf, readsImports, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
+import { addDeps, wanderTarget, setWireStyle, setStraightWires, crawlAbort, crawlBegin, crawlClip, crawling, setZoom, setFollow, applyMemory, createWorld, sphereInit, turnClip, graphFromGraphify, graphFromTree, importsOf, readsImports, hasActor, idleClip, makeClip, nodeForPath, setSkin, sleepClip, SKINS, TOOL_COLOR } from './engine'
 
 const PANE = 'araignee'
 // Changer l'étiquette quand la forme d'une valeur change : elle survit aux rechargements.
@@ -19,7 +19,7 @@ const TOOLS: Record<string, string> = { Read: 'Read', Edit: 'Edit', MultiEdit: '
 const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', '.venv', 'venv', '__pycache__', '.cache', 'coverage', 'target', '.idea', '.vscode', 'graphify-out'])
 
 // actor : 'main' (Claude), 'agent:<id>' (un sous-agent) ou 'bg' (une tâche de fond) ; les deux derniers sont des bébés araignées
-type Ev = { tool: string; toolName: string; path?: string; targets?: string[]; label: string; lines: string[]; actor?: string; ok?: boolean; big?: boolean; pace?: number; page?: Page; cmd?: string; bgOut?: boolean }
+type Ev = { tool: string; toolName: string; path?: string; targets?: string[]; label: string; lines: string[]; actor?: string; ok?: boolean; big?: boolean; pace?: number; page?: Page; cmd?: string; bgOut?: boolean; auto?: boolean; edges?: [string, string][] }
 // une page de texte pour la plongée : les vraies lignes lues ou écrites, la zone modifiée (hi, dans la page) et les lignes retirées
 type Page = { start: number; lines: string[]; hi?: [number, number]; del?: string[]; kind: 'read' | 'edit' | 'write' | 'term' }
 // le monde de l'araignée vit dans le module : un rechargement le reconstruit
@@ -247,6 +247,7 @@ function guard($: EngineInterface) {
   $.clock.every(3000, () => {
     if (playing && Date.now() > playUntil + 5000) playing = false
     if (!playing && queue.length) void pump($)
+    else if (!playing) void lifeTick($).catch(() => undefined)
     else if (!playing && world && world.sph && !world.sleeping && Date.now() - lastIdleAt > 8800 && Date.now() - lastEventAt > 2500) { lastIdleAt = Date.now(); try { void showClip($, idleClip(world)) } catch { /* rien à montrer */ } }
   })
 }
@@ -265,7 +266,7 @@ async function pump($: EngineInterface) {
     const main = async () => {
       // une lecture avec sa page : après l'arrivée, l'araignée la parcourt en crawler, en quelques clips courts
       // (elle se presse si d'autres actions attendent)
-      if (ev.tool === 'Read' && ev.page) crawlBegin(world, ev)
+      if (ev.page && ['Read', 'Edit', 'Write'].includes(ev.tool)) crawlBegin(world, ev)
       const clip = makeClip(world, ev)
       await showClip($, clip)
       playSounds($, clip.sounds || [])
@@ -349,7 +350,7 @@ async function pushLive($: EngineInterface, toolName: string, ev: Ev, e: any) {
   const info = ev.path ? infoOf(nodeForPath(g, ev.path)) : undefined
   liveSeq += 1
   const now = Date.now()
-  liveEvents.push({ seq: liveSeq, at: now, tool: VIEWER_TOOL[toolName] || VIEWER_TOOL[ev.tool] || ev.tool, t, d, label: ev.label, lines: ev.lines, nodes, actor: ev.actor || 'main', ok: ev.ok, big: ev.big, pace: ev.pace, info, page: ev.page })
+  liveEvents.push({ seq: liveSeq, at: now, tool: VIEWER_TOOL[toolName] || VIEWER_TOOL[ev.tool] || ev.tool, t, d, label: ev.label, lines: ev.lines, nodes, actor: ev.actor || 'main', ok: ev.ok, big: ev.big, pace: ev.pace, info, page: ev.page, edges: ev.edges && ev.edges.length ? ev.edges : undefined })
   if (liveEvents.length > 30) liveEvents = liveEvents.slice(-30)
   // seules les pages récentes voyagent (la grande toile relit le fichier toutes les 0,7 s) : il reste léger
   liveEvents.forEach((x, i) => { if (x.page && i < liveEvents.length - 3 && now - (x.at || 0) > 20000) delete x.page })
@@ -419,7 +420,7 @@ async function startWatch($: EngineInterface) {
           keepSnapshot(c.path, txt)
         }
         const ev: Ev = { tool: c.created ? 'Write' : 'Edit', toolName: 'Arrière-plan', path: c.path, label: 'Arrière-plan · ' + name, lines, actor: 'bg', page }
-        bgLast = Date.now()
+        bgLast = Date.now(); noteEdit(c.path, page)
         touch($, c.path, 'e')
         await pushLive($, c.created ? 'Write' : 'Edit', ev, {}).catch(() => undefined)
         enqueue($, ev)
@@ -434,6 +435,31 @@ async function startWatch($: EngineInterface) {
 
 const KEEP = new Set(['Mood', 'Delete', 'Repair', 'Leave'])
 let lastMainAt = 0
+// la vie entre les actions : Claude est-il en train de répondre, les fichiers modifiés récemment (et la zone touchée),
+// ceux déjà relus, les rondes faites depuis le dernier vrai événement
+let turnActive = false, lastAutoAt = 0, rounds = 0
+const recentEdits = new Map<string, { t: number, a: number, b: number }>(), rereadAt = new Map<string, number>()
+function noteEdit(path: string, pg?: Page) { const a = pg && pg.hi ? pg.start - 1 + pg.hi[0] : 0; recentEdits.set(path, { t: Date.now(), a, b: pg && pg.hi ? pg.start - 1 + pg.hi[1] : a + 10 }); if (recentEdits.size > 20) { const k = recentEdits.keys().next().value; if (k !== undefined) recentEdits.delete(k) } }
+// quand rien ne se passe : pendant que Claude réfléchit, l'araignée va voir un fichier voisin ou relit ce qui vient d'être
+// écrit ; entre deux messages, elle relit les derniers fichiers modifiés puis fait quelques rondes, avant de s'endormir
+async function lifeTick($: EngineInterface) {
+  if (playing || queue.length || !world || world.sleeping) return
+  const now = Date.now(), quiet = now - lastEventAt, sinceAuto = now - lastAutoAt
+  if (turnActive ? (quiet < 4000 || sinceAuto < 6000) : (quiet < 12000 || sinceAuto < 14000)) return
+  const fresh = [...recentEdits.entries()].filter(([p, r]) => (rereadAt.get(p) || 0) < r.t).sort((x, y) => y[1].t - x[1].t)[0]
+  let ev: Ev | null = null
+  if (fresh && (!turnActive || Math.random() < .5)) {
+    const [path, r] = fresh, txt = await $.fs.read(`${cwd}/${path}`).catch(() => null)
+    rereadAt.set(path, now)
+    if (typeof txt === 'string' && txt.length < 400000) ev = { tool: 'Read', toolName: 'Relit', path, label: 'Relit · ' + path.split('/').pop(), lines: [], actor: 'main', auto: true, page: { ...windowPage(txt, r.a, r.b, [], 'read') } }
+  } else if (turnActive || rounds < 3) {
+    const path = wanderTarget(world, turnActive ? 'pense' : 'ronde', [...recentEdits.keys()].reverse())
+    if (path) { ev = { tool: 'Read', toolName: turnActive ? 'Réfléchit' : 'Ronde', path, label: (turnActive ? 'Réfléchit · ' : 'Ronde · ') + path.split('/').pop(), lines: [], actor: 'main', auto: true }; if (!turnActive) rounds++ }
+  }
+  if (!ev) return
+  // la grande toile fait la même chose
+  lastAutoAt = now; await pushLive($, 'Read', ev, {}).catch(() => undefined); queue.push(ev); void pump($)
+}
 function enqueue($: EngineInterface, ev: Ev) {
   const now = Date.now()
   if (!KEEP.has(ev.tool)) {
@@ -441,7 +467,7 @@ function enqueue($: EngineInterface, ev: Ev) {
     eventTimes = eventTimes.filter(t => now - t < 30000); eventTimes.push(now)
     ev.pace = Math.min(1.9, Math.max(.75, .75 + eventTimes.length * .07))
   }
-  lastEventAt = now
+  lastEventAt = now; rounds = 0
   if (!ev.actor || ev.actor === 'main') lastMainAt = now
   // une humeur remplace la précédente pas encore jouée ; deux retissages en attente suffisent
   if (ev.tool === 'Mood') queue = queue.filter(q => q.tool !== 'Mood' || q.actor !== ev.actor)
@@ -642,7 +668,7 @@ export const register: Register = on => {
 
   // le tour commence : nouveau bilan à zéro
   on('turn.start', async ($, e, next) => {
-    if (!(e as any).agentId) { turn = newTurn(); await update($, recapAtom, old => ({ ...old, at: 0 })).catch(() => undefined) }
+    if (!(e as any).agentId) { turnActive = true; lastEventAt = Date.now(); turn = newTurn(); await update($, recapAtom, old => ({ ...old, at: 0 })).catch(() => undefined) }
     return next(e)
   })
 
@@ -651,6 +677,7 @@ export const register: Register = on => {
     const done = await next(e)
     if (e.agentId && world && (hasActor(world, 'agent:' + e.agentId) || queue.some(q => q.actor === 'agent:' + e.agentId))) leave($, 'agent:' + e.agentId)
     if (!e.agentId) {
+      turnActive = false
       try {
         const r = recapOf(e.answer || '', e.durationMs || 0, !!e.isAborted)
         turn = newTurn()
@@ -720,6 +747,14 @@ export const register: Register = on => {
         if (ev.path && (ev.tool === 'Edit' || ev.tool === 'Write')) { ownWrites.set(ev.path, Date.now()); touch($, ev.path, 'e', ev.tool === 'Write' ? countLines((e as any).content) : undefined) }
         if (ev.path && ev.tool === 'Read') { const all = !(e as any).offset && !(e as any).limit, n = ran && typeof ran.text === 'string' ? ran.text.split('\n').length : 0; touch($, ev.path, 'r', all && n > 1 && n < 2000 ? n : undefined) }
         ev.page = await pageFor($, ev, e, ran).catch(() => undefined)
+        // un import ajouté : de nouvelles relations entre fichiers, donc de nouveaux fils dans la toile
+        if (ev.path && (ev.tool === 'Edit' || ev.tool === 'Write') && readsImports(ev.path) && world) {
+          const txt = ev.tool === 'Write' ? String((e as any).content ?? '') : await $.fs.read(`${cwd}/${ev.path}`).catch(() => '')
+          const all = new Set<string>(world.g.nodes.filter((n: any) => n.kind === 'file' && n.path).map((n: any) => n.path)), byBase = new Map<string, string[]>()
+          all.forEach(f => { const b = f.split('/').pop()!; byBase.set(b, [...(byBase.get(b) || []), f]) })
+          try { ev.edges = addDeps(world, importsOf(ev.path, String(txt || ''), all, byBase).map(t => [ev.path!, t])) } catch { /* rien */ }
+        }
+        if (ev.path && (ev.tool === 'Edit' || ev.tool === 'Write')) noteEdit(ev.path, ev.page)
         track(toolName, e, ev); await pushLive($, toolName, ev, e).catch(() => undefined); enqueue($, ev)
       } catch { /* l'araignée ne doit jamais gêner Claude */ }
     }

@@ -2832,6 +2832,8 @@ function receive(ev) {
     if (ev.close) { if (GRAND) window.close(); return; }
     if (ev.summary) { showRecap(ev.summary); return; }
     hideRecap(); (ev.nodes || []).forEach(addLiveNode);
+    // un import ajouté par Claude : de nouveaux fils dans la toile, tout chauds
+    if (SPH && Array.isArray(ev.edges)) ev.edges.forEach(([a, b]) => { if (!byId[a] || !byId[b] || edgeIdx[a + '|' + b] !== undefined) return; link(a, b, 'dep'); const i = edges.length - 1; if (edges[i].a !== a) return; edgeIdx[a + '|' + b] = edgeIdx[b + '|' + a] = i; edges[i].trail = 1; edges[i].trailAt = simT; sphereEdge(edges[i]); });
     // ce que le plugin sait du fichier : lignes, passages, chaleur
     if (ev.info && byId[ev.info.id]) { const n = byId[ev.info.id]; if (ev.info.lines) n.lines = ev.info.lines; n.edits = ev.info.edits; n.reads = ev.info.reads; n.touched = ev.info.touched; n.heat = ev.info.heat; refreshHeat(); }
     if (ev.t && typeof ev.t === 'string' && byId[ev.t] && byId[ev.t].gone && (ev.tool === 'Write' || ev.tool === 'Edit')) reviveNode(byId[ev.t]);
