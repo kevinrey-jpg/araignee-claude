@@ -1443,7 +1443,7 @@ const WIRE = { lum: 1, width: 1, alpha: 1 }; try { Object.assign(WIRE, JSON.pars
 const lumCol = (col, k) => k >= 1 ? mix(col, '#ffffff', Math.min(.85, (k - 1) * .6)) : mix(col, '#06040c', 1 - k);
 let STRAIGHT = false; try { STRAIGHT = localStorage.getItem('araignee-fils') === 'droits'; } catch (e) {}
 // en grand : les mêmes fils que dans le panneau
-if (REG0) { if (REG0.style) Object.assign(WIRE, REG0.style); STRAIGHT = REG0.fils === 'droits'; }
+if (REG0 && !/[?&]toile=/.test(location.search)) { if (REG0.style) Object.assign(WIRE, REG0.style); STRAIGHT = REG0.fils === 'droits'; }
 function sphereEdge(e) { e.pts2 = e.pts2 || e.pts; e.sp = Array.from({ length: SEGS + 1 }, () => ({ x: 0, y: 0 })); if (SPH) e.pts = e.sp; }
 // la caméra à la troisième personne : elle vise le point F (l'araignée suivie, en 3D) et se tient toujours à la même
 // distance D de lui ; la boule ne tourne plus d'elle-même, c'est la caméra qui accompagne l'araignée, même quand elle
@@ -2071,7 +2071,7 @@ const ROWS = 26, LH = 7.4, FS = 4.5, CW = FS * .6;
 function pageMorph(m) { const k = .36, o = { ...m }; ['cl', 'cw', 'al', 'aw', 'bodyZ', 'legW', 'palp', 'R'].forEach(key => o[key] = m[key] * k); o.legs = m.legs.map(v => v * k); o.stepDur = m.stepDur * .7; o.mass = .2; o.baby = true; return o; }
 function wantsDive(ag, ev) {
   // le panneau parcourait cette page quand la grande toile s'est ouverte : elle la parcourt aussi
-  if (ev.forceDive && !dive && ev.page && Array.isArray(ev.page.lines) && ev.page.lines.length && typeof ev.t === 'string' && byId[ev.t] && !byId[ev.t].gone) return true;
+  if (ev.forceDive && diveMode !== 'non' && !dive && ev.page && Array.isArray(ev.page.lines) && ev.page.lines.length && typeof ev.t === 'string' && byId[ev.t] && !byId[ev.t].gone) return true;
   if (dive || diveMode === 'non' || !ev.page || !Array.isArray(ev.page.lines) || !ev.page.lines.length) return false;
   const term = ev.tool === 'Bash' && ev.page.kind === 'term';
   if ((!term && !['Read', 'Edit', 'Write'].includes(ev.tool)) || typeof ev.t !== 'string' || !byId[ev.t] || byId[ev.t].gone) return false;
@@ -2880,6 +2880,7 @@ window.__araigneeLive = data => {
   if (data.seq < liveSeq - 1000) { liveSeq = data.seq; return; }
   (data.events || []).forEach(ev => { try { receive(ev); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : événement', e); } });
   if (data.etat) suivreEtat(data.etat);
+  if (resumeArm) { resumeArm = false; try { reprendreMaintenant(); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : reprise', e); } }
 };
 let recvCount = 0, recapAt = 0;
 function receive(ev) {
@@ -2943,8 +2944,11 @@ function relais(data, E) {
   AGENTS.forEach(ag => { if (ag.queue.length && !ag.A && !ag.walk && !ag.hangAnim) later(ag, .05); });
 }
 // le panneau décide du sommeil et du bilan ; la grande toile suit
+let regKey = '';
 function suivreEtat(E) {
   PLUG = E;
+  // un réglage changé côté panneau (en grand) : la grande toile suit (seulement quand il change là-bas)
+  if (GRAND && E.reglages) { const k = JSON.stringify([E.reglages.fils, E.reglages.style]); if (regKey && k !== regKey) { STRAIGHT = E.reglages.fils === 'droits'; if (E.reglages.style) Object.assign(WIRE, E.reglages.style); try { paintFils(); } catch (e) {} } regKey = k; }
   const m = AGENTS[0], hm = (E.actors || []).find(a => a.id === 'main');
   if (E.sleeping && !m.sleeping && !m.queue.length && !m.A && !m.walk && !m.hangAnim && !(dive && dive.ag === m)) goSleep(m, hm && byId[hm.cur] && !byId[hm.cur].gone ? hm.cur : undefined);
   if (E.recap && E.recap.at && E.recap.at !== recapAt) { recapAt = E.recap.at; showRecap(E.recap); }
@@ -2952,13 +2956,19 @@ function suivreEtat(E) {
 }
 // la fenêtre a été masquée (Alt-Tab : elle s'arrête), et revient : au lieu de rejouer en différé ce qui s'est passé
 // pendant ce temps, elle reprend le panneau là où il en est (la fenêtre était cachée : rien ne se voit sauter)
+let resumeArm = false;
 function reprendre() {
+  if (resumeArm || liveSeq < 0) return;
+  resumeArm = true; try { poll(); } catch (e) {}
+  setTimeout(() => { if (resumeArm) { resumeArm = false; reprendreMaintenant(); } }, 1500);
+}
+function reprendreMaintenant() {
   const E = PLUG, data = lastLive; if (!E || !data || liveSeq < 0) return;
   if (dive) { const d = dive; dive = null; const a = d.ag; a.sp.env = d.env0 || stageEnv; a.sp.setMorph(a.baby ? babyMorph(a.style.m) : a.style.m); }
   // les bébés partis entre-temps s'en vont ; ceux qui sont arrivés apparaissent à leur place
   [...AGENTS].forEach(ag => { if (ag.baby && !(E.actors || []).some(a => a.id === ag.id)) removeAgent(ag); });
   (E.actors || []).forEach(a => {
-    const n = byId[a.cur]; if (!n || n.gone) return;
+    const n0 = byId[a.cur], n = n0 && !n0.gone ? n0 : byId[(n0 ? adj[n0.id] : []).find(v => byId[v] && !byId[v].gone) || hubId()]; if (!n) return;
     let ag = AGENTS.find(x => x.id === a.id);
     if (!ag) { if (a.id === 'main') return; ag = makeAgent(a.id, AGENTS[0].style, true, n, a.id === 'bg' ? 'tâche de fond' : 'agent'); ag.bornT = -99; AGENTS.push(ag); }
     ag.A = null; ag.walk = null; ag.leap = null; ag.leapO = null; ag.hangAnim = null; ag.queue = []; ag.cards = []; ag.mood = null;
@@ -2966,7 +2976,7 @@ function reprendre() {
     ag.sleeping = a.id === 'main' && !!E.sleeping; if (ag.sleeping) { ag.hang = 26; ag.status = { tool: 'dort', path: 'en attente de Claude' }; }
   });
   const bySeq = new Map((data.events || []).filter(ev => ev && typeof ev.seq === 'number').map(ev => [ev.seq, ev]));
-  [E.playing && E.playing.seq, ...(E.queue || [])].filter(v => typeof v === 'number').forEach((s, k) => { const ev = bySeq.get(s); if (ev && !ev.close && !ev.summary) accept(k === 0 && E.playing ? { ...ev, forceDive: !!E.playing.crawl } : { ...ev, fast: true, pace: 2 }); });
+  [E.playing && E.playing.seq, ...(E.queue || [])].filter(v => typeof v === 'number' && !(GRAND && v <= vuSeq)).forEach((s, k) => { const ev = bySeq.get(s); if (ev && !ev.close && !ev.summary) accept(E.playing && s === E.playing.seq ? { ...ev, forceDive: !!E.playing.crawl } : { ...ev, fast: true, pace: 2 }); });
   AGENTS.forEach(ag => later(ag, .05));
   refreshSide(sel);
 }

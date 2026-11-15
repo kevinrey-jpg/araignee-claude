@@ -133,7 +133,7 @@ async function pageFor($: EngineInterface, ev: Ev, e: any, ran: any): Promise<Pa
 
 let rebuild = false
 async function ensureWorld($: EngineInterface) {
-  if (rebuild && !playing) { rebuild = false; world = null; loading = null }
+  if (rebuild && !playing && !grandOpen) { rebuild = false; world = null; loading = null }
   if (world) return
   if (!loading) loading = (async () => {
     cwd = await $.session.cwd()
@@ -268,13 +268,13 @@ function idleRefresh($: EngineInterface) {
 }
 // un geste appliqué sans être montré : la place de l'araignée, la caméra et la toile avancent comme s'il avait été joué
 // (le son suit, au moment où la grande toile le montre)
-function quietApply($: EngineInterface, ev: Ev) {
+function quietApply($: EngineInterface, ev: Ev, sound = false) {
   if (!world) return
   try {
     world.quiet = true
     if (world.sph && ev.tool !== 'Leave' && ev.tool !== 'Mood') turnClip(world, ev)
     const c: any = makeClip(world, ev)
-    playSounds($, (c && c.sounds) || [])
+    if (sound) playSounds($, (c && c.sounds) || [])
   } catch (err) { $.ui.log(`araignee : ${String(err)}`) } finally { world.quiet = false }
   // la ligne d'état suit aussi : au retour, elle dit ce que la grande toile montrait
   if (ev.tool !== 'Leave') void update($, statusAtom, () => ({ tool: ev.toolName, path: ev.label, source })).catch(() => undefined)
@@ -314,14 +314,15 @@ async function pump($: EngineInterface) {
   // caché sous la grande toile (qui dit ce qu'elle montre) : ce qu'elle a déjà montré s'applique en silence ; le reste
   // attend qu'elle le montre, sauf si elle semble arrêtée (fenêtre masquée) depuis 20 s
   if (ev && world && grandOpen && vuSeen >= grandSince) {
-    while (ev && ((ev.seq && ev.seq <= vu) || Date.now() - (ev.at || Date.now()) > 20000)) { quietApply($, ev); ev = queue.shift() }
+    playingInfo = null
+    while (ev && (!ev.seq || ev.seq <= vu || Date.now() - (ev.at || 0) > 20000)) { const shown = !!ev.seq && ev.seq <= vu, last = !queue[0] || !queue[0].seq || queue[0].seq > vu; quietApply($, ev, shown && last); ev = queue.shift() }
     if (ev) { queue.unshift(ev); return }
     // plus rien en attente : le sommeil viendra (la grande toile le suivra)
     playingInfo = null; soonLive($); scheduleSleep($)
     return
   }
   if (!ev) { playingInfo = null; soonLive($); if (world) { lastIdleAt = Date.now(); await showClip($, idleClip(world)).catch(() => undefined); scheduleSleep($) } return }
-  if (rebuild) await ensureWorld($).catch(() => undefined)
+  if (rebuild && !grandOpen) await ensureWorld($).catch(() => undefined)
   playing = true; playUntil = Date.now() + 15000
   playingInfo = ev.seq ? { seq: ev.seq, crawl: false } : null; soonLive($)
   const gen = ++playGen, stale = () => gen !== playGen
@@ -340,7 +341,7 @@ async function pump($: EngineInterface) {
       const next = () => {
         if (stale()) return
         let c: any = null
-        try { c = world && crawling(world) ? (grandOpen ? (crawlAbort(world), null) : crawlClip(world, queue.length > 0)) : null } catch (err) { $.ui.log(`araignee crawler : ${String(err)}`); stop(); return }
+        try { c = world && crawling(world) ? (grandOpen ? (crawlAbort(world), playingInfo = null, null) : crawlClip(world, queue.length > 0)) : null } catch (err) { $.ui.log(`araignee crawler : ${String(err)}`); stop(); return }
         if (!c) { playing = false; void pump($); return }
         void showClip($, c).then(() => { playSounds($, c.sounds || []); const ms = Math.max(300, c.dur * 1000 + 60); playUntil = Date.now() + ms; $.clock.after(ms, next) }).catch(stop)
       }
@@ -382,13 +383,18 @@ async function viewerPaths($: EngineInterface) {
 // la toile telle qu'elle est maintenant, et la page : réécrites à CHAQUE ouverture (sinon une grande toile rouverte
 // montrait la toile du début : sans les nouveaux fichiers, avec les supprimés), avec l'état du panneau
 let graphN = 0
+async function writeGraph($: EngineInterface) {
+  if (!viewerDir || !world) return
+  const g = world.g
+  const data = { name: norm(cwd).split('/').pop() || 'projet', root: norm(cwd), skin: world.skin, seq: liveSeq, etat: etat(), comms: g.comms.map((c: any) => ({ name: c.name, col: c.col })), nodes: g.nodes.map(nodeData), edges: g.edges.map((e: any) => ({ a: e.a, b: e.b, kind: e.kind, broken: e.broken ? e.broken.kind || 'snap' : undefined, alive: e.broken && e.broken.alive || undefined, hidden: e.hidden ? 1 : undefined })) }
+  await $.fs.write(`${viewerDir}/graph-${sid}.js`, 'window.ARAIGNEE_GRAPH = ' + JSON.stringify(data) + ';\n')
+}
 async function viewerSetup($: EngineInterface) {
   await ensureWorld($)
   await viewerPaths($)
   const g = world.g
   graphN++
-  const data = { name: norm(cwd).split('/').pop() || 'projet', root: norm(cwd), skin: world.skin, seq: liveSeq, etat: etat(), comms: g.comms.map((c: any) => ({ name: c.name, col: c.col })), nodes: g.nodes.map(nodeData), edges: g.edges.map((e: any) => ({ a: e.a, b: e.b, kind: e.kind, broken: e.broken ? e.broken.kind || 'snap' : undefined, alive: e.broken && e.broken.alive || undefined, hidden: e.hidden ? 1 : undefined })) }
-  await $.fs.write(`${viewerDir}/graph-${sid}.js`, 'window.ARAIGNEE_GRAPH = ' + JSON.stringify(data) + ';\n')
+  await writeGraph($)
   const html = await $.fs.read(`${$.plugin.root}/viewer/viewer.html`) as string
   await $.fs.write(`${viewerDir}/araignee-${sid}.html`, html.replace('<!--SID-->', `<script>window.ARAIGNEE_SID = ${JSON.stringify(sid)}</script><script src="graph-${sid}.js?v=${graphN}"></script>`))
   await writeLive($)
@@ -416,11 +422,11 @@ async function writeLive($: EngineInterface) {
   await $.fs.write(`${viewerDir}/live-${sid}.js`, `window.__araigneeLive && window.__araigneeLive(${JSON.stringify({ seq: liveSeq, skin: world?.skin, repairs: true, etat: etat(), events: liveEvents })});\n`)
 }
 // l'état a changé sans nouvel événement (un geste commence, la file bouge, elle s'endort) : réécrit sous peu
-let liveSoon = false
+let liveSoon = false, graphNodes = 0
 function soonLive($: EngineInterface) {
   if (!viewerDir || liveSoon) return
   liveSoon = true
-  try { $.clock.after(120, () => { liveSoon = false; void writeLive($).catch(() => undefined) }) } catch { liveSoon = false }
+  try { $.clock.after(120, () => { liveSoon = false; void writeLive($).catch(() => undefined); if (grandOpen && world && world.g.nodes.length !== graphNodes) { graphNodes = world.g.nodes.length; void writeGraph($).catch(() => undefined) } }) } catch { liveSoon = false }
 }
 async function openViewer($: EngineInterface): Promise<string> {
   await viewerSetup($)
@@ -626,16 +632,17 @@ function stampPace(ev: Ev) {
 }
 function enqueue($: EngineInterface, ev: Ev) {
   const now = Date.now()
-  stampPace(ev)
+  stampPace(ev); if (!ev.at) ev.at = now
   lastEventAt = now; rounds = 0; rereads = 0
   if (!ev.actor || ev.actor === 'main') lastMainAt = now
   // une humeur remplace la précédente pas encore jouée ; deux retissages en attente suffisent
   if (ev.tool === 'Mood') queue = queue.filter(q => q.tool !== 'Mood' || q.actor !== ev.actor)
   if (ev.tool === 'Repair' && queue.filter(q => q.tool === 'Repair').length >= 2) return void pump($)
   queue.push(ev)
-  while (queue.length > 10) { const j = queue.findIndex(q => q.tool !== 'Delete' && q.tool !== 'Leave'); if (j < 0) break; queue.splice(j, 1) }
+  const following = grandOpen && vuSeen >= grandSince
+  while (!following && queue.length > 10) { const j = queue.findIndex(q => q.tool !== 'Delete' && q.tool !== 'Leave'); if (j < 0) break; queue.splice(j, 1) }
   // Claude va plus vite que l'araignée : on garde les actions les plus récentes
-  while (queue.length > 5) { const i = queue.findIndex(q => q.tool === 'Read' || q.tool === 'Grep'); const j = i >= 0 ? i : queue.findIndex(q => !KEEP.has(q.tool)); if (j < 0) break; queue.splice(j, 1) }
+  while (!following && queue.length > 5) { const i = queue.findIndex(q => q.tool === 'Read' || q.tool === 'Grep'); const j = i >= 0 ? i : queue.findIndex(q => !KEEP.has(q.tool)); if (j < 0) break; queue.splice(j, 1) }
   soonLive($)
   void pump($)
 }
@@ -747,8 +754,9 @@ async function openGrand($: EngineInterface): Promise<string> {
     // une course plus récente (Réduire puis Agrandir aussitôt) garde la grande toile
     if (grandRun !== (run as any) && grandRun) return
     // retour au panneau : il se met au point du dernier geste montré en grand (sans le rejouer), puis reprend
+    const wasFollowing = vuSeen >= grandSince; grandOpen = true
     await vuFromGrand($).catch(() => undefined)
-    if (grandOpen && world && vuSeen >= grandSince) { while (queue.length && queue[0]!.seq && queue[0]!.seq! <= vu) quietApply($, queue.shift()!) }
+    if (world && wasFollowing) { while (queue.length && (!queue[0]!.seq || queue[0]!.seq! <= vu)) quietApply($, queue.shift()!) }
     grandRun = null; grandOpen = false
     if (!playing && world) await showClip($, idleClip(world)).catch(() => undefined)
     void pump($)
@@ -795,6 +803,8 @@ async function reopen($: EngineInterface) {
   await $.store.set('ferme-' + String(await $.session.id()), false)
 }
 async function closeGrand($: EngineInterface) {
+  // le panneau se met d'abord au point de ce que la grande toile a montré
+  if (grandOpen) await vuFromGrand($).catch(() => undefined)
   // seulement la course qu'on ferme (pas celle d'un Agrandir qui suivrait aussitôt)
   const r = grandRun
   grandOpen = false
@@ -806,7 +816,7 @@ async function closeGrand($: EngineInterface) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // (le plugin vient d'être rechargé pendant qu'elle était ouverte : on retrouve son dossier, elle reçoit de nouveau)
-    if (await read($, grandAtom).catch(() => false)) { grandOpen = true; grandSince = Date.now(); void ensureWorld($).then(() => viewerPaths($)).catch(() => undefined) }
+    if (await read($, grandAtom).catch(() => false)) void ensureWorld($).then(() => viewerPaths($)).catch(() => undefined)
     await $.command.register({ name: 'araignee', description: "Ouvre le panneau de l'araignée qui suit le travail de Claude" })
     await $.command.register({ name: 'araignee-plein-ecran', description: "Ouvre la toile de l'araignée en grand, dans le navigateur (version haute qualité)" })
     // la sentinelle démarre avec la discussion : même si Claude attend, les tâches de fond se voient

@@ -957,7 +957,11 @@ export function makeClip(W, ev) {
   X.edgeNear = [...edgeNear].filter(i => !g.edges[i].broken && i !== X.repairEdge && !(X.snapEdges || []).includes(i)).slice(0, 10)
   X.others = Object.values(W.actors).filter(o => o !== a).map(o => ({ a: o, P: o.sp.pose(W.t, optsFor(o, null, 0, W.env.depth)) }))
   if (ev.tool === 'Leave' && a.id !== 'main') { delete W.actors[a.id]; if (W.camId === a.id) W.camId = null }
-  if (W.quiet) return { svg: '', dur: 0, sounds, lod: 0 }
+  // en silence, aucune image n'a fait glisser la caméra : elle se recale d'un coup sur l'araignée (ou sur sa cible)
+  if (W.quiet) {
+    if (ev.tool !== 'Leave' && ev.tool !== 'Mood') { const c = camTo || sp; W.cam = { ...W.cam, x: c.x, y: camTo ? c.y : sp.y - 8 - a.hang * TILT * .6 } }
+    return { svg: '', dur: 0, sounds, lod: 0 }
+  }
   return renderClip(W, ev, frames, X)
 }
 // l'araignée remonte au centre de la toile, se suspend à un fil et dort
