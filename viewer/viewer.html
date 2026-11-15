@@ -1139,6 +1139,10 @@ const langName = p => { for (const [re, c] of LANG_NAME) if (re.test(p || '')) r
 
 /* ============ la toile de la discussion : écrite par le plugin ============ */
 const GD = window.ARAIGNEE_GRAPH || { name: 'projet', comms: [{ name: 'Projet', col: '#c77dff' }], nodes: [{ id: '.', label: 'projet', kind: 'dir', comm: 0, x: 0, y: 0 }, { id: '::terminal', label: '>_ terminal', kind: 'term', comm: 0, x: 90, y: 50 }], edges: [{ a: '.', b: '::terminal', kind: 'tree' }] };
+// le relais avec le panneau : où il en était quand cette toile a été écrite (araignées, sommeil, caméra, réglages)
+const ETAT0 = GD.etat || null, GRAND0 = /[?&]grand\b/.test(location.search), REG0 = GRAND0 && ETAT0 && ETAT0.reglages || null;
+// le dernier état reçu du panneau (il décide du sommeil et du bilan), et le dernier fichier reçu
+let PLUG = ETAT0, lastLive = null, pluginRepairs = false;
 const COMM = GD.comms.map(c => ({ name: c.name, col: c.col }));
 const P0 = { id: 'live', name: GD.name, files: [], term: '::terminal' };
 const PROJECTS = [P0];
@@ -1148,7 +1152,7 @@ function addNode(id, label, kind, comm) { const n = { id, label, kind, comm, x: 
 function link(a, b, kind = 'tree') { if (a === b || !adj[a] || !adj[b] || adj[a].includes(b)) return; edges.push({ a, b, kind, trail: 0, paths: {} }); adj[a].push(b); adj[b].push(a); }
 function nodeFromData(d) {
   const isDir = d.kind === 'dir', n = addNode(d.id, d.label, isDir ? 'concept' : d.kind, Math.min(d.comm || 0, COMM.length - 1)); n.isDir = isDir; n.x = d.x; n.y = d.y; if (d.path) n.path = d.path;
-  if (d.p3 && Number.isFinite(d.p3.x)) n.p3g = d.p3; n.lines = d.lines; n.edits = d.edits || 0; n.reads = d.reads || 0; n.touched = d.touched || 0; n.heat = d.heat || 0;
+  if (d.p3 && Number.isFinite(d.p3.x)) n.p3g = d.p3; n.lines = d.lines; n.edits = d.edits || 0; n.reads = d.reads || 0; n.touched = d.touched || 0; n.heat = d.heat || 0; if (d.gone) n.gone = true;
   if (n.kind === 'file') { P0.files.push(n.id); n.lang = langColor(d.path || d.label); }
   return n;
 }
@@ -1156,7 +1160,11 @@ function nodeFromData(d) {
 function refreshHeat() { nodes.forEach(n => { if (n.kind === 'file') return; let h = 0; adj[n.id].forEach(v => { const o = byId[v]; if (o.kind === 'file' && o.heat > h) h = o.heat; }); n.heat = h * .7; }); edges.forEach(e => { e.h = Math.max(byId[e.a].heat || 0, byId[e.b].heat || 0); }); }
 (function loadGraph() {
   GD.nodes.forEach(nodeFromData);
-  GD.edges.forEach(e => link(e.a, e.b, e.kind === 'tree' ? 'tree' : 'dep'));
+  GD.edges.forEach(e => {
+    const k0 = edges.length; link(e.a, e.b, e.kind === 'tree' ? 'tree' : 'dep'); const ed = edges.length > k0 ? edges[k0] : null; if (!ed) return;
+    if (e.broken) ed.broken = { kind: e.broken, t0: -99, alive: e.alive || (byId[e.a] && byId[e.a].gone ? e.b : e.a) };
+    if (e.hidden) ed.hidden = true;
+  });
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; nodes.forEach(n => { x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y); x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y); });
   const M = 400; nodes.forEach(n => { n.x += M - x0; n.y += M - y0; }); GD.shift = { x: M - x0, y: M - y0 };
   W = Math.max(600, x1 - x0 + 2 * M); H = Math.max(400, y1 - y0 + 2 * M); CX = W / 2; CY = H / 2;
@@ -1384,8 +1392,13 @@ let speed = 1, paused = false;
 
 /* ============ la sphère : la toile en 3D, en nébuleuses, qui tourne ============ */
 // les nœuds gardent leur place sur la toile plate (x2, y2) ; en mode sphère, x et y sont recalculés à chaque image
-let SPH = !/[?&]toile=classique\b/.test(location.search);
-try { if (localStorage.getItem('araignee-toile') === 'classique') SPH = false; } catch (e) {}
+// sphère ou à plat : un choix fait dans l'adresse (bouton « Toile ») ; sinon, en grand, comme le panneau ; sinon le
+// dernier choix de cette page
+const TOILE_URL = /[?&]toile=(classique|sphere)\b/.exec(location.search);
+let SPH = true;
+if (TOILE_URL) SPH = TOILE_URL[1] !== 'classique';
+else if (REG0 && REG0.toile) SPH = REG0.toile !== 'classique';
+else { try { if (localStorage.getItem('araignee-toile') === 'classique') SPH = false; } catch (e) {} }
 const EDGE_DENS = clamp(Math.sqrt(600 / Math.max(600, edges.length)), .5, 1);
 const NEB_DENS = clamp(Math.sqrt(140 / Math.max(140, nodes.length)), .38, 1);
 let ldt = .016; // durée de la dernière image (pour les lissages faits pendant le dessin)
@@ -1429,6 +1442,8 @@ const SEGS = 16;
 const WIRE = { lum: 1, width: 1, alpha: 1 }; try { Object.assign(WIRE, JSON.parse(localStorage.getItem('araignee-fils-style') || '{}')); } catch (e) {}
 const lumCol = (col, k) => k >= 1 ? mix(col, '#ffffff', Math.min(.85, (k - 1) * .6)) : mix(col, '#06040c', 1 - k);
 let STRAIGHT = false; try { STRAIGHT = localStorage.getItem('araignee-fils') === 'droits'; } catch (e) {}
+// en grand : les mêmes fils que dans le panneau
+if (REG0) { if (REG0.style) Object.assign(WIRE, REG0.style); STRAIGHT = REG0.fils === 'droits'; }
 function sphereEdge(e) { e.pts2 = e.pts2 || e.pts; e.sp = Array.from({ length: SEGS + 1 }, () => ({ x: 0, y: 0 })); if (SPH) e.pts = e.sp; }
 // la caméra à la troisième personne : elle vise le point F (l'araignée suivie, en 3D) et se tient toujours à la même
 // distance D de lui ; la boule ne tourne plus d'elle-même, c'est la caméra qui accompagne l'araignée, même quand elle
@@ -1465,6 +1480,8 @@ if (SPH) {
   nodes.forEach(n => { n.x2 = n.x; n.y2 = n.y; });
   // la boule calculée par le plugin (la même que dans le panneau) ; sinon on la calcule ici
   if (nodes.length && nodes.every(n => n.p3g)) { nodes.forEach(n => { n.p3 = { ...n.p3g }; }); S3.hubDeg = Math.max(40, nodes.length * .15); } else sphereLayout();
+  // la caméra regarde là où regardait celle du panneau
+  if (ETAT0) { const fm = (ETAT0.actors || []).find(a => a.id === 'main'), fn = fm && byId[fm.cur]; if (ETAT0.focus && nodes.every(n => n.p3g)) Object.assign(S3.F, ETAT0.focus); else if (fn && fn.p3) Object.assign(S3.F, fn.p3); }
   edges.forEach(sphereEdge); projectAll();
   stageEnv.snap = sphereSnap;
 }
@@ -1714,16 +1731,28 @@ function makeAgent(id, style, baby, start, name) {
   const k = agentCount++;
   return { k, id, baby, p: P0, name, style, sp: new Spider(baby ? babyMorph(style.m) : style.m, start.x, start.y, baby ? k * 2.4 : -Math.PI / 2, stageEnv), cur: start.id, walk: null, A: null, wspd: 0, cards: [], log: [], queue: [], target: null, status: { tool: 'prête', path: baby ? name : P0.id + '/' }, opts: {}, rng: rng(5 + k), hang: baby ? 70 : 0, hangAnim: null, pace: 1, lastEvt: 0, sleeping: false, mood: null };
 }
-const AGENTS = [makeAgent('main', HYBRIDS[0], false, byId[[...P0.files].sort((a, b) => adj[b].length - adj[a].length)[0]] || nodes[0], P0.name)];
+// elle part de là où est l'araignée du panneau (sinon du fichier le plus relié)
+const E0main = ETAT0 && (ETAT0.actors || []).find(a => a.id === 'main'), start0 = E0main && byId[E0main.cur] && !byId[E0main.cur].gone ? byId[E0main.cur] : null;
+const AGENTS = [makeAgent('main', HYBRIDS[0], false, start0 || byId[[...P0.files].sort((a, b) => adj[b].length - adj[a].length)[0]] || nodes[0], P0.name)];
 let sel = AGENTS[0], selNode = null;
 try { const saved = JSON.parse(localStorage.getItem('araignee-eco') || '{}'), want = GD.skin || saved[P0.id]; AGENTS.forEach(a => { const s = ALL.find(x => x.id === want); if (s) { a.style = s; a.sp.setMorph(s.m); } }); } catch (e) {}
+// les bébés déjà au travail dans le panneau, posés à leur place ; et son sommeil
+if (ETAT0) {
+  (ETAT0.actors || []).forEach(a => { if (a.id === 'main' || !byId[a.cur] || byId[a.cur].gone) return; const ag = makeAgent(a.id, AGENTS[0].style, true, byId[a.cur], a.id === 'bg' ? 'tâche de fond' : 'agent'); ag.hang = Math.min(70, a.hang || 0); ag.bornT = -99; AGENTS.push(ag); });
+  if (ETAT0.sleeping) { const m = AGENTS[0]; m.sleeping = true; m.hang = 26; m.status = { tool: 'dort', path: 'en attente de Claude' }; }
+}
 // l'apparence vient du panneau : quand elle y change, la grande toile suit (et inversement, par le titre de la fenêtre)
 let pluginSkin = GD.skin || null, skinTok = '', skinN = 0;
+// le titre de la fenêtre porte les messages pour le plugin (le script de la grande toile le lit) : l'apparence choisie
+// ici, les réglages de la toile, le dernier geste montré (le panneau, caché dessous, se met au même point), et un
+// message passager (ouvrir un fichier, fermer)
+let regTok = '', vuTok = '', titleExtra = '', vuSeq = 0;
+function setTitle() { document.title = titleBase() + skinTok + regTok + vuTok + titleExtra; }
 function skinFromPlugin(id) { if (!id || id === pluginSkin) return; pluginSkin = id; const s = ALL.find(x => x.id === id); if (s && s !== AGENTS[0].style) setSkin(AGENTS[0], s, true); }
 function setSkin(ag, s, fromPlugin) {
   AGENTS.forEach(a => { a.style = s; a.sp.setMorph(a.baby ? babyMorph(s.m) : s.m); });
   // choisie ici : on la signale au plugin (le script de la grande toile lit le titre de la fenêtre)
-  if (!fromPlugin && GRAND && SID) { skinN++; skinTok = ' #skin:' + s.id + ':' + skinN; document.title = titleBase() + skinTok; }
+  if (!fromPlugin && GRAND && SID) { skinN++; skinTok = ' #skin:' + s.id + ':' + skinN; setTitle(); }
   try { const saved = JSON.parse(localStorage.getItem('araignee-eco') || '{}'); saved[ag.p.id] = s.id; localStorage.setItem('araignee-eco', JSON.stringify(saved)); } catch (e) {}
   markGallery();
 }
@@ -1755,18 +1784,22 @@ function nextEvent(ag) {
   if (!ag.queue.length) {
     if (ag.status.tool !== 'prête' && !ag.sleeping) { ag.status = { tool: 'prête', path: 'en attente de Claude' }; refreshSide(ag); }
     // trois minutes sans rien : elle remonte au centre de la toile et s'endort sur son fil
-    if (ag === AGENTS[0] && !ag.sleeping && AGENTS.length === 1 && simT - ag.lastEvt > SLEEP_S) return goSleep(ag);
+    // (le panneau décide quand il en envoie l'état ; sinon, trois minutes ici)
+    if (ag === AGENTS[0] && !ag.sleeping && (PLUG ? PLUG.sleeping : AGENTS.length === 1 && simT - ag.lastEvt > SLEEP_S)) return goSleep(ag);
     later(ag, .35); return;
   }
   const ev = ag.queue.shift(); if (!ev.auto) ag.lastEvt = simT;
   if (ag.hang > .5 && ev.tool !== 'Leave') { sfx('silk'); hangTo(ag, 0, ag.baby ? 1.3 : 1.1, () => { ag.sleeping = false; runEvent(ag, ev); }); return; }
   runEvent(ag, ev);
 }
-function goSleep(ag) {
+function goSleep(ag, at) {
   ag.sleeping = true; ag.status = { tool: 'dort', path: 'en attente de Claude' }; refreshSide(ag);
-  ag.pace = .55; goTo(ag, hubId(), () => hangTo(ag, 26, 1.6, () => later(ag, .35)), 0);
+  // là où dort l'araignée du panneau, sinon au centre de la toile
+  const hm = PLUG && (PLUG.actors || []).find(a => a.id === 'main'), spot = at || (PLUG && PLUG.sleeping && hm && byId[hm.cur] && !byId[hm.cur].gone ? hm.cur : hubId());
+  ag.pace = .55; goTo(ag, spot, () => hangTo(ag, 26, 1.6, () => later(ag, .35)), 0);
 }
 function runEvent(ag, ev) {
+  if (GRAND && SID && typeof ev.seq === 'number' && ev.seq > vuSeq) { vuSeq = ev.seq; vuTok = ' #vu:' + vuSeq; setTitle(); }
   const label = ev.label ? ev.label : Array.isArray(ev.t) ? ev.d + ' → ' + ev.t.length + ' fichiers' : ev.tool === 'Bash' ? '$ ' + ev.d : ev.tool === 'WebSearch' ? '« ' + ev.d + ' »' : ev.t ? short(ev.t) : ev.tool;
   ag.status = { tool: ev.auto ? (ev.name || 'Réfléchit') : ev.tool, path: label };
   const main = AGENTS[0], entry = { time: new Date().toLocaleTimeString('fr-FR'), tool: ev.tool, path: (ag === main ? '' : ag.id === 'bg' ? 'fond · ' : 'agent · ') + label };
@@ -1777,7 +1810,7 @@ function runEvent(ag, ev) {
   if (['Grep', 'Glob', 'WebSearch', 'Mood', 'Delete'].includes(ev.tool)) return startAction(ag, ev);
   if (ev.tool === 'Repair') { const r = pickRepair(); if (!r) { later(ag, .2); return; } ev.repair = r; return goTo(ag, r.anchor, () => startAction(ag, ev), stopFor(ag, 'Repair')); }
   if (!ev.t || !byId[ev.t] || byId[ev.t].gone) { later(ag, .2); return; }
-  if (!ev.auto && wantsDive(ag, ev)) return goTo(ag, ev.t, () => { if (!dive && !byId[ev.t].gone) startDive(ag, ev); else startAction(ag, ev); }, stopFor(ag, 'Read'));
+  if ((!ev.auto || ev.forceDive) && wantsDive(ag, ev)) return goTo(ag, ev.t, () => { if (!dive && !byId[ev.t].gone) startDive(ag, ev); else startAction(ag, ev); }, stopFor(ag, 'Read'));
   goTo(ag, ev.t, () => startAction(ag, ev), stopFor(ag, ev.tool));
 }
 function sendPulse(path, col, onEnd) { if (path.length < 2) { onEnd && onEnd(); return 0; } const r = routePts(path); pulses.push({ ...r, d: 0, speed: 230, col, onEnd, head: null }); return r.total / 230; }
@@ -1830,6 +1863,8 @@ function startAction(ag, ev) {
     e.repairT0 = simT + .9; e.repairDur = Math.max(.6, A.dur - 1.1); after(.9, () => sfx('silk'));
     ag.cards.push({ at: r.at, title: ev.label || 'Retisse le fil', lines: ev.lines || ['la soie est réparée'], color: '#ffffff', t0: simT + .6, dur: A.dur - .6 });
   }
+  // un geste en attente, rejoué à l'ouverture pour rattraper le panneau : un simple passage
+  if (ev.fast && ['Read', 'Edit', 'Write', 'Grep', 'Glob', 'Bash', 'WebSearch'].includes(ev.tool)) A.dur = Math.min(A.dur, 1);
 }
 function pluckTip(sp) { const L = sp.legs.find(l => l.i === 0 && l.s === 1); const b = sp.ideal(L), f = { x: Math.cos(sp.h), y: Math.sin(sp.h) }; return { x: b.x + f.x * 3, y: b.y + f.y * 3 }; }
 function updateAction(ag, dt) {
@@ -1858,10 +1893,10 @@ function updateAction(ag, dt) {
   else if (A.tool === 'WebSearch') { if (t > 2.65 && !A.sent) { A.sent = true; rings.push({ x: sp.x, y: sp.y, t0: simT, dur: .9, col: '#a8b4ff' }); } }
   else if (A.tool === 'Mood') {
     // l'échec fait claquer un fil du terminal, que l'araignée ira retisser
-    if (!A.ev.ok && !A.snapped && t > 1.1) { A.snapped = true; const i = edges.findIndex((e, k) => !cutEdge(k) && (e.a === '::terminal' || e.b === '::terminal') && !byId[e.a].gone && !byId[e.b].gone); if (i >= 0) { snapEdge(i, 'snap'); sfx('snap'); if (ag.queue.filter(q => q.tool === 'Repair').length < 2) ag.queue.unshift({ tool: 'Repair', label: 'Retisse le fil', lines: ['la soie est réparée'] }); } }
+    if (!A.ev.ok && !A.snapped && t > 1.1) { A.snapped = true; const i = edges.findIndex((e, k) => !cutEdge(k) && (e.a === '::terminal' || e.b === '::terminal') && !byId[e.a].gone && !byId[e.b].gone); if (i >= 0) { snapEdge(i, 'snap'); sfx('snap'); if (!pluginRepairs && ag.queue.filter(q => q.tool === 'Repair').length < 2) ag.queue.unshift({ tool: 'Repair', label: 'Retisse le fil', lines: ['la soie est réparée'] }); } }
     if (A.ev.ok && A.ev.big && !A.burst && t > .4) { A.burst = true; for (let k = 0; k < 16; k++) { const a = k / 16 * Math.PI * 2; parts.push({ k: 'spark', x: sp.x, y: sp.y, vx: Math.cos(a) * 26, vy: Math.sin(a) * 20 - 8, t0: simT, dur: 1.1 }); } }
   }
-  else if (A.tool === 'Delete') { if (!A.snapped && t > .35 && n) { A.snapped = true; snapNode(n); sfx('snap'); const fixer = AGENTS.find(a => a.id === 'bg') || AGENTS[0]; if (fixer.queue.filter(q => q.tool === 'Repair').length < 2) fixer.queue.push({ tool: 'Repair', label: 'Retisse la toile', lines: ['la soie est réparée'] }); } }
+  else if (A.tool === 'Delete') { if (!A.snapped && t > .35 && n) { A.snapped = true; snapNode(n); sfx('snap'); const fixer = AGENTS.find(a => a.id === 'bg') || AGENTS[0]; if (!pluginRepairs && fixer.queue.filter(q => q.tool === 'Repair').length < 2) fixer.queue.push({ tool: 'Repair', label: 'Retisse la toile', lines: ['la soie est réparée'] }); } }
   if (t >= A.dur) {
     if (A.tool === 'Repair') finishRepair(A.ev.repair);
     sp.hTarget = null; sp.display = false; ag.A = null; ag.target = null; later(ag, .4 + Math.random() * .6);
@@ -2035,6 +2070,8 @@ let dive = null;
 const ROWS = 26, LH = 7.4, FS = 4.5, CW = FS * .6;
 function pageMorph(m) { const k = .36, o = { ...m }; ['cl', 'cw', 'al', 'aw', 'bodyZ', 'legW', 'palp', 'R'].forEach(key => o[key] = m[key] * k); o.legs = m.legs.map(v => v * k); o.stepDur = m.stepDur * .7; o.mass = .2; o.baby = true; return o; }
 function wantsDive(ag, ev) {
+  // le panneau parcourait cette page quand la grande toile s'est ouverte : elle la parcourt aussi
+  if (ev.forceDive && !dive && ev.page && Array.isArray(ev.page.lines) && ev.page.lines.length && typeof ev.t === 'string' && byId[ev.t] && !byId[ev.t].gone) return true;
   if (dive || diveMode === 'non' || !ev.page || !Array.isArray(ev.page.lines) || !ev.page.lines.length) return false;
   const term = ev.tool === 'Bash' && ev.page.kind === 'term';
   if ((!term && !['Read', 'Edit', 'Write'].includes(ev.tool)) || typeof ev.t !== 'string' || !byId[ev.t] || byId[ev.t].gone) return false;
@@ -2565,6 +2602,8 @@ let last = performance.now();
 let errCount = 0;
 function frame(now) {
   requestAnimationFrame(frame);
+  // plus de 3 s sans image : la fenêtre était masquée (même sans « visibilitychange ») ; elle reprend le panneau
+  if (now - last > 3000 && liveSeq >= 0 && now - lastResume > 1000) { lastResume = now; try { reprendre(); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : reprise', e); } }
   const rdt = Math.min(.08, (now - last) / 1000); last = now;
   try { sphereFrame(rdt, paused ? 0 : rdt * speed); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : sphère', e); }
   try { if (!paused) step(rdt * speed); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : étape', e); }
@@ -2602,8 +2641,17 @@ toileBtn.textContent = SPH ? 'Toile : sphère' : 'Toile : à plat'; toileBtn.set
 [['lum', 'w-lum'], ['width', 'w-width'], ['alpha', 'w-alpha']].forEach(([k, id]) => { const el = document.getElementById(id); el.value = WIRE[k]; el.addEventListener('input', () => { WIRE[k] = +el.value; try { localStorage.setItem('araignee-fils-style', JSON.stringify(WIRE)); } catch (e) {} }); });
 // les fils : ondulés comme des câbles, ou droits (gardé d'une ouverture à l'autre)
 const filsBtn = document.getElementById('b-fils'), paintFils = () => { filsBtn.textContent = STRAIGHT ? 'Fils : droits' : 'Fils : ondulés'; filsBtn.setAttribute('aria-pressed', String(STRAIGHT)); };
-filsBtn.addEventListener('click', () => { STRAIGHT = !STRAIGHT; try { localStorage.setItem('araignee-fils', STRAIGHT ? 'droits' : 'ondules'); } catch (e) {} paintFils(); }); paintFils();
-toileBtn.addEventListener('click', () => { try { localStorage.setItem('araignee-toile', SPH ? 'classique' : 'sphere'); } catch (e) {} location.replace(location.href.replace(/([?&])toile=classique&?/, '$1')); });
+// en grand, un réglage changé ici l'est aussi dans le panneau : la page le met dans son titre, le script de la grande
+// toile l'écrit pour le plugin
+function sendReg(toile) { if (!(GRAND && SID)) return; regTok = ' #reg:' + Date.now() + ':' + (STRAIGHT ? 'droits' : 'ondules') + ':' + (toile || (SPH ? 'sphere' : 'classique')) + ':' + [WIRE.lum, WIRE.width, WIRE.alpha].map(v => +(+v).toFixed(2)).join(','); setTitle(); }
+filsBtn.addEventListener('click', () => { STRAIGHT = !STRAIGHT; try { localStorage.setItem('araignee-fils', STRAIGHT ? 'droits' : 'ondules'); } catch (e) {} paintFils(); sendReg(); }); paintFils();
+toileBtn.addEventListener('click', () => {
+  const next = SPH ? 'classique' : 'sphere';
+  try { localStorage.setItem('araignee-toile', next); } catch (e) {}
+  // la page se recharge dans l'autre forme (le choix est dans l'adresse) ; en grand, le panneau suit
+  const go = () => { const u = new URL(location.href); u.searchParams.set('toile', next); location.replace(u.toString()); };
+  if (GRAND && SID) { sendReg(next); setTimeout(go, 900); } else go();
+});
 function setPaused(v) { paused = v; playBtn.textContent = v ? 'Lecture' : 'Pause'; playBtn.setAttribute('aria-pressed', String(v)); }
 playBtn.addEventListener('click', () => setPaused(!paused));
 camBtn.addEventListener('click', () => { if (cam.mode === 'follow') camFree(); else camFollow(sel); });
@@ -2788,7 +2836,7 @@ cv.addEventListener('pointerleave', () => { tipEl.hidden = true; hoverNode = nul
 let openSeq = 0;
 function openFile(n) {
   const rel = n.path || n.id, full = (GD.root ? GD.root + '/' : '') + rel;
-  if (GRAND && SID) { openSeq++; document.title = titleBase() + skinTok + ' #open:' + openSeq + ':' + rel; setTimeout(() => { document.title = titleBase() + skinTok; }, 1200); toast('Ouverture de ' + n.label + '…'); return; }
+  if (GRAND && SID) { openSeq++; titleExtra = ' #open:' + openSeq + ':' + rel; setTitle(); setTimeout(() => { titleExtra = ''; setTitle(); }, 1200); toast('Ouverture de ' + n.label + '…'); return; }
   (navigator.clipboard ? navigator.clipboard.writeText(full) : Promise.reject()).then(() => toast('Chemin copié : ' + rel), () => toast(full));
 }
 const toastEl = document.getElementById('toast');
@@ -2814,42 +2862,116 @@ function addLiveNode(d) {
   refreshHeat();
 }
 window.__araigneeLive = data => {
-  lastBeat = Date.now();
-  if (data && typeof data.skin === 'string') { try { skinFromPlugin(data.skin); } catch (e) {} }
-  if (liveSeq < 0) {   // à l'ouverture, on ne rejoue pas l'historique, sauf un bilan encore frais
+  lastBeat = Date.now(); if (!data) return;
+  if (typeof data.skin === 'string') { try { skinFromPlugin(data.skin); } catch (e) {} }
+  if (data.repairs) pluginRepairs = true;
+  lastLive = data;
+  if (liveSeq < 0) {
+    // à l'ouverture : la grande toile reprend le panneau là où il en est (même instance du plugin que la toile écrite) ;
+    // avec un plugin plus ancien, on ne rejoue pas l'historique, sauf un bilan encore frais
+    const E = data.etat;
+    if (E && ETAT0 && E.boot === ETAT0.boot) { try { relais(data, E); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : relais', e); liveSeq = data.seq; } suivreEtat(E); return; }
     liveSeq = data.seq; const last = (data.events || []).slice(-1)[0];
-    if (last && last.summary && Date.now() - (last.summary.at || 0) < 10 * 60e3) showRecap(last.summary);
+    if (last && last.summary && Date.now() - (last.summary.at || 0) < 10 * 60e3) { recapAt = last.summary.at || 0; showRecap(last.summary); }
+    if (E) suivreEtat(E);
     return;
   }
   // le plugin a redémarré avec un compteur plus petit : on repart de son état actuel
   if (data.seq < liveSeq - 1000) { liveSeq = data.seq; return; }
   (data.events || []).forEach(ev => { try { receive(ev); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : événement', e); } });
+  if (data.etat) suivreEtat(data.etat);
 };
-let recvCount = 0;
+let recvCount = 0, recapAt = 0;
 function receive(ev) {
-  {
-    if (!ev || typeof ev.seq !== 'number' || ev.seq <= liveSeq) return;
-    liveSeq = ev.seq; recvCount++;
-    if (ev.close) { if (GRAND) window.close(); return; }
-    if (ev.summary) { showRecap(ev.summary); return; }
-    if (!ev.auto) hideRecap(); (ev.nodes || []).forEach(addLiveNode);
-    // un import ajouté par Claude : de nouveaux fils dans la toile, tout chauds
-    if (SPH && Array.isArray(ev.edges)) ev.edges.forEach(([a, b]) => { if (!byId[a] || !byId[b] || edgeIdx[a + '|' + b] !== undefined) return; link(a, b, 'dep'); const i = edges.length - 1; if (edges[i].a !== a) return; edgeIdx[a + '|' + b] = edgeIdx[b + '|' + a] = i; edges[i].trail = 1; edges[i].trailAt = simT; sphereEdge(edges[i]); });
-    // ce que le plugin sait du fichier : lignes, passages, chaleur
-    if (ev.info && byId[ev.info.id]) { const n = byId[ev.info.id]; if (ev.info.lines) n.lines = ev.info.lines; n.edits = ev.info.edits; n.reads = ev.info.reads; n.touched = ev.info.touched; n.heat = ev.info.heat; refreshHeat(); }
-    if (ev.t && typeof ev.t === 'string' && byId[ev.t] && byId[ev.t].gone && (ev.tool === 'Write' || ev.tool === 'Edit')) reviveNode(byId[ev.t]);
-    if (ev.tool === 'Leave') { const ag = AGENTS.find(a => a.id === ev.actor); if (ag) ag.queue.push(ev); return; }
-    const ag = ev.tool === 'Delete' ? AGENTS[0] : agentFor(ev.actor, ev);
-    if (ev.tool === 'Delete' && !(ev.t && byId[ev.t])) return;
-    // une humeur remplace la précédente pas encore jouée ; deux retissages en attente suffisent
-    if (ev.tool === 'Mood') ag.queue = ag.queue.filter(q => q.tool !== 'Mood');
-    if (ev.tool === 'Repair' && ag.queue.filter(q => q.tool === 'Repair').length >= 2) return;
-    if (!ev.auto) ag.queue = ag.queue.filter(q => !q.auto);
-    ag.queue.push(ev);
-    while (ag.queue.length > 10) { const j = ag.queue.findIndex(q => q.tool !== 'Delete' && q.tool !== 'Leave'); if (j < 0) break; ag.queue.splice(j, 1); }
-    while (ag.queue.length > 6) { const j = ag.queue.findIndex(q => !['Mood', 'Delete', 'Repair', 'Leave'].includes(q.tool)); if (j < 0) break; ag.queue.splice(j, 1); }
-  }
+  if (!ev || typeof ev.seq !== 'number' || ev.seq <= liveSeq) return;
+  liveSeq = ev.seq; recvCount++;
+  if (ev.close) { if (GRAND) window.close(); return; }
+  if (ev.summary) { recapAt = ev.summary.at || recapAt; showRecap(ev.summary); return; }
+  if (!ev.auto) hideRecap();
+  accept(ev);
 }
+// ce qu'un geste change dans la toile : nouveaux fichiers (et sa cible, si on ne la connaît pas encore), nouveaux fils
+// d'import, ce que le plugin sait du fichier, un fichier recréé
+function toileDe(ev) {
+  (ev.nodes || []).forEach(addLiveNode);
+  if (ev.node && ev.node.id && !byId[ev.node.id]) addLiveNode(ev.node);
+  // un import ajouté par Claude : de nouveaux fils dans la toile, tout chauds
+  if (SPH && Array.isArray(ev.edges)) ev.edges.forEach(([a, b]) => { if (!byId[a] || !byId[b] || edgeIdx[a + '|' + b] !== undefined) return; link(a, b, 'dep'); const i = edges.length - 1; if (edges[i].a !== a) return; edgeIdx[a + '|' + b] = edgeIdx[b + '|' + a] = i; edges[i].trail = 1; edges[i].trailAt = simT; sphereEdge(edges[i]); });
+  // ce que le plugin sait du fichier : lignes, passages, chaleur
+  if (ev.info && byId[ev.info.id]) { const n = byId[ev.info.id]; if (ev.info.lines) n.lines = ev.info.lines; n.edits = ev.info.edits; n.reads = ev.info.reads; n.touched = ev.info.touched; n.heat = ev.info.heat; refreshHeat(); }
+  if (ev.t && typeof ev.t === 'string' && byId[ev.t] && byId[ev.t].gone && (ev.tool === 'Write' || ev.tool === 'Edit')) reviveNode(byId[ev.t]);
+}
+function accept(ev) {
+  toileDe(ev);
+  if (ev.tool === 'Leave') { const ag = AGENTS.find(a => a.id === ev.actor); if (ag) ag.queue.push(ev); return; }
+  const ag = ev.tool === 'Delete' ? AGENTS[0] : agentFor(ev.actor, ev);
+  if (ev.tool === 'Delete' && !(ev.t && byId[ev.t])) return;
+  // une humeur remplace la précédente pas encore jouée ; deux retissages en attente suffisent
+  if (ev.tool === 'Mood') ag.queue = ag.queue.filter(q => q.tool !== 'Mood');
+  if (ev.tool === 'Repair' && ag.queue.filter(q => q.tool === 'Repair').length >= 2) return;
+  if (!ev.auto) ag.queue = ag.queue.filter(q => !q.auto);
+  ag.queue.push(ev);
+  while (ag.queue.length > 10) { const j = ag.queue.findIndex(q => q.tool !== 'Delete' && q.tool !== 'Leave'); if (j < 0) break; ag.queue.splice(j, 1); }
+  while (ag.queue.length > 6) { const j = ag.queue.findIndex(q => !['Mood', 'Delete', 'Repair', 'Leave'].includes(q.tool)); if (j < 0) break; ag.queue.splice(j, 1); }
+}
+// un fichier supprimé avant l'ouverture : tombé, fils coupés, sans animation
+function dropNode(n) {
+  adj[n.id].forEach(v => { const i = edgeIdx[n.id + '|' + v]; if (i !== undefined && !cutEdge(i)) edges[i].broken = { kind: 'stub', t0: -99, alive: v }; });
+  n.gone = true; n.fallT = undefined;
+  AGENTS.forEach(a => { if (a.cur === n.id) a.cur = adj[n.id].find(v => !byId[v].gone) || hubId(); });
+  rebuildStatic();
+}
+// le relais, à l'ouverture : ce qui a changé dans la toile depuis qu'elle a été écrite (sans animation), puis le geste
+// que joue le panneau (en plongée s'il parcourait une page) et ceux qui attendent, dans le même ordre (ceux-là en
+// accéléré : elle rattrape le temps réel) ; rien de plus ancien n'est rejoué
+function relais(data, E) {
+  const evs = (data.events || []).filter(ev => ev && typeof ev.seq === 'number' && !ev.close && !ev.summary), bySeq = new Map(evs.map(ev => [ev.seq, ev]));
+  const want = [E.playing && E.playing.seq, ...(E.queue || [])].filter(v => typeof v === 'number'), replay = new Set(want);
+  evs.filter(ev => ev.seq > (GD.seq || 0) && !replay.has(ev.seq)).forEach(ev => {
+    toileDe(ev);
+    if (ev.tool === 'Delete' && typeof ev.t === 'string' && byId[ev.t] && !byId[ev.t].gone) dropNode(byId[ev.t]);
+  });
+  liveSeq = data.seq;
+  want.forEach((s, k) => {
+    const ev = bySeq.get(s); if (!ev) return;
+    const e2 = { ...ev };
+    if (k === 0 && E.playing && E.playing.seq === s) { if (E.playing.crawl) e2.forceDive = true; }
+    else { e2.fast = true; e2.pace = 2; }
+    accept(e2);
+  });
+  // l'araignée principale rejoue tout de suite (sans attendre son prochain tour de garde)
+  AGENTS.forEach(ag => { if (ag.queue.length && !ag.A && !ag.walk && !ag.hangAnim) later(ag, .05); });
+}
+// le panneau décide du sommeil et du bilan ; la grande toile suit
+function suivreEtat(E) {
+  PLUG = E;
+  const m = AGENTS[0], hm = (E.actors || []).find(a => a.id === 'main');
+  if (E.sleeping && !m.sleeping && !m.queue.length && !m.A && !m.walk && !m.hangAnim && !(dive && dive.ag === m)) goSleep(m, hm && byId[hm.cur] && !byId[hm.cur].gone ? hm.cur : undefined);
+  if (E.recap && E.recap.at && E.recap.at !== recapAt) { recapAt = E.recap.at; showRecap(E.recap); }
+  else if (!E.recap && recapAt) { recapAt = 0; hideRecap(); }
+}
+// la fenêtre a été masquée (Alt-Tab : elle s'arrête), et revient : au lieu de rejouer en différé ce qui s'est passé
+// pendant ce temps, elle reprend le panneau là où il en est (la fenêtre était cachée : rien ne se voit sauter)
+function reprendre() {
+  const E = PLUG, data = lastLive; if (!E || !data || liveSeq < 0) return;
+  if (dive) { const d = dive; dive = null; const a = d.ag; a.sp.env = d.env0 || stageEnv; a.sp.setMorph(a.baby ? babyMorph(a.style.m) : a.style.m); }
+  // les bébés partis entre-temps s'en vont ; ceux qui sont arrivés apparaissent à leur place
+  [...AGENTS].forEach(ag => { if (ag.baby && !(E.actors || []).some(a => a.id === ag.id)) removeAgent(ag); });
+  (E.actors || []).forEach(a => {
+    const n = byId[a.cur]; if (!n || n.gone) return;
+    let ag = AGENTS.find(x => x.id === a.id);
+    if (!ag) { if (a.id === 'main') return; ag = makeAgent(a.id, AGENTS[0].style, true, n, a.id === 'bg' ? 'tâche de fond' : 'agent'); ag.bornT = -99; AGENTS.push(ag); }
+    ag.A = null; ag.walk = null; ag.leap = null; ag.leapO = null; ag.hangAnim = null; ag.queue = []; ag.cards = []; ag.mood = null;
+    ag.cur = n.id; ag.sp = new Spider(ag.sp.m, n.x, n.y, ag.sp.h, stageEnv); ag.hang = Math.min(70, a.hang || 0);
+    ag.sleeping = a.id === 'main' && !!E.sleeping; if (ag.sleeping) { ag.hang = 26; ag.status = { tool: 'dort', path: 'en attente de Claude' }; }
+  });
+  const bySeq = new Map((data.events || []).filter(ev => ev && typeof ev.seq === 'number').map(ev => [ev.seq, ev]));
+  [E.playing && E.playing.seq, ...(E.queue || [])].filter(v => typeof v === 'number').forEach((s, k) => { const ev = bySeq.get(s); if (ev && !ev.close && !ev.summary) accept(k === 0 && E.playing ? { ...ev, forceDive: !!E.playing.crawl } : { ...ev, fast: true, pace: 2 }); });
+  AGENTS.forEach(ag => later(ag, .05));
+  refreshSide(sel);
+}
+let hiddenAt = 0, lastResume = -1e9;
+document.addEventListener('visibilitychange', () => { if (document.hidden) hiddenAt = Date.now(); else if (hiddenAt) { const long = Date.now() - hiddenAt > 2500; hiddenAt = 0; if (long && performance.now() - lastResume > 1000) { lastResume = performance.now(); try { reprendre(); } catch (e) { errCount++; if (errCount < 20) console.warn('araignée : reprise', e); } } } });
 // le plugin peut être en train d'écrire le fichier quand la page le lit : la lecture suivante sera bonne
 window.addEventListener('error', e => { if (e.filename && /live-[^/]*\.js/.test(e.filename)) e.preventDefault(); }, true);
 function poll() { if (!SID) return; const sc = document.createElement('script'); sc.src = 'live-' + SID + '.js?t=' + Date.now(); sc.onload = sc.onerror = () => sc.remove(); document.head.append(sc); }
@@ -2864,13 +2986,13 @@ if (GRAND) {
   // « Fermer » : la page le signale dans son titre (le script Windows prévient le plugin), puis se ferme
   const bClose = document.getElementById('b-close'); bClose.hidden = false;
   let fermerN = 0;
-  bClose.addEventListener('click', () => { fermerN++; document.title = titleBase() + skinTok + ' #fermer:' + fermerN; toast('Fermeture de l\'araignée…'); setTimeout(() => window.close(), 900); });
+  bClose.addEventListener('click', () => { fermerN++; titleExtra = ' #fermer:' + fermerN; setTitle(); toast('Fermeture de l\'araignée…'); setTimeout(() => window.close(), 900); });
 }
-if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) setPaused(true);
+if (window.matchMedia('(prefers-reduced-motion: reduce)').matches && !GRAND) setPaused(true);
 AGENTS.forEach((ag, k) => later(ag, .5 + k * .9));
 requestAnimationFrame(frame);
 requestAnimationFrame(miniLoop);
-window.__araignee = { ecran: id => byId[id] && toScreen(byId[id].x, byId[id].y), sphere: () => ({ on: SPH, yaw: S3.yaw, pitch: S3.pitch, R: S3.R, p3: nodes.map(n => n.p3 && [Math.round(n.p3.x), Math.round(n.p3.y), Math.round(n.p3.z), adj[n.id].length]) }), camera: () => ({ mode: cam.mode, suit: sel.id, z: +cam.z.toFixed(3), zoom: +cam.uz.toFixed(3), x: Math.round(cam.x), y: Math.round(cam.y), araignee: AGENTS.map(a => ({ id: a.id, cur: a.cur, h: +a.sp.h.toFixed(2), ...toScreen(a.sp.x, a.sp.y), noeud: byId[a.cur] && toScreen(byId[a.cur].x, byId[a.cur].y) })) }), etat: () => ({ simT, apparence: AGENTS[0].style.id, toile: SPH ? 'sphère' : 'à plat', erreurs: errCount, recus: recvCount, plonge: !!dive, araignees: AGENTS.map(a => ({ id: a.id, action: a.A ? a.A.tool : null, marche: !!a.walk, fil: !!a.hangAnim, file: a.queue.length, dort: a.sleeping })) }) };
+window.__araignee = { araignees: () => ({ dive: dive ? { ag: dive.ag.id, t: dive.ev && dive.ev.t } : null, liveSeq, vu: vuSeq, F: S3.F, agents: AGENTS.map(a => ({ id: a.id, cur: a.cur, hang: Math.round(a.hang || 0), sleeping: !!a.sleeping, status: a.status, acting: a.A ? a.A.tool : null, walking: !!a.walk, queue: a.queue.map(q => q.label || q.tool) })) }), ecran: id => byId[id] && toScreen(byId[id].x, byId[id].y), sphere: () => ({ on: SPH, yaw: S3.yaw, pitch: S3.pitch, R: S3.R, p3: nodes.map(n => n.p3 && [Math.round(n.p3.x), Math.round(n.p3.y), Math.round(n.p3.z), adj[n.id].length]) }), camera: () => ({ mode: cam.mode, suit: sel.id, z: +cam.z.toFixed(3), zoom: +cam.uz.toFixed(3), x: Math.round(cam.x), y: Math.round(cam.y), araignee: AGENTS.map(a => ({ id: a.id, cur: a.cur, h: +a.sp.h.toFixed(2), ...toScreen(a.sp.x, a.sp.y), noeud: byId[a.cur] && toScreen(byId[a.cur].x, byId[a.cur].y) })) }), etat: () => ({ simT, apparence: AGENTS[0].style.id, toile: SPH ? 'sphère' : 'à plat', erreurs: errCount, recus: recvCount, plonge: !!dive, araignees: AGENTS.map(a => ({ id: a.id, action: a.A ? a.A.tool : null, marche: !!a.walk, fil: !!a.hangAnim, file: a.queue.length, dort: a.sleeping })) }) };
 })();
 </script>
 

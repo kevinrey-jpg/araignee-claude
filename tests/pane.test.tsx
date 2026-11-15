@@ -499,3 +499,43 @@ test("le texte d'une page reste un dessin valide : ni caractères de contrôle, 
   expect(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(svg)).toBe(false)
   expect(svg).toContain('tout passe')
 })
+
+// la grande toile part de l'état du panneau : réécrite à chaque ouverture, avec la place de l'araignée ; et elle
+// reçoit ce qui lui manquait (le rythme, les retissages)
+const graphOf = (writes: any[]) => { const w = writes.filter(x => /graph-[^/]*\.js$/.test(x.path)).pop(); return w ? JSON.parse(String(w.text).replace(/^window\.ARAIGNEE_GRAPH = /, '').replace(/;\s*$/, '')) : null }
+test("la grande toile s'ouvre sur l'état du panneau, avec une toile à jour à chaque ouverture", async ($, on) => {
+  const files: Record<string, string> = { 'src/a.ts': 'export const a = 1\n', 'src/b.ts': 'export const b = 2\n', 'README.md': '# projet\n' }
+  treeProject(on, files)
+  const writes: any[] = []
+  on('fs.write', (_: any, e: any) => { writes.push(e); return { value: undefined } })
+  on('tool.call', (_: any, e: any) => { if (e.tool === 'Write') files[String(e.file_path).replace('/proj/', '')] = String(e.content); return e.tool === 'Bash' ? { isError: true, result: 'boom', text: 'Error: exit 1' } as any : { result: {}, text: '     1\texport const b = 2\n     2\t\n     3\texport function f() {}' } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.tool.call({ tool: 'Read', file_path: '/proj/src/b.ts' })
+  await flush()
+  await $.command.run({ command: 'araignee-plein-ecran', args: '' } as any)
+  let g = graphOf(writes)
+  expect(g.etat).toBeDefined()
+  expect(typeof g.seq).toBe('number')
+  expect(g.etat.actors.find((a: any) => a.id === 'main')).toBeDefined()
+  expect(g.nodes.some((n: any) => n.id === 'src/c.ts')).toBe(false)
+  // la grande toile était fermée : un nouveau fichier, puis on la rouvre → il y est
+  await $.tool.call({ tool: 'Write', file_path: '/proj/src/c.ts', content: 'export const c = 3\n' })
+  await flush()
+  await $.command.run({ command: 'araignee-plein-ecran', args: '' } as any)
+  g = graphOf(writes)
+  expect(g.nodes.some((n: any) => n.id === 'src/c.ts')).toBe(true)
+  // la page est réécrite aussi, avec une adresse de toile nouvelle (pas de vieille copie gardée en mémoire)
+  const html = writes.filter(x => /araignee-[^/]*\.html$/.test(x.path)).pop()
+  expect(String(html.text)).toMatch(/graph-[^"]+\.js\?v=\d+/)
+  // le rythme part avec chaque geste ; une commande qui échoue envoie aussi son retissage
+  await $.tool.call({ tool: 'Bash', command: 'npm test' })
+  await flush()
+  const evs = liveOf(writes)
+  expect(evs.filter((x: any) => x.tool === 'Read' || x.tool === 'Write').every((x: any) => typeof x.pace === 'number')).toBe(true)
+  expect(evs.some((x: any) => x.tool === 'Repair')).toBe(true)
+  // l'état du panneau voyage aussi dans le fichier en direct
+  const live = writes.filter(x => /live-[^/]*\.js$/.test(x.path)).pop()
+  const data = JSON.parse(/__araigneeLive\((.*)\);\s*$/s.exec(live.text)![1]!)
+  expect(data.etat && data.etat.boot).toBe(g.etat.boot)
+  expect(data.repairs).toBe(true)
+})

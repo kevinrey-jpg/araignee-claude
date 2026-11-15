@@ -55,14 +55,14 @@ if ((ProcName $claude) -notmatch '^claude$') {
 }
 if (-not [AraigneeWin]::IsWindow($claude)) { Write-Output 'claude-introuvable'; exit 1 }
 
-# une seule grande toile à la fois
-$old = [AraigneeWin]::Find($Title)
-if ($old -ne [IntPtr]::Zero) { [void][AraigneeWin]::ShowWindow($old, 5); exit 0 }
-
-Start-Process -FilePath 'msedge' -ArgumentList @("--app=$Url", '--no-first-run', '--disable-features=msEdgeSidebarV2')
-$win = [IntPtr]::Zero
-for ($i = 0; $i -lt 60 -and $win -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 250; $win = [AraigneeWin]::Find($Title) }
-if ($win -eq [IntPtr]::Zero) { Write-Output 'fenetre-introuvable'; exit 1 }
+# une seule grande toile à la fois : si elle est encore là (Réduire puis Agrandir aussitôt), on la reprend et on la suit
+$win = [AraigneeWin]::Find($Title)
+if ($win -ne [IntPtr]::Zero) { [void][AraigneeWin]::ShowWindow($win, 5) }
+else {
+  Start-Process -FilePath 'msedge' -ArgumentList @("--app=$Url", '--no-first-run', '--disable-features=msEdgeSidebarV2')
+  for ($i = 0; $i -lt 60 -and $win -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 250; $win = [AraigneeWin]::Find($Title) }
+  if ($win -eq [IntPtr]::Zero) { Write-Output 'fenetre-introuvable'; exit 1 }
+}
 
 # sans barre de titre ni bordure : la toile se fond dans Claude
 $GWL_STYLE = -16
@@ -93,6 +93,23 @@ $skinSeen = ''
 $closeFile = ''
 if ($skinFile) { $closeFile = $skinFile -replace '\\skin-([^\\]+)\.txt$', '\fermer-$1.txt' }
 $closeSeen = ''
+# le dernier geste montré par la grande toile (« #vu:<n> ») et un réglage changé (« #reg:… ») : écrits à côté de la
+# page, dans vu-<session>.txt et reglages-<session>.txt, pour le plugin (le panneau caché se met au même point)
+$vuFile = ''; $regFile = ''
+if ($skinFile) { $vuFile = $skinFile -replace '\\skin-([^\\]+)\.txt$', '\vu-$1.txt'; $regFile = $skinFile -replace '\\skin-([^\\]+)\.txt$', '\reglages-$1.txt' }
+$vuSeen = ''; $regSeen = ''
+function VuRequest([string]$title) {
+  if (-not $vuFile -or $title -notmatch '#vu:(\d+)') { return }
+  if ($Matches[1] -eq $script:vuSeen) { return }
+  $script:vuSeen = $Matches[1]
+  try { [System.IO.File]::WriteAllText($vuFile, $Matches[1]) } catch { }
+}
+function RegRequest([string]$title) {
+  if (-not $regFile -or $title -notmatch '#reg:(\S+)') { return }
+  if ($Matches[1] -eq $script:regSeen) { return }
+  $script:regSeen = $Matches[1]
+  try { [System.IO.File]::WriteAllText($regFile, $Matches[1]) } catch { }
+}
 # « Fermer » dans la grande toile : « #fermer:<n> » dans le titre, on l'écrit dans fermer-<session>.txt pour le plugin
 function CloseRequest([string]$title) {
   if (-not $closeFile -or $title -notmatch '#fermer:(\d+)') { return }
@@ -113,6 +130,8 @@ while ([AraigneeWin]::IsWindow($win)) {
   OpenRequest $ttl
   SkinRequest $ttl
   CloseRequest $ttl
+  VuRequest $ttl
+  RegRequest $ttl
   # la toile ne se montre que quand Claude (ou elle-même) est au premier plan
   $fg = [AraigneeWin]::GetForegroundWindow()
   $show = (-not [AraigneeWin]::IsIconic($claude)) -and ($fg -eq $claude -or $fg -eq $win)

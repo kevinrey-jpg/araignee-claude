@@ -804,9 +804,10 @@ export function turnClip(W, ev) {
     for (const o of Object.values(W.actors)) { const q = P.get(o.cur); if (!q) continue; const n = g.byId[o.cur]; n.x = q.x; n.y = q.y }
     ride(W, last, P); last = P
     sp.vx = sp.vy = 0; stepPhysics(W, DT)
-    if (step++ % rec === 0) { W.cam.x += (sp.x - W.cam.x) * .25; W.cam.y += (sp.y - 8 - a.hang * TILT * .6 - W.cam.y) * .25; frames.push({ P: sp.pose(W.t, optsFor(a, null, 0, W.env.depth)), cam: { ...W.cam }, o: {}, tAct: -1, hang: a.hang }) }
+    if (step++ % rec === 0) { W.cam.x += (sp.x - W.cam.x) * .25; W.cam.y += (sp.y - 8 - a.hang * TILT * .6 - W.cam.y) * .25; if (!W.quiet) frames.push({ P: sp.pose(W.t, optsFor(a, null, 0, W.env.depth)), cam: { ...W.cam }, o: {}, tAct: -1, hang: a.hang }) }
   }
   applyPlace(W, turn.B); buildGeometry(g); W.sph.yaw = turn.to.yaw; W.sph.pitch = turn.to.pitch; if (turn.to.F) W.sph.F = turn.to.F; W.turning = false
+  if (W.quiet) return null
   const X = { total: frames.length / FPS, walkDur: frames.length / FPS, act: { tool: 'idle' }, target: null, targets: [], plucks: [], edgeNear: [], S: SKINS[W.skin], actor: a, sounds: [], turn, others: Object.values(W.actors).filter(o => o !== a).map(o => ({ a: o, P: o.sp.pose(W.t, optsFor(o, null, 0, W.env.depth)) })) }
   return renderClip(W, { tool: 'idle' }, frames, X)
 }
@@ -839,12 +840,13 @@ export function makeClip(W, ev) {
   }
   const walkTo = ['Read', 'Edit', 'Write', 'Bash', 'Repair'].includes(ev.tool) ? target : null
   // une lecture parcourue en crawler : l'araignée ne s'attarde pas sur le fichier, elle saute ensuite sur la page
-  const actDur = ev.crawl ? .5 : ev.auto ? .9 : ev.tool === 'Mood' ? (ev.ok ? (ev.big ? 2.6 : 1.7) : 2.3) : (ACT_DUR[ev.tool] || 1.5) / Math.sqrt(pace)
+  const actDur = W.quiet ? .2 : ev.crawl ? .5 : ev.auto ? .9 : ev.tool === 'Mood' ? (ev.ok ? (ev.big ? 2.6 : 1.7) : 2.3) : (ACT_DUR[ev.tool] || 1.5) / Math.sqrt(pace)
   const act = { tool: ev.tool, n: target, dur: actDur, ok: ev.ok, at }
   const frames = [], DT = 1 / 60, rec = Math.round(60 / FPS), edgeNear = new Set(), sounds = []
   let step = 0
   const camTo = ev.tool === 'Delete' && target ? target : null
   const recFrame = (tAct) => {
+    if (W.quiet) return
     const o = optsFor(a, tAct >= 0 ? act : null, tAct, W.env.depth)
     const P = sp.pose(W.t, o)
     const fx = camTo ? camTo.x : sp.x, fy = camTo ? camTo.y : sp.y - 8 - a.hang * TILT * .6
@@ -913,7 +915,7 @@ export function makeClip(W, ev) {
   const X = { walkDur: actStart, act, target, targets, plucks: [], S, actor: a, edge, sounds, pace }
   X.turn = turn
   // la foudre part de l'endroit où l'araignée commence son action (pas plus d'une fois toutes les 5 s)
-  if (W.sph && !['Leave', 'Mood', 'Delete'].includes(ev.tool) && Date.now() - W.sph.lastBolt > 5000) { X.bolt = boltPlan(W, g.byId[a.cur]); X.boltT = actStart + .15; if (X.bolt) W.sph.lastBolt = Date.now() }
+  if (W.sph && !W.quiet && !['Leave', 'Mood', 'Delete'].includes(ev.tool) && Date.now() - W.sph.lastBolt > 5000) { X.bolt = boltPlan(W, g.byId[a.cur]); X.boltT = actStart + .15; if (X.bolt) W.sph.lastBolt = Date.now() }
   if (ev.tool === 'Leave') {
     // le bébé remonte sur son fil et disparaît
     sounds.push({ at: actStart, name: 'silk' })
@@ -955,6 +957,7 @@ export function makeClip(W, ev) {
   X.edgeNear = [...edgeNear].filter(i => !g.edges[i].broken && i !== X.repairEdge && !(X.snapEdges || []).includes(i)).slice(0, 10)
   X.others = Object.values(W.actors).filter(o => o !== a).map(o => ({ a: o, P: o.sp.pose(W.t, optsFor(o, null, 0, W.env.depth)) }))
   if (ev.tool === 'Leave' && a.id !== 'main') { delete W.actors[a.id]; if (W.camId === a.id) W.camId = null }
+  if (W.quiet) return { svg: '', dur: 0, sounds, lod: 0 }
   return renderClip(W, ev, frames, X)
 }
 // l'araignée remonte au centre de la toile, se suspend à un fil et dort

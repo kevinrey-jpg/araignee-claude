@@ -19,7 +19,7 @@ const TOOLS: Record<string, string> = { Read: 'Read', Edit: 'Edit', MultiEdit: '
 const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', '.venv', 'venv', '__pycache__', '.cache', 'coverage', 'target', '.idea', '.vscode', 'graphify-out'])
 
 // actor : 'main' (Claude), 'agent:<id>' (un sous-agent) ou 'bg' (une tâche de fond) ; les deux derniers sont des bébés araignées
-type Ev = { tool: string; toolName: string; path?: string; targets?: string[]; label: string; lines: string[]; actor?: string; ok?: boolean; big?: boolean; pace?: number; page?: Page; cmd?: string; bgOut?: boolean; auto?: boolean; edges?: [string, string][] }
+type Ev = { tool: string; toolName: string; path?: string; targets?: string[]; label: string; lines: string[]; actor?: string; ok?: boolean; big?: boolean; pace?: number; page?: Page; cmd?: string; bgOut?: boolean; auto?: boolean; edges?: [string, string][]; seq?: number; at?: number }
 // une page de texte pour la plongée : les vraies lignes lues ou écrites, la zone modifiée (hi, dans la page) et les lignes retirées
 type Page = { start: number; lines: string[]; hi?: [number, number]; del?: string[]; kind: 'read' | 'edit' | 'write' | 'term' }
 // le monde de l'araignée vit dans le module : un rechargement le reconstruit
@@ -46,6 +46,12 @@ type Turn = { reads: string[]; edits: Map<string, { add: number; del: number; cr
 const newTurn = (): Turn => ({ reads: [], edits: new Map(), greps: [], bash: [], web: [] })
 let turn = newTurn()
 let grandRun: { return?: () => unknown } | null = null
+// la grande toile (mode Agrandir) est ouverte : le panneau, caché dessous, la suit au lieu de jouer pour lui seul
+let grandOpen = false, grandSince = 0
+// le dernier geste que la grande toile a montré (elle le met dans son titre, le script Windows l'écrit dans un
+// fichier) : caché dessous, le panneau se met au même point en silence, sans rien rejouer ; au retour, la petite
+// araignée est là où était la grande
+let vu = 0, vuSeen = 0, regSeen = Date.now(), grandTick = false
 // la sentinelle : les tâches en arrière-plan (commandes, scripts, agents lancés dans un terminal)
 // ne passent pas par les outils de Claude, alors on guette les fichiers qu'elles touchent
 let watchDirs: string[] = []
@@ -209,7 +215,8 @@ function scheduleSleep($: EngineInterface) {
     playing = true
     try {
       const clip = sleepClip(world)
-      void update($, statusAtom, () => ({ tool: 'dort', path: 'en attente de Claude', source }))
+      soonLive($)
+      void update($, statusAtom, () => ({ tool: 'dort', path: 'en attente de Claude', source })).catch(() => undefined)
       void showClip($, clip)
       const ms = Math.max(500, clip.dur * 1000 + 150); playUntil = Date.now() + ms
       // un événement arrivé pendant qu'elle s'endormait : elle se réveille aussitôt
@@ -221,7 +228,7 @@ function scheduleSleep($: EngineInterface) {
 async function camera($: EngineInterface, what: 'plus' | 'moins' | 'suivre' | 'fils') {
   await ensureWorld($).catch(() => undefined); if (!world) return
   // fils ondulés ou droits (gardé d'une discussion à l'autre)
-  if (what === 'fils') { setStraightWires(world, !world.straightWires); await $.store.set('fils', world.straightWires ? 'droits' : 'ondules').catch(() => undefined) }
+  if (what === 'fils') { setStraightWires(world, !world.straightWires); soonLive($); await $.store.set('fils', world.straightWires ? 'droits' : 'ondules').catch(() => undefined) }
   else if (what === 'suivre') setFollow(world, !!world.free)
   else { const z = setZoom(world, (world.zoom || 1) * (what === 'plus' ? 1.3 : 1 / 1.3)); await $.store.set('zoom', z).catch(() => undefined) }
   if (!playing) await showClip($, idleClip(world))
@@ -235,7 +242,7 @@ const WIRE_SETTINGS: [string, string, [number, string][]][] = [
 async function wireSetting($: EngineInterface, k: string, v: number) {
   await ensureWorld($).catch(() => undefined); if (!world) return
   const st = { lum: 1, width: 1, alpha: 1, ...(world.wireStyle || {}), [k]: v }
-  setWireStyle(world, st); await $.store.set('fils-style', st).catch(() => undefined)
+  setWireStyle(world, st); soonLive($); await $.store.set('fils-style', st).catch(() => undefined)
   if (!playing) await showClip($, idleClip(world))
 }
 // une seule ligne, pas trop longue (un chemin, une commande)
@@ -256,8 +263,45 @@ function guard($: EngineInterface) {
 }
 // au repos, la sphère se remet à jour de temps en temps : un éclair part de l'araignée, la caméra revient sur elle
 function idleRefresh($: EngineInterface) {
-  if (playing || queue.length || !world || !world.sph || world.sleeping || Date.now() - lastIdleAt <= 8800 || Date.now() - lastEventAt <= 2500) return
+  if (grandOpen || playing || queue.length || !world || !world.sph || world.sleeping || Date.now() - lastIdleAt <= 8800 || Date.now() - lastEventAt <= 2500) return
   lastIdleAt = Date.now(); try { void showClip($, idleClip(world)) } catch { /* rien à montrer */ }
+}
+// un geste appliqué sans être montré : la place de l'araignée, la caméra et la toile avancent comme s'il avait été joué
+// (le son suit, au moment où la grande toile le montre)
+function quietApply($: EngineInterface, ev: Ev) {
+  if (!world) return
+  try {
+    world.quiet = true
+    if (world.sph && ev.tool !== 'Leave' && ev.tool !== 'Mood') turnClip(world, ev)
+    const c: any = makeClip(world, ev)
+    playSounds($, (c && c.sounds) || [])
+  } catch (err) { $.ui.log(`araignee : ${String(err)}`) } finally { world.quiet = false }
+  // la ligne d'état suit aussi : au retour, elle dit ce que la grande toile montrait
+  if (ev.tool !== 'Leave') void update($, statusAtom, () => ({ tool: ev.toolName, path: ev.label, source })).catch(() => undefined)
+  soonLive($)
+}
+async function vuFromGrand($: EngineInterface) {
+  if (!viewerDir) return
+  const f = `${viewerDir}/vu-${sid}.txt`, st: any = await $.fs.stat(f).catch(() => null)
+  // seulement ce qui a été écrit depuis cette ouverture
+  if (!st || !st.mtimeMs || st.mtimeMs <= Math.max(vuSeen, grandSince - 1000)) return
+  vuSeen = Math.max(st.mtimeMs, grandSince)
+  const v = +String(await $.fs.read(f).catch(() => '') || '').trim()
+  if (Number.isFinite(v) && v > vu) vu = v
+  if (!playing) void pump($)
+}
+// un réglage changé dans la grande toile (fils, toile) : le panneau suit
+async function regFromGrand($: EngineInterface) {
+  if (!viewerDir || !world) return
+  const f = `${viewerDir}/reglages-${sid}.txt`, st: any = await $.fs.stat(f).catch(() => null)
+  if (!st || !st.mtimeMs || st.mtimeMs <= regSeen) return
+  regSeen = st.mtimeMs
+  const [, fils, toile, style] = String(await $.fs.read(f).catch(() => '') || '').trim().split(':')
+  if (fils && (fils === 'droits') !== !!world.straightWires) { setStraightWires(world, fils === 'droits'); await $.store.set('fils', fils === 'droits' ? 'droits' : 'ondules').catch(() => undefined) }
+  const v = String(style || '').split(',').map(Number)
+  if (v.length === 3 && v.every(x => Number.isFinite(x) && x > 0)) { const ws = { lum: v[0]!, width: v[1]!, alpha: v[2]! }; setWireStyle(world, ws); await $.store.set('fils-style', ws).catch(() => undefined) }
+  if (toile && (toile === 'classique') !== !world.sph) { await $.store.set('toile', toile === 'classique' ? 'classique' : 'sphere').catch(() => undefined); rebuild = true }
+  soonLive($)
 }
 // une vraie action de Claude attend-elle ?
 const realWaiting = () => queue.some(q => !q.auto)
@@ -267,9 +311,19 @@ async function pump($: EngineInterface) {
   let ev = queue.shift()
   // un départ pour un bébé qui n'est jamais arrivé : rien à jouer
   while (ev && ev.tool === 'Leave' && world && !hasActor(world, ev.actor || '')) ev = queue.shift()
-  if (!ev) { if (world) { lastIdleAt = Date.now(); await showClip($, idleClip(world)); scheduleSleep($) } return }
+  // caché sous la grande toile (qui dit ce qu'elle montre) : ce qu'elle a déjà montré s'applique en silence ; le reste
+  // attend qu'elle le montre, sauf si elle semble arrêtée (fenêtre masquée) depuis 20 s
+  if (ev && world && grandOpen && vuSeen >= grandSince) {
+    while (ev && ((ev.seq && ev.seq <= vu) || Date.now() - (ev.at || Date.now()) > 20000)) { quietApply($, ev); ev = queue.shift() }
+    if (ev) { queue.unshift(ev); return }
+    // plus rien en attente : le sommeil viendra (la grande toile le suivra)
+    playingInfo = null; soonLive($); scheduleSleep($)
+    return
+  }
+  if (!ev) { playingInfo = null; soonLive($); if (world) { lastIdleAt = Date.now(); await showClip($, idleClip(world)).catch(() => undefined); scheduleSleep($) } return }
   if (rebuild) await ensureWorld($).catch(() => undefined)
   playing = true; playUntil = Date.now() + 15000
+  playingInfo = ev.seq ? { seq: ev.seq, crawl: false } : null; soonLive($)
   const gen = ++playGen, stale = () => gen !== playGen
   if (world && crawling(world)) crawlAbort(world)
   try {
@@ -278,7 +332,7 @@ async function pump($: EngineInterface) {
     const main = async () => {
       // une lecture avec sa page : après l'arrivée, l'araignée la parcourt en crawler, en quelques clips courts
       // (elle se presse si d'autres actions attendent)
-      if (ev.page && ['Read', 'Edit', 'Write'].includes(ev.tool)) crawlBegin(world, ev)
+      if (ev.page && ['Read', 'Edit', 'Write'].includes(ev.tool) && crawlBegin(world, ev) && playingInfo) { playingInfo.crawl = true; soonLive($) }
       const clip = makeClip(world, ev)
       await showClip($, clip)
       playSounds($, clip.sounds || [])
@@ -286,7 +340,7 @@ async function pump($: EngineInterface) {
       const next = () => {
         if (stale()) return
         let c: any = null
-        try { c = world && crawling(world) ? crawlClip(world, queue.length > 0) : null } catch (err) { $.ui.log(`araignee crawler : ${String(err)}`); stop(); return }
+        try { c = world && crawling(world) ? (grandOpen ? (crawlAbort(world), null) : crawlClip(world, queue.length > 0)) : null } catch (err) { $.ui.log(`araignee crawler : ${String(err)}`); stop(); return }
         if (!c) { playing = false; void pump($); return }
         void showClip($, c).then(() => { playSounds($, c.sounds || []); const ms = Math.max(300, c.dur * 1000 + 60); playUntil = Date.now() + ms; $.clock.after(ms, next) }).catch(stop)
       }
@@ -316,25 +370,57 @@ async function pump($: EngineInterface) {
 const VIEWER_TOOL: Record<string, string> = { Read: 'Read', Edit: 'Edit', MultiEdit: 'Edit', NotebookEdit: 'Edit', Write: 'Write', Grep: 'Grep', Glob: 'Glob', Bash: 'Bash', WebSearch: 'WebSearch', WebFetch: 'WebSearch', Mood: 'Mood', Delete: 'Delete', Leave: 'Leave' }
 const r1 = (v: number) => Math.round((v || 0) * 10) / 10
 const r2 = (v: number) => Math.round((v || 0) * 100) / 100
-const nodeData = (n: any) => ({ p3: n.p3 && Number.isFinite(n.p3.x) ? { x: r1(n.p3.x), y: r1(n.p3.y), z: r1(n.p3.z) } : undefined, id: n.id, label: n.label, kind: n.kind, comm: n.comm, x: Math.round(n.x * 10) / 10, y: Math.round(n.y * 10) / 10, path: n.path, lines: n.lines, edits: n.edits || undefined, reads: n.reads || undefined, touched: n.touched || undefined, heat: n.heat ? r2(n.heat) : undefined })
+const nodeData = (n: any) => ({ p3: n.p3 && Number.isFinite(n.p3.x) ? { x: r1(n.p3.x), y: r1(n.p3.y), z: r1(n.p3.z) } : undefined, id: n.id, label: n.label, kind: n.kind, comm: n.comm, x: Math.round(n.x * 10) / 10, y: Math.round(n.y * 10) / 10, path: n.path, lines: n.lines, edits: n.edits || undefined, reads: n.reads || undefined, touched: n.touched || undefined, heat: n.heat ? r2(n.heat) : undefined, gone: n.gone ? 1 : undefined })
 const infoOf = (n: any) => n && ({ id: n.id, lines: n.lines, edits: n.edits || 0, reads: n.reads || 0, touched: n.touched || 0, heat: r2(n.heat) })
-async function viewerSetup($: EngineInterface) {
+// le dossier de la grande toile et le numéro de la discussion (calculés une fois)
+async function viewerPaths($: EngineInterface) {
   if (viewerDir) return
-  await ensureWorld($)
   const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || cwd
-  const dir = norm(home) + '/.claude/araignee'
   sid = String((await $.session.id()) || Date.now()).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 16)
+  viewerDir = norm(home) + '/.claude/araignee'
+}
+// la toile telle qu'elle est maintenant, et la page : réécrites à CHAQUE ouverture (sinon une grande toile rouverte
+// montrait la toile du début : sans les nouveaux fichiers, avec les supprimés), avec l'état du panneau
+let graphN = 0
+async function viewerSetup($: EngineInterface) {
+  await ensureWorld($)
+  await viewerPaths($)
   const g = world.g
-  const data = { name: norm(cwd).split('/').pop() || 'projet', root: norm(cwd), skin: world.skin, comms: g.comms.map((c: any) => ({ name: c.name, col: c.col })), nodes: g.nodes.map(nodeData), edges: g.edges.map((e: any) => ({ a: e.a, b: e.b, kind: e.kind })) }
-  await $.fs.write(`${dir}/graph-${sid}.js`, 'window.ARAIGNEE_GRAPH = ' + JSON.stringify(data) + ';\n')
+  graphN++
+  const data = { name: norm(cwd).split('/').pop() || 'projet', root: norm(cwd), skin: world.skin, seq: liveSeq, etat: etat(), comms: g.comms.map((c: any) => ({ name: c.name, col: c.col })), nodes: g.nodes.map(nodeData), edges: g.edges.map((e: any) => ({ a: e.a, b: e.b, kind: e.kind, broken: e.broken ? e.broken.kind || 'snap' : undefined, alive: e.broken && e.broken.alive || undefined, hidden: e.hidden ? 1 : undefined })) }
+  await $.fs.write(`${viewerDir}/graph-${sid}.js`, 'window.ARAIGNEE_GRAPH = ' + JSON.stringify(data) + ';\n')
   const html = await $.fs.read(`${$.plugin.root}/viewer/viewer.html`) as string
-  await $.fs.write(`${dir}/araignee-${sid}.html`, html.replace('<!--SID-->', `<script>window.ARAIGNEE_SID = ${JSON.stringify(sid)}</script><script src="graph-${sid}.js"></script>`))
-  viewerDir = dir
+  await $.fs.write(`${viewerDir}/araignee-${sid}.html`, html.replace('<!--SID-->', `<script>window.ARAIGNEE_SID = ${JSON.stringify(sid)}</script><script src="graph-${sid}.js?v=${graphN}"></script>`))
   await writeLive($)
+}
+// l'état du panneau, pour que la grande toile parte de là où il en est (et le rattrape) : où sont les araignées, si
+// elle dort, ce qu'elle joue (et si elle parcourt une page), ce qui attend, le bilan, les réglages de la toile
+const BOOT = liveSeq
+let playingInfo: { seq: number; crawl: boolean } | null = null
+let lastRecap: Recap | null = null
+function etat() {
+  if (!world) return undefined
+  const W = world, F = W.sph && W.sph.F
+  return {
+    boot: BOOT, seq: liveSeq, sleeping: !!W.sleeping,
+    actors: Object.values(W.actors).map((a: any) => ({ id: a.id, cur: a.cur, hang: Math.round(a.hang || 0) })),
+    focus: F && Number.isFinite(F.x) ? { x: r1(F.x), y: r1(F.y), z: r1(F.z) } : undefined,
+    playing: playingInfo || undefined,
+    queue: queue.map(q => q.seq).filter((v): v is number => typeof v === 'number'),
+    recap: lastRecap || undefined,
+    reglages: { toile: W.sph ? 'sphere' : 'classique', fils: W.straightWires ? 'droits' : 'ondules', style: W.wireStyle || undefined },
+  }
 }
 async function writeLive($: EngineInterface) {
   if (!viewerDir) return
-  await $.fs.write(`${viewerDir}/live-${sid}.js`, `window.__araigneeLive && window.__araigneeLive(${JSON.stringify({ seq: liveSeq, skin: world?.skin, events: liveEvents })});\n`)
+  await $.fs.write(`${viewerDir}/live-${sid}.js`, `window.__araigneeLive && window.__araigneeLive(${JSON.stringify({ seq: liveSeq, skin: world?.skin, repairs: true, etat: etat(), events: liveEvents })});\n`)
+}
+// l'état a changé sans nouvel événement (un geste commence, la file bouge, elle s'endort) : réécrit sous peu
+let liveSoon = false
+function soonLive($: EngineInterface) {
+  if (!viewerDir || liveSoon) return
+  liveSoon = true
+  try { $.clock.after(120, () => { liveSoon = false; void writeLive($).catch(() => undefined) }) } catch { liveSoon = false }
 }
 async function openViewer($: EngineInterface): Promise<string> {
   await viewerSetup($)
@@ -356,8 +442,9 @@ async function showOnce($: EngineInterface) {
   await $.store.set(key, true)
   await openViewer($)
 }
+// (gardé même avant la première ouverture de la grande toile : elle en aura besoin pour rattraper le panneau)
 async function pushLive($: EngineInterface, toolName: string, ev: Ev, e: any, since?: number) {
-  if (!viewerDir) return
+  if (!world) return
   const g = world.g, before = Math.min(since ?? g.nodes.length, g.nodes.length)
   let t: any
   if (ev.tool === 'Bash') t = '::terminal'
@@ -366,12 +453,16 @@ async function pushLive($: EngineInterface, toolName: string, ev: Ev, e: any, si
   const nodes = g.nodes.slice(before).map((n: any) => ({ ...nodeData(n), anchor: g.adj[n.id][0] }))
   const d = String(e.pattern ?? e.command ?? e.query ?? e.url ?? '').split('\n')[0]?.slice(0, 60) ?? ''
   const info = ev.path ? infoOf(nodeForPath(g, ev.path)) : undefined
-  liveSeq += 1
-  const now = Date.now()
-  liveEvents.push({ seq: liveSeq, at: now, tool: VIEWER_TOOL[toolName] || VIEWER_TOOL[ev.tool] || ev.tool, t, d, label: ev.label, lines: ev.lines, nodes, actor: ev.actor || 'main', ok: ev.ok, big: ev.big, pace: ev.pace, info, page: ev.page, edges: ev.edges && ev.edges.length ? ev.edges : undefined, auto: ev.auto || undefined, name: ev.auto ? ev.toolName : undefined })
+  // la cible elle-même : une grande toile qui ne la connaît pas encore l'ajoute au lieu de sauter le geste
+  const tn = typeof t === 'string' ? g.byId[t] : null, node = tn && tn.kind === 'file' ? { ...nodeData(tn), anchor: g.adj[tn.id][0] } : undefined
+  liveSeq += 1; ev.seq = liveSeq
+  const now = Date.now(); ev.at = now
+  liveEvents.push({ seq: liveSeq, at: now, tool: VIEWER_TOOL[toolName] || VIEWER_TOOL[ev.tool] || ev.tool, t, d, label: ev.label, lines: ev.lines, nodes, node, actor: ev.actor || 'main', ok: ev.ok, big: ev.big, pace: ev.pace, info, page: ev.page, edges: ev.edges && ev.edges.length ? ev.edges : undefined, auto: ev.auto || undefined, name: ev.auto ? ev.toolName : undefined })
   if (liveEvents.length > 30) liveEvents = liveEvents.slice(-30)
-  // seules les pages récentes voyagent (la grande toile relit le fichier toutes les 0,7 s) : il reste léger
-  liveEvents.forEach((x, i) => { if (x.page && i < liveEvents.length - 3 && now - (x.at || 0) > 20000) delete x.page })
+  // seules les pages récentes voyagent (la grande toile relit le fichier toutes les 0,7 s) : il reste léger ; on garde
+  // celles des gestes que le panneau joue ou garde en file (une grande toile qui s'ouvre les rejoue)
+  const keep = new Set([playingInfo?.seq, ev.seq, ...queue.map(q => q.seq)])
+  liveEvents.forEach((x, i) => { if (x.page && !keep.has(x.seq) && i < liveEvents.length - 3 && now - (x.at || 0) > 20000) delete x.page })
   await writeLive($)
 }
 
@@ -427,7 +518,9 @@ async function startWatch($: EngineInterface) {
           const ev: Ev = { tool: 'Delete', toolName: 'Delete', path: c.path, label: 'Supprimé · ' + name, lines: ['✗ ' + c.path], actor: 'main' }
           await pushLive($, 'Delete', ev, {}).catch(() => undefined)
           enqueue($, ev)
-          enqueue($, { tool: 'Repair', toolName: 'Repair', label: 'Retisse la toile', lines: ['la soie est réparée'], actor: who })
+          const fix: Ev = { tool: 'Repair', toolName: 'Repair', label: 'Retisse la toile', lines: ['la soie est réparée'], actor: who }
+          await pushLive($, 'Repair', fix, {}).catch(() => undefined)
+          enqueue($, fix)
           if (who === 'bg') bgLast = Date.now()
           continue
         }
@@ -441,15 +534,16 @@ async function startWatch($: EngineInterface) {
         const ev: Ev = { tool: c.created ? 'Write' : 'Edit', toolName: 'Arrière-plan', path: c.path, label: 'Arrière-plan · ' + name, lines, actor: 'bg', page }
         bgLast = Date.now(); if (page) noteEdit(c.path, page)
         touch($, c.path, 'e')
+        stampPace(ev)
         await pushLive($, c.created ? 'Write' : 'Edit', ev, {}).catch(() => undefined)
         enqueue($, ev)
       }
       // la tâche de fond ne touche plus rien : son bébé araignée remonte sur son fil
-      if (world && hasActor(world, 'bg') && bgLast && Date.now() - bgLast > 45000 && !queue.some(q => q.actor === 'bg')) { bgLast = 0; leave($, 'bg') }
+      if (world && bgLast && Date.now() - bgLast > 45000 && !queue.some(q => q.actor === 'bg')) { bgLast = 0; leave($, 'bg', hasActor(world, 'bg')) }
     } catch { /* on réessaie au prochain passage */ }
     busy = false
   }
-  $.clock.every(2500, () => { void tick(); if (grandRun) { void skinFromGrand($).catch(() => undefined); void fermerFromGrand($).catch(() => undefined) } })
+  $.clock.every(2500, () => { void tick(); if (grandRun || grandOpen) { void skinFromGrand($).catch(() => undefined); void fermerFromGrand($).catch(() => undefined) } })
 }
 
 const KEEP = new Set(['Mood', 'Delete', 'Repair', 'Leave'])
@@ -485,9 +579,9 @@ async function lifeTick($: EngineInterface): Promise<boolean> {
   }
   // pendant la lecture du fichier, Claude a pu agir : son action passe d'abord
   if (!ev || playing || queue.length || !world) return false
-  lastAutoAt = now; queue.push(ev); void pump($)
-  // la grande toile fait la même chose
-  void pushLive($, 'Read', ev, {}).catch(() => undefined)
+  // la grande toile fait la même chose (l'envoi numérote le geste aussitôt, avant que le panneau ne le joue)
+  lastAutoAt = now; void pushLive($, 'Read', ev, {}).catch(() => undefined)
+  queue.push(ev); soonLive($); void pump($)
   return true
 }
 // les imports qu'une écriture ou une modification ajoute deviennent de nouveaux fils : un nouveau fichier les apporte
@@ -523,13 +617,16 @@ async function newDeps($: EngineInterface, ev: Ev, e: any, prev: string | undefi
   }
   return out.size ? addDeps(world, [...out].map(t => [self.id, t]) as any) as [string, string][] : []
 }
+// le rythme : plus Claude enchaîne vite, plus l'araignée trotte (calculé avant l'envoi à la grande toile, qui le suit)
+function stampPace(ev: Ev) {
+  if (ev.pace !== undefined || KEEP.has(ev.tool)) return
+  const now = Date.now()
+  eventTimes = eventTimes.filter(t => now - t < 30000); eventTimes.push(now)
+  ev.pace = Math.min(1.9, Math.max(.75, .75 + eventTimes.length * .07))
+}
 function enqueue($: EngineInterface, ev: Ev) {
   const now = Date.now()
-  if (!KEEP.has(ev.tool)) {
-    // le rythme : plus Claude enchaîne vite, plus l'araignée trotte
-    eventTimes = eventTimes.filter(t => now - t < 30000); eventTimes.push(now)
-    ev.pace = Math.min(1.9, Math.max(.75, .75 + eventTimes.length * .07))
-  }
+  stampPace(ev)
   lastEventAt = now; rounds = 0; rereads = 0
   if (!ev.actor || ev.actor === 'main') lastMainAt = now
   // une humeur remplace la précédente pas encore jouée ; deux retissages en attente suffisent
@@ -539,12 +636,15 @@ function enqueue($: EngineInterface, ev: Ev) {
   while (queue.length > 10) { const j = queue.findIndex(q => q.tool !== 'Delete' && q.tool !== 'Leave'); if (j < 0) break; queue.splice(j, 1) }
   // Claude va plus vite que l'araignée : on garde les actions les plus récentes
   while (queue.length > 5) { const i = queue.findIndex(q => q.tool === 'Read' || q.tool === 'Grep'); const j = i >= 0 ? i : queue.findIndex(q => !KEEP.has(q.tool)); if (j < 0) break; queue.splice(j, 1) }
+  soonLive($)
   void pump($)
 }
-function leave($: EngineInterface, actor: string) {
+// (la grande toile a pu créer ce bébé même si le panneau, pressé, a sauté tous ses gestes : sans ce départ il y
+// restait pour toujours, et l'empêchait de s'endormir)
+function leave($: EngineInterface, actor: string, here = true) {
   const ev: Ev = { tool: 'Leave', toolName: 'Leave', label: actor === 'bg' ? 'La tâche de fond a fini' : "L'agent a fini", lines: [], actor }
   void pushLive($, 'Leave', ev, {}).catch(() => undefined)
-  enqueue($, ev)
+  if (here) enqueue($, ev)
 }
 
 async function openPane($: EngineInterface) {
@@ -611,7 +711,6 @@ function recapOf(answer: string, ms: number, aborted: boolean): Recap | null {
   return { title: aborted ? 'Bilan · interrompu' : 'Bilan du tour', duration: fmtDuration(ms), said: gist(answer), rows, at: Date.now() }
 }
 async function pushRaw($: EngineInterface, data: any) {
-  if (!viewerDir) return
   liveSeq += 1
   liveEvents.push({ seq: liveSeq, ...data })
   if (liveEvents.length > 30) liveEvents = liveEvents.slice(-30)
@@ -627,6 +726,8 @@ async function toggleSound($: EngineInterface): Promise<boolean> {
 }
 // la toile en grand, calée sur la zone de discussion de Claude (Windows : Edge en mode application)
 async function openGrand($: EngineInterface): Promise<string> {
+  // un « Réduire » pas encore lu par l'ancienne page ne doit pas refermer celle qu'on rouvre
+  liveEvents = liveEvents.filter(x => !x.close)
   await viewerSetup($)
   if ((await $.env.get('OS')) !== 'Windows_NT') { await openViewer($); return 'La grande toile se cale sur Claude seulement sous Windows : elle s\'ouvre dans ton navigateur.' }
   const m = await $.store.get('marges')
@@ -638,12 +739,20 @@ async function openGrand($: EngineInterface): Promise<string> {
   stopGrand()
   void startWatch($).catch(() => undefined)
   const run = $.process.spawn({ argv })
-  grandRun = run as any
+  grandRun = run as any; grandOpen = true; grandSince = Date.now()
+  if (!grandTick) { grandTick = true; $.clock.every(1000, () => { if (grandOpen) { void vuFromGrand($).catch(() => undefined); void regFromGrand($).catch(() => undefined) } }) }
   await update($, grandAtom, () => true)
   void (async () => {
     try { for await (const piece of run) if (/introuvable/.test(piece.text)) $.ui.toast(`Araignée : ${piece.text.trim()}`) } catch (err) { $.ui.log(`araignee grand : ${String(err)}`) }
-    if (grandRun === (run as any)) grandRun = null
-    await update($, grandAtom, () => false)
+    // une course plus récente (Réduire puis Agrandir aussitôt) garde la grande toile
+    if (grandRun !== (run as any) && grandRun) return
+    // retour au panneau : il se met au point du dernier geste montré en grand (sans le rejouer), puis reprend
+    await vuFromGrand($).catch(() => undefined)
+    if (grandOpen && world && vuSeen >= grandSince) { while (queue.length && queue[0]!.seq && queue[0]!.seq! <= vu) quietApply($, queue.shift()!) }
+    grandRun = null; grandOpen = false
+    if (!playing && world) await showClip($, idleClip(world)).catch(() => undefined)
+    void pump($)
+    await update($, grandAtom, () => false).catch(() => undefined)
     // la fenêtre vient de se fermer : était-ce le bouton « Fermer » ?
     await fermerFromGrand($).catch(() => undefined)
   })()
@@ -686,13 +795,18 @@ async function reopen($: EngineInterface) {
   await $.store.set('ferme-' + String(await $.session.id()), false)
 }
 async function closeGrand($: EngineInterface) {
+  // seulement la course qu'on ferme (pas celle d'un Agrandir qui suivrait aussitôt)
+  const r = grandRun
+  grandOpen = false
   await pushRaw($, { close: true })
-  $.clock.after(1500, () => stopGrand())
+  $.clock.after(1500, () => { if (grandRun === r) stopGrand() })
   await update($, grandAtom, () => false)
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    // (le plugin vient d'être rechargé pendant qu'elle était ouverte : on retrouve son dossier, elle reçoit de nouveau)
+    if (await read($, grandAtom).catch(() => false)) { grandOpen = true; grandSince = Date.now(); void ensureWorld($).then(() => viewerPaths($)).catch(() => undefined) }
     await $.command.register({ name: 'araignee', description: "Ouvre le panneau de l'araignée qui suit le travail de Claude" })
     await $.command.register({ name: 'araignee-plein-ecran', description: "Ouvre la toile de l'araignée en grand, dans le navigateur (version haute qualité)" })
     // la sentinelle démarre avec la discussion : même si Claude attend, les tâches de fond se voient
@@ -718,6 +832,7 @@ export const register: Register = on => {
     // la toile est reconstruite au prochain geste (ou tout de suite si rien ne se joue)
     rebuild = true
     if (!playing) { await ensureWorld($).catch(() => undefined); if (world) await showClip($, idleClip(world)) }
+    soonLive($)
     return { text: next === 'classique' ? 'La toile du panneau est maintenant à plat, comme avant.' : 'La toile du panneau est maintenant une sphère qui tourne.' }
   })
   on('command.run', { command: 'araignee-son' }, async $ => ({ text: await toggleSound($) ? "Les sons de l'araignée sont activés." : "Les sons de l'araignée sont coupés." }))
@@ -731,21 +846,21 @@ export const register: Register = on => {
 
   // le tour commence : nouveau bilan à zéro
   on('turn.start', async ($, e, next) => {
-    if (!(e as any).agentId) { turnActive = true; lastTurnAt = Date.now(); turn = newTurn(); await update($, recapAtom, old => ({ ...old, at: 0 })).catch(() => undefined) }
+    if (!(e as any).agentId) { turnActive = true; lastTurnAt = Date.now(); turn = newTurn(); lastRecap = null; soonLive($); await update($, recapAtom, old => ({ ...old, at: 0 })).catch(() => undefined) }
     return next(e)
   })
 
   // le tour se termine : l'araignée affiche le bilan de ce que Claude a fait
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
-    if (e.agentId && world && (hasActor(world, 'agent:' + e.agentId) || queue.some(q => q.actor === 'agent:' + e.agentId))) leave($, 'agent:' + e.agentId)
+    if (e.agentId && world) { const id = 'agent:' + e.agentId; leave($, id, hasActor(world, id) || queue.some(q => q.actor === id)) }
     if (!e.agentId) {
       // fin du tour : elle s'endormira trois minutes plus tard, si rien d'autre n'arrive
       turnActive = false; lastTurnAt = Date.now(); scheduleSleep($)
       try {
         const r = recapOf(e.answer || '', e.durationMs || 0, !!e.isAborted)
         turn = newTurn()
-        if (r) { await update($, recapAtom, () => r); await pushRaw($, { summary: r }) }
+        if (r) { lastRecap = r; await update($, recapAtom, () => r); await pushRaw($, { summary: r }) }
       } catch { /* le bilan ne doit jamais gêner Claude */ }
     }
     return done
@@ -820,7 +935,7 @@ export const register: Register = on => {
           try { ev.edges = await newDeps($, ev, e, prev) } catch { /* rien */ }
         }
         if (ev.path && (ev.tool === 'Edit' || ev.tool === 'Write')) noteEdit(ev.path, ev.page)
-        track(toolName, e, ev); await pushLive($, toolName, ev, e, since).catch(() => undefined); enqueue($, ev)
+        track(toolName, e, ev); stampPace(ev); await pushLive($, toolName, ev, e, since).catch(() => undefined); enqueue($, ev)
       } catch { /* l'araignée ne doit jamais gêner Claude */ }
     }
     // une commande peut durer longtemps : l'araignée part au terminal dès qu'elle commence,
@@ -836,7 +951,7 @@ export const register: Register = on => {
           const ev: Ev = { tool: 'Mood', toolName: 'Bash', label: (ok ? '✓ ' : '✗ ') + cmd, lines: [ok ? (big ? '✓ tout passe' : '✓ réussi') : '✗ échec', ...firstLines(ran?.text, 2).map(l => l.slice(0, 60))], actor, ok, big }
           await pushLive($, 'Mood', ev, e).catch(() => undefined)
           enqueue($, ev)
-          if (!ok) enqueue($, { tool: 'Repair', toolName: 'Repair', label: 'Retisse le fil', lines: ['la soie est réparée'], actor })
+          if (!ok) { const fix: Ev = { tool: 'Repair', toolName: 'Repair', label: 'Retisse le fil', lines: ['la soie est réparée'], actor }; await pushLive($, 'Repair', fix, e).catch(() => undefined); enqueue($, fix) }
         }
       } catch { /* l'araignée ne doit jamais gêner Claude */ }
       return ran
