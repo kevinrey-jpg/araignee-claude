@@ -122,6 +122,10 @@ Elle ne reste plus plantée à attendre :
 - **Entre deux messages**, elle relit les derniers fichiers modifiés (trois au plus), fait trois rondes sur les fichiers les plus actifs, puis s'endort au bout de trois minutes. Elle ne relit jamais un fichier binaire (image, base de données…), et un fichier supprimé ne revient pas.
 - **Dans la grande toile**, ces gestes ne ferment pas le bilan du tour et n'entrent pas dans le journal des actions de Claude.
 
+### Petit et grand encadré, toujours ensemble
+
+Quand tu passes du panneau à la grande toile (« Agrandir »), la grande araignée reprend exactement la petite : même fichier, même geste (si la petite lisait ou tissait une page, la grande la parcourt aussi), même sommeil, mêmes bébés, une toile à jour (nouveaux fichiers, fichiers supprimés tombés, nouveaux fils) et les mêmes réglages (fils droits ou ondulés, sphère ou à plat). Les gestes qui attendaient sont joués plus vite, pour rattraper Claude. Pendant que la grande toile est ouverte, le panneau caché dessous la suit en silence : en revenant (« Réduire » ou Échap), la petite araignée est là où était la grande, sans rien rejouer. Après un Alt-Tab, la grande toile reprend là où en est le travail au lieu de rejouer le passé.
+
 ### Franchir un écart
 
 Ses pieds s'agrippent toujours à quelque chose : une lettre sur une page, un fil sur le graphe (s'il n'y a rien à portée, la patte se replie au lieu de se poser dans le vide). Devant un vide qu'elle ne peut pas traverser en marchant (des paragraphes éloignés, un fichier dont les fils sont coupés) : s'il est à portée de pattes, elle les étire jusqu'à l'autre bord et s'y hisse ; plus loin, elle prend son élan et bondit.
