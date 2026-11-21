@@ -1143,6 +1143,8 @@ const GD = window.ARAIGNEE_GRAPH || { name: 'projet', comms: [{ name: 'Projet', 
 const ETAT0 = GD.etat || null, GRAND0 = /[?&]grand\b/.test(location.search), REG0 = GRAND0 && ETAT0 && ETAT0.reglages || null;
 // le dernier état reçu du panneau (il décide du sommeil et du bilan), et le dernier fichier reçu
 let PLUG = ETAT0, lastLive = null, pluginRepairs = false;
+// fils droits ou ondulés : l'adresse (après un clic), sinon en grand comme le panneau, sinon le dernier choix ici
+const STRAIGHT0 = (() => { const m = /[?&]fils=(droits|ondules)\b/.exec(location.search); if (m) return m[1] === 'droits'; if (REG0 && !/[?&]toile=/.test(location.search)) return REG0.fils === 'droits'; try { return localStorage.getItem('araignee-fils') === 'droits'; } catch (e) { return false; } })();
 const COMM = GD.comms.map(c => ({ name: c.name, col: c.col }));
 const P0 = { id: 'live', name: GD.name, files: [], term: '::terminal' };
 const PROJECTS = [P0];
@@ -1230,7 +1232,7 @@ const quad = (p0, cp, p1, n) => { const pts = []; for (let j = 0; j <= n; j++) {
   });
   edges.forEach((e, ei) => {
     const a = byId[e.a], b = byId[e.b], dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy), nx = -dy / len, ny = dx / len;
-    const sag = len * (e.kind === 'dep' ? .12 : .045) * (hash(e.a + e.b) % 2 ? 1 : -1);
+    const sag = STRAIGHT0 ? 0 : len * (e.kind === 'dep' ? .12 : .045) * (hash(e.a + e.b) % 2 ? 1 : -1);
     const at = s => { const bz = 4 * s * (1 - s); return { x: a.x + dx * s + nx * sag * bz, y: a.y + dy * s + ny * sag * bz }; };
     const N = Math.max(10, Math.round(len / 3)); e.pts = []; for (let i = 0; i <= N; i++) e.pts.push(at(i / N));
     const cs = (e.h || 0) < .02 ? '_c' : '';
@@ -1300,35 +1302,39 @@ function buildDyn(zones, depth) {
 // toute la soie est blanche, néon, brillante
 function strokeSilk(c, S, x) {
   // le halo large n'est dessiné que pour la soie parcourue : sur la soie pâle il serait invisible (et coûteux)
-  if (!x) { c.strokeStyle = 'rgba(255,255,255,.06)'; c.lineWidth = 1.6; c.stroke(S['dep' + x]); }
-  c.strokeStyle = 'rgba(255,255,255,.42)'; c.lineWidth = .3; c.stroke(S['dep' + x]);
-  if (!x) { c.strokeStyle = 'rgba(255,255,255,.07)'; c.lineWidth = 4.2; c.stroke(S['core' + x]); }
-  c.strokeStyle = 'rgba(20,16,36,.65)'; c.lineWidth = .7; c.stroke(S['front' + x]);
-  c.strokeStyle = 'rgba(205,205,230,.55)'; c.lineWidth = .36; c.stroke(S['back' + x]);
-  c.strokeStyle = 'rgba(255,255,255,.88)'; c.lineWidth = .42; c.stroke(S['front' + x]);
-  c.strokeStyle = 'rgba(255,255,255,.7)'; c.lineWidth = .16; c.stroke(S['sheen' + x]);
+  if (!x) { c.strokeStyle = 'rgba(255,255,255,.06)'; c.lineWidth = (1.6) * WIRE.width; c.stroke(S['dep' + x]); }
+  c.strokeStyle = 'rgba(255,255,255,.42)'; c.lineWidth = (.3) * WIRE.width; c.stroke(S['dep' + x]);
+  if (!x) { c.strokeStyle = 'rgba(255,255,255,.07)'; c.lineWidth = (4.2) * WIRE.width; c.stroke(S['core' + x]); }
+  c.strokeStyle = 'rgba(20,16,36,.65)'; c.lineWidth = (.7) * WIRE.width; c.stroke(S['front' + x]);
+  c.strokeStyle = 'rgba(205,205,230,.55)'; c.lineWidth = (.36) * WIRE.width; c.stroke(S['back' + x]);
+  c.strokeStyle = 'rgba(255,255,255,.88)'; c.lineWidth = (.42) * WIRE.width; c.stroke(S['front' + x]);
+  c.strokeStyle = 'rgba(255,255,255,.7)'; c.lineWidth = (.16) * WIRE.width; c.stroke(S['sheen' + x]);
 }
 function drawWebSet(c, S, edgeMap) { drawWebBase(c, S); drawWebOverlay(c, edgeMap); c.fillStyle = 'rgba(225,240,255,.32)'; c.fill(S.dew); c.fillStyle = 'rgba(255,255,255,.9)'; c.fill(S.dewSpec); }
 function drawWebBase(c, S) {
+  c.save(); c.globalAlpha = WIRE.alpha; if (WIRE.lum !== 1) c.filter = 'brightness(' + WIRE.lum + ')';
   c.lineCap = 'round'; c.lineJoin = 'round';
-  c.strokeStyle = 'rgba(235,235,255,.17)'; c.lineWidth = .34; c.stroke(S.orb);
+  c.strokeStyle = 'rgba(235,235,255,.17)'; c.lineWidth = (.34) * WIRE.width; c.stroke(S.orb);
   strokeSilk(c, S, '');
   // la soie jamais parcourue par Claude reste dans l'ombre
-  c.globalAlpha = .4; strokeSilk(c, S, '_c'); c.globalAlpha = 1;
-  c.strokeStyle = 'rgba(240,240,255,.38)'; c.lineWidth = .22; c.stroke(S.hub);
-  c.strokeStyle = 'rgba(240,240,255,.32)'; c.lineWidth = .2; c.stroke(S.anch);
+  c.globalAlpha = .4 * WIRE.alpha; strokeSilk(c, S, '_c'); c.globalAlpha = WIRE.alpha;
+  c.strokeStyle = 'rgba(240,240,255,.38)'; c.lineWidth = (.22) * WIRE.width; c.stroke(S.hub);
+  c.strokeStyle = 'rgba(240,240,255,.32)'; c.lineWidth = (.2) * WIRE.width; c.stroke(S.anch);
+  c.restore();
 }
 // les fils parcourus et les fils chauds : ils changent sans cesse, on les dessine à chaque image
 function drawWebOverlay(c, edgeMap) {
+  c.save(); c.globalAlpha = WIRE.alpha; if (WIRE.lum !== 1) c.filter = 'brightness(' + WIRE.lum + ')';
   c.lineCap = 'round'; c.lineJoin = 'round';
   edges.forEach((e, i) => {
     const k = Math.max(e.trail, (e.h || 0) > .12 ? .25 + e.h * .75 : 0); if (k < .01 || cutEdge(i)) return; const P = edgeMap ? edgeMap.get(i) : e.paths; if (!P) return;
     const core = P.core || P.core_c, dep = P.dep || P.dep_c, front = P.front || P.front_c, back = P.back || P.back_c, wide = 1 + (e.h || 0) * 1.4;
-    if (core) { c.strokeStyle = `rgba(255,255,255,${.12 * k})`; c.lineWidth = 5 * wide; c.stroke(core); }
-    if (dep) { c.strokeStyle = `rgba(255,255,255,${.9 * k})`; c.lineWidth = .5 * wide; c.stroke(dep); }
-    if (front) { c.strokeStyle = `rgba(255,255,255,${.25 * k})`; c.lineWidth = 1.6 * wide; c.stroke(front); c.strokeStyle = `rgba(255,255,255,${k})`; c.lineWidth = .62; c.stroke(front); }
-    if (back) { c.strokeStyle = `rgba(230,230,255,${.55 * k})`; c.lineWidth = .45; c.stroke(back); }
+    if (core) { c.strokeStyle = `rgba(255,255,255,${.12 * k})`; c.lineWidth = (5 * wide) * WIRE.width; c.stroke(core); }
+    if (dep) { c.strokeStyle = `rgba(255,255,255,${.9 * k})`; c.lineWidth = (.5 * wide) * WIRE.width; c.stroke(dep); }
+    if (front) { c.strokeStyle = `rgba(255,255,255,${.25 * k})`; c.lineWidth = (1.6 * wide) * WIRE.width; c.stroke(front); c.strokeStyle = `rgba(255,255,255,${k})`; c.lineWidth = (.62) * WIRE.width; c.stroke(front); }
+    if (back) { c.strokeStyle = `rgba(230,230,255,${.55 * k})`; c.lineWidth = (.45) * WIRE.width; c.stroke(back); }
   });
+  c.restore();
 }
 /* ---------- caches : ce qui ne bouge pas est dessiné une fois dans une image, puis recopié ---------- */
 // le fond (halos des communautés) : flou par nature, une petite image suffit
@@ -1441,9 +1447,9 @@ const SEGS = 16;
 // le réglage des fils : lumière, épaisseur, opacité (1 = normal), gardé d'une ouverture à l'autre
 const WIRE = { lum: 1, width: 1, alpha: 1 }; try { Object.assign(WIRE, JSON.parse(localStorage.getItem('araignee-fils-style') || '{}')); } catch (e) {}
 const lumCol = (col, k) => k >= 1 ? mix(col, '#ffffff', Math.min(.85, (k - 1) * .6)) : mix(col, '#06040c', 1 - k);
-let STRAIGHT = false; try { STRAIGHT = localStorage.getItem('araignee-fils') === 'droits'; } catch (e) {}
+let STRAIGHT = STRAIGHT0;
 // en grand : les mêmes fils que dans le panneau
-if (REG0 && !/[?&]toile=/.test(location.search)) { if (REG0.style) Object.assign(WIRE, REG0.style); STRAIGHT = REG0.fils === 'droits'; }
+if (REG0 && !/[?&]toile=/.test(location.search) && REG0.style) Object.assign(WIRE, REG0.style);
 function sphereEdge(e) { e.pts2 = e.pts2 || e.pts; e.sp = Array.from({ length: SEGS + 1 }, () => ({ x: 0, y: 0 })); if (SPH) e.pts = e.sp; }
 // la caméra à la troisième personne : elle vise le point F (l'araignée suivie, en 3D) et se tient toujours à la même
 // distance D de lui ; la boule ne tourne plus d'elle-même, c'est la caméra qui accompagne l'araignée, même quand elle
@@ -2638,13 +2644,17 @@ showNode(null);
 const playBtn = document.getElementById('b-play'), camBtn = document.getElementById('b-cam'), toileBtn = document.getElementById('b-toile');
 toileBtn.textContent = SPH ? 'Toile : sphère' : 'Toile : à plat'; toileBtn.setAttribute('aria-pressed', String(SPH));
 // le réglage des fils (lumière, épaisseur, opacité)
-[['lum', 'w-lum'], ['width', 'w-width'], ['alpha', 'w-alpha']].forEach(([k, id]) => { const el = document.getElementById(id); el.value = WIRE[k]; el.addEventListener('input', () => { WIRE[k] = +el.value; try { localStorage.setItem('araignee-fils-style', JSON.stringify(WIRE)); } catch (e) {} }); });
+[['lum', 'w-lum'], ['width', 'w-width'], ['alpha', 'w-alpha']].forEach(([k, id]) => { const el = document.getElementById(id); el.value = WIRE[k]; el.addEventListener('input', () => { WIRE[k] = +el.value; webCache.dirty = true; try { localStorage.setItem('araignee-fils-style', JSON.stringify(WIRE)); } catch (e) {} }); });
 // les fils : ondulés comme des câbles, ou droits (gardé d'une ouverture à l'autre)
 const filsBtn = document.getElementById('b-fils'), paintFils = () => { filsBtn.textContent = STRAIGHT ? 'Fils : droits' : 'Fils : ondulés'; filsBtn.setAttribute('aria-pressed', String(STRAIGHT)); };
 // en grand, un réglage changé ici l'est aussi dans le panneau : la page le met dans son titre, le script de la grande
 // toile l'écrit pour le plugin
 function sendReg(toile) { if (!(GRAND && SID)) return; regTok = ' #reg:' + Date.now() + ':' + (STRAIGHT ? 'droits' : 'ondules') + ':' + (toile || (SPH ? 'sphere' : 'classique')) + ':' + [WIRE.lum, WIRE.width, WIRE.alpha].map(v => +(+v).toFixed(2)).join(','); setTitle(); }
-filsBtn.addEventListener('click', () => { STRAIGHT = !STRAIGHT; try { localStorage.setItem('araignee-fils', STRAIGHT ? 'droits' : 'ondules'); } catch (e) {} paintFils(); sendReg(); }); paintFils();
+filsBtn.addEventListener('click', () => {
+  STRAIGHT = !STRAIGHT; try { localStorage.setItem('araignee-fils', STRAIGHT ? 'droits' : 'ondules'); } catch (e) {} paintFils(); sendReg();
+  // à plat, la forme des fils est calculée au chargement : la page se redessine avec l'autre forme
+  if (!SPH) setTimeout(() => { const u = new URL(location.href); u.searchParams.set('fils', STRAIGHT ? 'droits' : 'ondules'); location.replace(u.toString()); }, GRAND && SID ? 900 : 0);
+}); paintFils();
 toileBtn.addEventListener('click', () => {
   const next = SPH ? 'classique' : 'sphere';
   try { localStorage.setItem('araignee-toile', next); } catch (e) {}
@@ -2948,7 +2958,7 @@ let regKey = '';
 function suivreEtat(E) {
   PLUG = E;
   // un réglage changé côté panneau (en grand) : la grande toile suit (seulement quand il change là-bas)
-  if (GRAND && E.reglages) { const k = JSON.stringify([E.reglages.fils, E.reglages.style]); if (regKey && k !== regKey) { STRAIGHT = E.reglages.fils === 'droits'; if (E.reglages.style) Object.assign(WIRE, E.reglages.style); try { paintFils(); } catch (e) {} } regKey = k; }
+  if (GRAND && E.reglages) { const k = JSON.stringify([E.reglages.fils, E.reglages.style]); if (regKey && k !== regKey) { STRAIGHT = E.reglages.fils === 'droits'; if (E.reglages.style) Object.assign(WIRE, E.reglages.style); webCache.dirty = true; try { paintFils(); } catch (e) {} } regKey = k; }
   const m = AGENTS[0], hm = (E.actors || []).find(a => a.id === 'main');
   if (E.sleeping && !m.sleeping && !m.queue.length && !m.A && !m.walk && !m.hangAnim && !(dive && dive.ag === m)) goSleep(m, hm && byId[hm.cur] && !byId[hm.cur].gone ? hm.cur : undefined);
   if (E.recap && E.recap.at && E.recap.at !== recapAt) { recapAt = E.recap.at; showRecap(E.recap); }

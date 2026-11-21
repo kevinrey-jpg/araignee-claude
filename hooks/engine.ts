@@ -152,7 +152,7 @@ function buildGeometry(g) {
   g.grid = new Map()
   g.edges.forEach(e => {
     const a = g.byId[e.a], b = g.byId[e.b], dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L
-    const sag = g.straight ? 0 : L * (e.kind === 'dep' ? .1 : .045) * (hash(e.a + e.b) % 2 ? 1 : -1)
+    const sag = g.straight || STRAIGHT ? 0 : L * (e.kind === 'dep' ? .1 : .045) * (hash(e.a + e.b) % 2 ? 1 : -1)
     e.c = { x: (a.x + b.x) / 2 + nx * sag * 2, y: (a.y + b.y) / 2 + ny * sag * 2 }
     e.pts = []; const N = Math.max(6, Math.round(L / 6))
     if (g.straight) { const [c1, c2] = waveCubic(e, a, b); for (let i = 0; i <= N; i++) e.pts.push(cubicAt(a, c1, c2, b, i / N)) }
@@ -1153,7 +1153,9 @@ export function renderClip(W, ev, frames, X) {
     // les toiles des dossiers : spirales entre les rayons
     let orbs = ''
     if (lod < 1) (g.orbs || []).forEach(o => { if (o.x + o.r < bx0 || o.x - o.r > bx1 || o.y + o.r < by0 || o.y - o.r > by1) return; o.spirals.forEach((pts, k) => { if (k % 2 && pts.length > 16) return; orbs += pts.map((p, i) => (i ? 'L' : 'M') + Math.round(p.x) + ' ' + Math.round(p.y)).join('') }) })
-    if (orbs) out.push(`<path d="${orbs}" fill="none" stroke="#fff" stroke-opacity=".2" stroke-width=".22"/>`)
+    // le réglage des fils (lumière, épaisseur, opacité) vaut aussi à plat
+    const wo = o => Math.min(1, o * WIRE.lum).toFixed(2), ws = w => f1(w * WIRE.width)
+    if (orbs) out.push(`<path d="${orbs}" fill="none" stroke="#fff" stroke-opacity="${wo(.2)}" stroke-width="${ws(.22)}"/>`)
     // fils de soie : la mémoire du projet (les fils touchés brillent, les autres restent dans l'ombre)
     const near = new Set(X.edgeNear), special = new Set([...(X.snapEdges || []), X.repairEdge].filter(v => v !== undefined && v !== null))
     let cold = '', coldTree = '', thin = '', strong = '', trail = ''
@@ -1169,11 +1171,13 @@ export function renderClip(W, ev, frames, X) {
       if (h > .12) hot[h > .6 ? 2 : h > .3 ? 1 : 0] += dd
       if (e.trailAt && now - e.trailAt < 300000 && lod < 1) dews.push(e)
     })
-    out.push(`<path d="${cold}" fill="none" stroke="#fff" stroke-opacity=".2" stroke-width=".28"/><path d="${coldTree}" fill="none" stroke="#fff" stroke-opacity=".42" stroke-width=".4"/>`)
-    out.push(`<path d="${thin}" fill="none" stroke="#fff" stroke-opacity=".42" stroke-width=".34"/>`)
-    out.push(`<path d="${strong}" fill="none" stroke="#fff" stroke-opacity=".78" stroke-width=".5"/><path d="${strong}" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width=".9" stroke-dasharray="1.4 1.1"/>`)
-    hot.forEach((d, k) => { if (d) out.push(`<path d="${d}" fill="none" stroke="#fff" stroke-opacity="${[.18, .28, .4][k]}" stroke-width="${[1.2, 1.8, 2.6][k]}" filter="url(#soft)"/><path d="${d}" fill="none" stroke="#fff" stroke-opacity=".95" stroke-width="${[.6, .8, 1][k]}"/>`) })
-    out.push(`<path d="${trail}" fill="none" stroke="#fff" stroke-opacity=".95" stroke-width=".7" filter="url(#glow)"/>`)
+    out.push(`<g opacity="${WIRE.alpha.toFixed(2)}">`)
+    out.push(`<path d="${cold}" fill="none" stroke="#fff" stroke-opacity="${wo(.2)}" stroke-width="${ws(.28)}"/><path d="${coldTree}" fill="none" stroke="#fff" stroke-opacity="${wo(.42)}" stroke-width="${ws(.4)}"/>`)
+    out.push(`<path d="${thin}" fill="none" stroke="#fff" stroke-opacity="${wo(.42)}" stroke-width="${ws(.34)}"/>`)
+    out.push(`<path d="${strong}" fill="none" stroke="#fff" stroke-opacity="${wo(.78)}" stroke-width="${ws(.5)}"/><path d="${strong}" fill="none" stroke="#fff" stroke-opacity="${wo(.5)}" stroke-width="${ws(.9)}" stroke-dasharray="1.4 1.1"/>`)
+    hot.forEach((d, k) => { if (d) out.push(`<path d="${d}" fill="none" stroke="#fff" stroke-opacity="${wo([.18, .28, .4][k])}" stroke-width="${ws([1.2, 1.8, 2.6][k])}" filter="url(#soft)"/><path d="${d}" fill="none" stroke="#fff" stroke-opacity="${wo(.95)}" stroke-width="${[.6, .8, 1][k]}"/>`) })
+    out.push(`<path d="${trail}" fill="none" stroke="#fff" stroke-opacity="${wo(.95)}" stroke-width="${ws(.7)}" filter="url(#glow)"/>`)
+    out.push(`</g>`)
     // la rosée sur les fils parcourus : elle scintille, puis s'évapore
     let drops = '', budget = 70
     dews.forEach(e => {
@@ -1210,7 +1214,7 @@ export function renderClip(W, ev, frames, X) {
       const e = g.edges[i], pts = e.pts.filter((_, j) => j % Math.max(1, Math.floor(e.pts.length / 8)) === 0 || j === e.pts.length - 1)
       const ds = frames.map(f => pts.map((p, j) => (j ? 'L' : 'M') + f1(p.x) + ' ' + f1(p.y - depthAtFrame(f, p) * TILT)).join(''))
       const h = e.h || 0, sw = e.trail ? .7 : e.kind === 'tree' ? .5 + h * .5 : .34 + h * .4, op = e.trail ? .95 : h < .02 ? (e.kind === 'tree' ? .45 : .22) : e.kind === 'tree' ? .8 : .45
-      out.push(`<path d="${ds[0] || ''}" fill="none" stroke="#fff" stroke-opacity="${op}" stroke-width="${f1(sw)}"${e.trail || h > .3 ? ' filter="url(#glow)"' : ''}>${n > 1 ? anim('d', ds) : ''}</path>`)
+      out.push(`<path d="${ds[0] || ''}" fill="none" stroke="#fff" stroke-opacity="${Math.min(1, op * WIRE.lum * WIRE.alpha).toFixed(2)}" stroke-width="${f1(sw * WIRE.width)}"${e.trail || h > .3 ? ' filter="url(#glow)"' : ''}>${n > 1 ? anim('d', ds) : ''}</path>`)
     })
     // nœuds
     const nodesOut = [], dots = {}, halos = {}
