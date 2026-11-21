@@ -1238,18 +1238,9 @@ const quad = (p0, cp, p1, n) => { const pts = []; for (let j = 0; j <= n; j++) {
     const cs = (e.h || 0) < .02 ? '_c' : '';
     if (e.kind === 'dep') addPiece('dep' + cs, e.pts, ei, .8);
     else {
+      // un fil lisse, comme dans le panneau (plus de tresse de trois brins : on aurait dit des poils)
       addPiece('core' + cs, e.pts, ei, .72);
-      const M = Math.ceil(len / 1.6), A = .75, lam = 8;
-      for (let k = 0; k < 3; k++) {
-        let run = [], rf = null, sheen = [];
-        for (let i = 0; i <= M; i++) {
-          const s = i / M, d = s * len, env = Math.min(1, d / 10, (len - d) / 10), ph = 2 * Math.PI * d / lam + k * 2 * Math.PI / 3, p0 = at(s), off = A * env * Math.sin(ph);
-          const p = { x: p0.x + nx * off, y: p0.y + ny * off }, front = Math.cos(ph) >= 0;
-          if (rf === null) { rf = front; run = [p]; } else if (front === rf) run.push(p); else { run.push(p); addPiece((rf ? 'front' : 'back') + cs, run, ei); run = [p]; rf = front; }
-          if (front && Math.cos(ph) > .8) sheen.push(p); else { if (sheen.length > 1) addPiece('sheen' + cs, sheen, ei); sheen = []; }
-        }
-        addPiece((rf ? 'front' : 'back') + cs, run, ei); if (sheen.length > 1) addPiece('sheen' + cs, sheen, ei);
-      }
+      addPiece('front' + cs, e.pts, ei);
     }
     for (let d = 8 + R() * 10; d < len - 6; d += 12 + R() * 16) addDew(at(d / len), (e.kind === 'dep' ? .45 : .55) + R() * .6);
   });
@@ -1685,7 +1676,7 @@ function drawSphereStage(c, targets) {
     c.globalAlpha = WIRE.alpha;
     c.globalCompositeOperation = 'lighter'; c.strokeStyle = hexA(g.col, (.06 * a0).toFixed(3)); c.lineWidth = ww * 3; c.stroke(g.P);
     c.globalCompositeOperation = 'source-over'; c.strokeStyle = lumCol(bright, lum * WIRE.lum); c.lineWidth = ww; c.stroke(g.P);
-    if (d > .3 && !g.mesh) { c.setLineDash([ww * .35, ww * 2.4]); c.lineDashOffset = -simT * ww * 1.8 - gi * ww; c.strokeStyle = lumCol(mix(g.col, '#ffffff', .45), lum * .8 * WIRE.lum); c.lineWidth = ww * 1.4; c.stroke(g.P); c.setLineDash([]); }
+    // (plus de petites perles qui glissent le long des fils : de près, on aurait dit des poils ; le panneau n'en montre pas)
   });
   c.globalAlpha = 1;
   if (selNode) { c.strokeStyle = 'rgba(255,255,255,.9)'; c.lineWidth = 1.2 * RS; c.beginPath(); adj[selNode.id].forEach(v => { const o = byId[v], e = edges[edgeIdx[selNode.id + '|' + v]]; if (!o.gone) { if (e && e.sp) wirePath(c, e.sp); else { c.moveTo(selNode.x, selNode.y); c.lineTo(o.x, o.y); } } }); c.stroke(); }
