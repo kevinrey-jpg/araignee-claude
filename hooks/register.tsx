@@ -414,7 +414,7 @@ function etat() {
     playing: playingInfo || undefined,
     queue: queue.map(q => q.seq).filter((v): v is number => typeof v === 'number'),
     recap: lastRecap || undefined,
-    reglages: { toile: W.sph ? 'sphere' : 'classique', fils: W.straightWires ? 'droits' : 'ondules', style: W.wireStyle || undefined },
+    reglages: { toile: W.sph ? 'sphere' : 'classique', fils: W.straightWires ? 'droits' : 'ondules', style: W.wireStyle || undefined, zoom: W.zoom || 1 },
   }
 }
 async function writeLive($: EngineInterface) {

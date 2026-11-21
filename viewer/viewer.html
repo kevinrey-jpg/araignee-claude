@@ -1305,7 +1305,6 @@ function drawWebSet(c, S, edgeMap) { drawWebBase(c, S); drawWebOverlay(c, edgeMa
 function drawWebBase(c, S) {
   c.save(); c.globalAlpha = WIRE.alpha; if (WIRE.lum !== 1) c.filter = 'brightness(' + WIRE.lum + ')';
   c.lineCap = 'round'; c.lineJoin = 'round';
-  c.strokeStyle = 'rgba(235,235,255,.17)'; c.lineWidth = (.34) * WIRE.width; c.stroke(S.orb);
   strokeSilk(c, S, '');
   // la soie jamais parcourue par Claude reste dans l'ombre
   c.globalAlpha = .4 * WIRE.alpha; strokeSilk(c, S, '_c'); c.globalAlpha = WIRE.alpha;
@@ -1348,7 +1347,6 @@ function webCacheFor(s, vx0, vy0, vx1, vy1, zooming) {
   const ss = Math.min(s, 4096 / (x1 - x0), 4096 / (y1 - y0), Math.sqrt(2.5 * cv.width * cv.height / ((x1 - x0) * (y1 - y0))));
   C.cv.width = Math.ceil((x1 - x0) * ss); C.cv.height = Math.ceil((y1 - y0) * ss);
   const k = C.cv.getContext('2d'); k.setTransform(ss, 0, 0, ss, -x0 * ss, -y0 * ss); k._px = ss;
-  COMM.forEach((cm, i) => { k.fillStyle = hexA(cm.col, .3); k.fill(G.cdust[i]); }); k.fillStyle = 'rgba(255,255,255,.35)'; k.fill(G.dustC);
   drawWebBase(k, G); k.fillStyle = 'rgba(225,240,255,.32)'; k.fill(G.dew); k.fillStyle = 'rgba(255,255,255,.9)'; k.fill(G.dewSpec);
   Object.assign(C, { s: ss, x0, y0, x1, y1, dirty: false });
   return C;
@@ -1362,6 +1360,8 @@ let dpr = 1, vs = 1, cssW = 1, cssH = 1;
 // uz est le zoom choisi à la molette : il ne revient jamais tout seul
 const cam = { x: CX, y: CY, z: 1, mode: 'follow', user: 0, ux: 0, uy: 0, uz: 1, fx: CX, fy: CY, switchT: -99 };
 try { const z = +localStorage.getItem('araignee-zoom'); if (z > 0) cam.uz = Math.min(5, Math.max(.25, z)); } catch (e) {}
+// en grand, le zoom du panneau
+if (REG0 && REG0.zoom > 0) cam.uz = Math.min(5, Math.max(.25, REG0.zoom));
 function applyT(c) { const s = vs * cam.z * dpr; c.setTransform(s, 0, 0, s, (cssW / 2 - cam.x * vs * cam.z) * dpr, (cssH / 2 - cam.y * vs * cam.z) * dpr); c._px = s; }
 const toScreen = (x, y) => ({ x: cssW / 2 + (x - cam.x) * vs * cam.z, y: cssH / 2 + (y - cam.y) * vs * cam.z });
 function fit() {
@@ -1672,9 +1672,9 @@ function drawSphereStage(c, targets) {
     const d = (g.lvl + .5) / 6, a0 = (.18 + .4 * d) * (g.spoke ? .55 : 1) * (g.mesh ? .6 : 1) * (g.hot ? 1.5 : EDGE_DENS * .5 + .5), w = (g.hot ? .5 : g.mesh ? .26 : .38) * RS, bright = mix(g.col, '#ffffff', g.hot ? .4 : .1);
     // des fils pleins (jamais transparents) : la profondeur se lit à l'épaisseur (fins au fond, épais devant) et à la
     // couleur, qui s'assombrit vers le fond au lieu de s'effacer
-    const lum = g.hot ? Math.min(1, a0 * 1.55) : Math.min(1, (.3 + .7 * d) * 1.5 * (g.spoke ? .65 : 1) * (g.mesh ? .8 : 1)), ww = w * (.35 + 1.2 * d * d) * WIRE.width, BG = '#06040c';
+    const lum = g.hot ? Math.min(1, a0 * 1.55) : Math.min(1, (.3 + .7 * d) * 1.5 * (g.spoke ? .65 : 1) * (g.mesh ? .8 : 1)), ww = w * (.22 + 1.4 * d * d) * WIRE.width, BG = '#06040c';
     c.globalAlpha = WIRE.alpha;
-    c.globalCompositeOperation = 'lighter'; c.strokeStyle = hexA(g.col, (.06 * a0).toFixed(3)); c.lineWidth = ww * 3; c.stroke(g.P);
+    if (d >= .5 || g.hot) { c.globalCompositeOperation = 'lighter'; c.strokeStyle = hexA(g.col, (.12 * a0).toFixed(3)); c.lineWidth = ww * 3; c.stroke(g.P); }
     c.globalCompositeOperation = 'source-over'; c.strokeStyle = lumCol(bright, lum * WIRE.lum); c.lineWidth = ww; c.stroke(g.P);
     // (plus de petites perles qui glissent le long des fils : de près, on aurait dit des poils ; le panneau n'en montre pas)
   });
@@ -2374,11 +2374,13 @@ function render(rdt) {
   if (SPH) {
     tx = CX; ty = CY; tz = Math.min(cssW, cssH) / (vs * 2.35 * S3.R);
     if (cam.mode === 'free') { tx = cam.fx; ty = cam.fy; tz = cam.fz || tz; }
-    else { tx = S0.x; ty = S0.y; tz *= sel.baby ? 3 : 2.3; }
+    // le même champ que le panneau (même largeur de toile pour la forme de la fenêtre)
+    else { tx = S0.x; ty = S0.y; tz = cssW / Math.sqrt(64000 / clamp(cssH / cssW, .3, 3)) / vs; }
     if (dive && cam.mode === 'follow') { const t = simT - dive.t0, k = sm(0, .8, t) * (1 - sm(dive.tEnd, dive.dur - .1, t)); if (k > .01) { const px = dive.x + dive.w / 2, py = dive.y + dive.h / 2, pz = Math.min(cssW * .88 / (vs * (dive.w + 30)), cssH * .84 / (vs * (Math.max(dive.h, 22 + 14 * LH + 8) + 30))); tx = lerp(tx, px, k); ty = lerp(ty, py, k); tz = lerp(tz, pz, k); } }
   } else if (cam.mode === 'free') { tx = cam.fx; ty = cam.fy; tz = cam.fz || tz; }
   else {
-    tx = S0.x; ty = S0.y - 6 - (sel.hang || 0) * TILT * .5; tz = clamp(2.2 * cssW / 960, 1.25, 2.6) / vs;
+    // le même champ que le panneau : la même largeur de toile, pour la forme de la fenêtre (l'araignée y a la même taille)
+    tx = S0.x; ty = S0.y - 6 - (sel.hang || 0) * TILT * .5; tz = cssW / Math.sqrt(64000 / clamp(cssH / cssW, .3, 3)) / vs;
     // un bébé araignée au travail : la caméra recule pour garder tout le monde dans le cadre
     const busy = AGENTS.filter(a => a !== sel && (a.A || a.walk || a.hangAnim || a.leap));
     if (busy.length) {
@@ -2402,9 +2404,7 @@ function render(rdt) {
   if (SPH) { for (const n of nodes) n.dof = 1 - (n.zd || 0); drawSphereStage(c, targets); drawBroken(c); drawDew(c); drawWaveRings(c, waves, simT, '#ffd36b');
     rings.forEach(g => { const a = (simT - g.t0) / g.dur; if (a < 0) return; const k = g.big || 1; c.strokeStyle = hexA(g.col || '#ffd36b', Math.max(0, 1 - a)); c.lineWidth = .8; c.beginPath(); c.arc(g.x, g.y, 4 + a * 34 * k, 0, Math.PI * 2); c.stroke(); });
   } else {
-    // le plan lointain
-    c.save(); c.translate(cam.x * FAR_K, cam.y * FAR_K); c.lineCap = 'round';
-    c.strokeStyle = 'rgba(190,180,255,.025)'; c.lineWidth = 2.2; c.stroke(FAR); c.strokeStyle = 'rgba(205,198,255,.05)'; c.lineWidth = .5; c.stroke(FAR); c.restore();
+    // (comme dans le panneau : ni toiles lointaines, ni poussière, ni grandes spirales autour des dossiers)
     c.drawImage(bgCache.cv, bgCache.x0, bgCache.y0, bgCache.w, bgCache.h);
     // profondeur de champ : ce qui est loin du centre de la vue s'estompe
     const viewR = Math.max(cssW, cssH) / (2 * vs * cam.z);
@@ -2421,7 +2421,6 @@ function render(rdt) {
     c.drawImage(WC.cv, WC.x0, WC.y0, WC.x1 - WC.x0, WC.y1 - WC.y0); drawWebOverlay(c, null); c.restore();
     c.save(); const inn = new Path2D(); zones.forEach(z => { inn.moveTo(z.x + z.r, z.y); inn.arc(z.x, z.y, z.r, 0, Math.PI * 2); }); c.clip(inn);
     // la poussière d'étoiles est dans l'image du fond : dans la zone de l'araignée, on la redessine
-    COMM.forEach((cm, i) => { c.fillStyle = hexA(cm.col, .3); c.fill(G.cdust[i]); }); c.fillStyle = 'rgba(255,255,255,.35)'; c.fill(G.dustC);
     drawWebSet(c, dyn.G, dyn.edges);
     AGENTS.forEach(ag => { if (ag.hang > 4) return; const R = ag.sp.m.R + 40, lit = c.createRadialGradient(ag.sp.x, ag.sp.y, 0, ag.sp.x, ag.sp.y, R); lit.addColorStop(0, 'rgba(255,255,255,.5)'); lit.addColorStop(.6, 'rgba(255,255,255,.18)'); lit.addColorStop(1, 'rgba(255,255,255,0)'); c.strokeStyle = lit; c.lineWidth = .36; c.stroke(dyn.G.orb); c.stroke(dyn.G.hub); c.stroke(dyn.G.anch); });
     c.restore();
@@ -2545,8 +2544,9 @@ function render(rdt) {
   for (const { n, p, active } of cand) {
     if (count >= 70 && !active) break;
     const col = COMM[n.comm].col, dof = active ? 0 : (n.dof || 0), cold = n.kind === 'file' && !active && !((n.heat || 0) > .01) && !n.visited;
-    const fs = (n.isDir ? 12 : n.kind === 'concept' ? 11 : n.kind === 'file' ? 10.5 : 10) * (1 - .25 * dof);
-    c.font = n.isDir ? `700 ${fs.toFixed(1)}px "Chakra Petch", sans-serif` : n.kind === 'concept' ? `italic 600 ${fs.toFixed(1)}px "Chakra Petch", sans-serif` : `${fs.toFixed(1)}px "JetBrains Mono", monospace`;
+    // comme dans le panneau : à l'échelle de la toile, en monospace ; dossiers et fichier visé en gras
+    const fs = clamp((active ? 4.6 : n.isDir ? 4.2 : 3.8) * pxu, 8, 22) * (1 - .25 * dof);
+    c.font = `${active || n.isDir ? '700 ' : ''}${fs.toFixed(1)}px "JetBrains Mono", monospace`;
     const off = (SPH ? nebR(n) * S3.R / 100 * (n.k || 1) * .55 : 4 * (n.kind === 'file' ? cocoonScale(n) : 1)) * pxu + 6, lx = p.x + (n.kind === 'term' ? 0 : off), ly = p.y + (n.kind === 'term' ? off + 6 : 0);
     // une grille de cases à l'écran : une case déjà prise, on n'écrit pas par-dessus
     const w = Math.min(160, n.label.length * fs * .6), gx0 = Math.floor((n.kind === 'term' ? lx - w / 2 : lx) / 40), gx1 = Math.floor((n.kind === 'term' ? lx + w / 2 : lx + w) / 40), gy = Math.floor(ly / 14);
@@ -2555,7 +2555,7 @@ function render(rdt) {
     for (let gx = gx0; gx <= gx1; gx++) taken.add(gx + ',' + gy);
     count++;
     c.globalAlpha = (1 - .6 * dof) * (cold ? .5 : 1);
-    c.fillStyle = active ? '#ffffff' : n.mod ? '#ff9cf0' : n.kind === 'term' ? '#9dff8a' : n.kind === 'file' ? 'rgba(240,236,255,.85)' : hexA(col, n.kind === 'concept' ? .95 : .78);
+    c.fillStyle = active ? '#ffffff' : n.kind === 'term' ? '#9dff8a' : n.isDir || n.kind === 'file' ? 'rgba(240,236,255,.86)' : hexA(col, .9);
     c.textAlign = n.kind === 'term' ? 'center' : 'left';
     c.fillText(n.label, lx, ly);
     c.globalAlpha = 1;

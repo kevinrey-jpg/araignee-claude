@@ -1090,7 +1090,7 @@ function sphereStage(W, frames, X, dur, kt, box, lod) {
       if (isT) body += `<circle cx="${f1(n.x)}" cy="${f1(n.y)}" r="${f1(r * .55)}" fill="none" stroke="#fff" stroke-width=".5" opacity=".7"><animate attributeName="r" values="${f1(r * .45)};${f1(r * .7)};${f1(r * .45)}" dur="1.6s" repeatCount="indefinite"/></circle>`
       if (n.fallT !== undefined || (X.falling === n)) body = `<g>${body}<animate attributeName="opacity" values="1;1;0" keyTimes="0;${kt((X.snapT || 0) + .2)};${kt((X.snapT || 0) + 1.2)}" dur="${dur}" fill="freeze"/></g>`
     }
-    if (named.has(n)) { const dx = n.kind === 'term' ? 0 : nebR(g, n) * RS * k * .45 + 3; body += `<text x="${f1(n.x + dx)}" y="${f1(n.y + (n.kind === 'term' ? 9 * RS * k * .55 : 1.4))}"${n.kind === 'term' ? ' text-anchor="middle"' : ''} fill="${isT ? '#fff' : n.kind === 'term' ? '#9dff8a' : n.kind === 'dir' ? 'rgba(240,236,255,.9)' : 'rgba(240,236,255,.78)'}" font-size="${isT ? 4.6 : n.kind === 'dir' ? 4.3 : 3.9}"${isT || n.kind === 'dir' ? ' font-weight="700"' : ''} opacity="${(.5 + .5 * zd).toFixed(2)}">${esc(n.label)}</text>` }
+    if (named.has(n)) { const dx = n.kind === 'term' ? 0 : nebR(g, n) * RS * k * .45 + 3; body += `<text x="${f1(n.x + dx)}" y="${f1(n.y + (n.kind === 'term' ? 9 * RS * k * .55 : 1.4))}"${n.kind === 'term' ? ' text-anchor="middle"' : ''} fill="${isT ? '#fff' : n.kind === 'term' ? '#9dff8a' : n.kind === 'dir' ? 'rgba(240,236,255,.9)' : 'rgba(240,236,255,.78)'}" font-family="monospace" font-size="${isT ? 4.6 : n.kind === 'dir' ? 4.3 : 3.9}"${isT || n.kind === 'dir' ? ' font-weight="700"' : ''} opacity="${(.5 + .5 * zd).toFixed(2)}">${esc(n.label)}</text>` }
     const mv = tr ? mover(n.id) : ''
     nodes += mv ? `<g>${mv}${body}</g>` : body
   })
